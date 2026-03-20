@@ -1,0 +1,9 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+web3==7.6.0
+eth-account>=0.13.1
+cryptography>=42.0.0
+mnemonic==0.21
+cassandra-driver>=3.29.2

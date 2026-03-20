@@ -1,0 +1,58 @@
+services:
+  scylla:
+    image: scylladb/scylla:5.4
+    command: ["--developer-mode=1", "--overprovisioned", "1"]
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylla_data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES'"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      SCYLLA_CONTACT_POINTS: scylla
+      SCYLLA_PORT: 9042
+      PORT: 8006
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8006", "--reload", "--reload-exclude", "data/*", "--reload-exclude", "runtime/*"]
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8006:8006"
+    depends_on:
+      scylla:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      NEXT_PUBLIC_API_URL: /backend
+      BACKEND_INTERNAL_URL: http://backend:8006
+      WATCHPACK_POLLING: "true"
+    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "4000"]
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    ports:
+      - "4000:4000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  scylla_data:
+  frontend_node_modules:
+  frontend_next:

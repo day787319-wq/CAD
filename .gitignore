@@ -1,0 +1,28 @@
+# Env files
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+!.env.sample
+!**/.env.sample
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+.venv/
+backend/venv/
+
+# Node / Next
+frontend/node_modules/
+frontend/.next/
+**/*.tsbuildinfo
+backend/runtime/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
