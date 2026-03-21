@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -311,7 +311,7 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         "notes": (payload.get("notes") or "").strip() or None,
         "is_active": bool(payload.get("is_active", True)),
         "source": payload.get("source") or DEFAULT_TEMPLATE_SOURCE,
-        "created_at": created_at or datetime.utcnow().isoformat(),
+        "created_at": created_at or datetime.now(timezone.utc).isoformat(),
     }
 
 

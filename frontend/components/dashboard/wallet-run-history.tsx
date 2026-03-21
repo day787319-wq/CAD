@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { API_URL } from "@/lib/api";
+import { formatRelativeTimestamp } from "@/lib/template";
 
 type FundingTransaction = {
   tx_hash?: string;
@@ -23,6 +24,8 @@ type ApprovalTransaction = {
   amount?: string | null;
   tx_hash?: string | null;
   status?: string;
+  attempts?: number | null;
+  confirmation_source?: string | null;
   error?: string | null;
 };
 
@@ -36,6 +39,8 @@ type SwapTransaction = {
   tx_hash?: string | null;
   status?: string;
   source?: string;
+  attempts?: number | null;
+  confirmation_source?: string | null;
   error?: string | null;
 };
 
@@ -172,6 +177,7 @@ type WalletRun = {
 };
 
 type AutomationStageStatus = "completed" | "running" | "failed" | "skipped" | "pending";
+const WETH_TOKEN_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 function shortValue(value: string | null | undefined, head = 6, tail = 4) {
   if (!value) return "Unavailable";
@@ -186,9 +192,12 @@ function formatAmount(value: string | null | undefined, symbol: string) {
 
 function formatTimestamp(value: string | null | undefined) {
   if (!value) return "Unknown";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return formatRelativeTimestamp(value);
+}
+
+function getDisplayTokenSymbol(tokenSymbol: string | null | undefined, tokenAddress: string | null | undefined) {
+  if ((tokenAddress ?? "").toLowerCase() === WETH_TOKEN_ADDRESS.toLowerCase()) return "WETH";
+  return tokenSymbol ?? "TOKEN";
 }
 
 function statusTone(status: string | null | undefined) {
@@ -878,7 +887,7 @@ export function WalletRunHistory({
                                           <div className="space-y-1">
                                             {subWallet.deployed_contracts.map((contract, contractIndex) => (
                                               <div key={`${subWallet.wallet_id}-contract-${contractIndex}`} className="font-mono">
-                                                {contract.token_symbol ?? "Token"} {contract.contract_address
+                                                {getDisplayTokenSymbol(contract.token_symbol, contract.token_address)} {contract.contract_address
                                                   ? shortValue(contract.contract_address, 8, 6)
                                                   : contract.tx_hash
                                                     ? shortValue(contract.tx_hash, 8, 6)
@@ -1028,7 +1037,7 @@ export function WalletRunHistory({
                                   <p className="mt-2 text-xs text-slate-500">
                                     {contract.wallet_address ? `Subwallet ${shortValue(contract.wallet_address, 10, 6)}` : "Subwallet unavailable"}
                                     {contract.recipient_address ? ` • Recipient ${shortValue(contract.recipient_address, 10, 6)}` : ""}
-                                    {contract.amount ? ` • ${formatAmount(contract.amount, contract.token_symbol ?? "WETH")}` : ""}
+                                    {contract.amount ? ` • ${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address))}` : ""}
                                     {contract.deployment_attempts ? ` • Attempts ${contract.deployment_attempts}` : ""}
                                   </p>
                                   {contract.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-slate-700">{contract.tx_hash}</p> : null}
@@ -1146,6 +1155,12 @@ export function WalletRunHistory({
                                     <p className="mt-1 text-xs text-muted-foreground">
                                       {formatAmount(approval.amount, approval.token_symbol ?? "WETH")} · {approval.status ?? "submitted"}
                                     </p>
+                                    {approval.attempts || approval.confirmation_source ? (
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {approval.attempts ? `attempts ${approval.attempts}` : "attempts 1"}
+                                        {approval.confirmation_source ? ` • ${approval.confirmation_source.replace(/_/g, " ")}` : ""}
+                                      </p>
+                                    ) : null}
                                     {approval.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-foreground">{approval.tx_hash}</p> : null}
                                     {approval.error ? <p className="mt-2 text-xs text-destructive">{approval.error}</p> : null}
                                   </div>
@@ -1163,6 +1178,12 @@ export function WalletRunHistory({
                                       {swap.amount_out ? ` · ${formatAmount(swap.amount_out, swap.token_symbol ?? "TOKEN")} out` : ""}
                                       {swap.status ? ` · ${swap.status}` : ""}
                                     </p>
+                                    {swap.attempts || swap.confirmation_source ? (
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {swap.attempts ? `attempts ${swap.attempts}` : "attempts 1"}
+                                        {swap.confirmation_source ? ` • ${swap.confirmation_source.replace(/_/g, " ")}` : ""}
+                                      </p>
+                                    ) : null}
                                     {swap.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-foreground">{swap.tx_hash}</p> : null}
                                     {swap.error ? <p className="mt-2 text-xs text-destructive">{swap.error}</p> : null}
                                   </div>
@@ -1177,7 +1198,7 @@ export function WalletRunHistory({
                                     <p className="text-sm font-semibold text-foreground">{contract?.contract_name ?? "ManagedTokenDistributor"}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
                                       {contract?.amount
-                                        ? `${formatAmount(contract.amount, contract.token_symbol ?? "WETH")} to ${shortValue(contract.recipient_address ?? "", 10, 6)}`
+                                        ? `${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address))} to ${shortValue(contract.recipient_address ?? "", 10, 6)}`
                                         : "Deployment details unavailable"}
                                     </p>
                                     {contract?.contract_address ? (

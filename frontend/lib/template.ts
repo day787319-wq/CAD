@@ -315,11 +315,30 @@ export function formatUsd(value: string | null | undefined) {
   });
 }
 
+const DASHBOARD_TIME_ZONE = "Asia/Phnom_Penh";
+const DASHBOARD_TIME_ZONE_LABEL = "UTC+7";
+
+function parseDashboardTimestamp(value: string) {
+  const normalized = value.trim();
+  const hasTimeZone = /(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(normalized);
+  return new Date(hasTimeZone ? normalized : `${normalized}Z`);
+}
+
 export function formatRelativeTimestamp(value: string | null | undefined) {
   if (!value) return "Unavailable";
-  const date = new Date(value);
+  const date = parseDashboardTimestamp(value);
   if (Number.isNaN(date.getTime())) return "Unavailable";
-  return date.toLocaleString();
+  const formatted = new Intl.DateTimeFormat("en-US", {
+    timeZone: DASHBOARD_TIME_ZONE,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).format(date);
+  return `${formatted} ${DASHBOARD_TIME_ZONE_LABEL}`;
 }
 
 export function formatFeeTier(value: number | null | undefined) {
