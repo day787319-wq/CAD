@@ -21,81 +21,97 @@ import { useToast } from "@/hooks/use-toast";
 import { API_URL } from "@/lib/api";
 
 const copy = {
-  title: { en: "Wallet Vault", zn: "Wallet Vault", vn: "Wallet Vault" },
+  title: { en: "Wallet Vault", zn: "钱包金库", vn: "Kho vi" },
   subtitle: {
     en: "Import and secure wallets from the backend",
-    zn: "Import and secure wallets from the backend",
-    vn: "Import and secure wallets from the backend",
+    zn: "从后端导入并安全管理钱包",
+    vn: "Nhap va bao mat wallet tu backend",
   },
-  button: { en: "Import wallet", zn: "Import wallet", vn: "Import wallet" },
-  mainMode: { en: "Main wallet", zn: "Main wallet", vn: "Main wallet" },
-  privateKeyMode: { en: "Private key", zn: "Private key", vn: "Private key" },
+  button: { en: "Import wallet", zn: "导入钱包", vn: "Nhap wallet" },
+  mainMode: { en: "Main wallet", zn: "主钱包", vn: "Wallet chinh" },
+  privateKeyMode: { en: "Private key", zn: "私钥", vn: "Private key" },
   sheetTitle: {
     en: "Import wallet",
-    zn: "Import wallet",
-    vn: "Import wallet",
+    zn: "导入钱包",
+    vn: "Nhap wallet",
   },
   mainDescription: {
     en: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
-    zn: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
-    vn: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
+    zn: "粘贴 12 或 24 个助记词以导入主钱包，并派生其子钱包。",
+    vn: "Dan seed phrase 12 hoac 24 tu de nhap wallet chinh va sinh cac sub-wallet.",
   },
   privateKeyDescription: {
     en: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
-    zn: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
-    vn: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
+    zn: "粘贴一个 EVM 私钥。后端会校验、加密并存储它，只返回安全的钱包信息。",
+    vn: "Dan mot private key EVM. Backend se kiem tra, ma hoa, luu tru va chi tra ve thong tin wallet an toan.",
   },
-  mainInputLabel: { en: "Seed phrase", zn: "Seed phrase", vn: "Seed phrase" },
-  privateKeyInputLabel: { en: "Private key", zn: "Private key", vn: "Private key" },
+  mainInputLabel: { en: "Seed phrase", zn: "助记词", vn: "Seed phrase" },
+  privateKeyInputLabel: { en: "Private key", zn: "私钥", vn: "Private key" },
   mainInputPlaceholder: {
     en: "word1 word2 word3 ...",
     zn: "word1 word2 word3 ...",
     vn: "word1 word2 word3 ...",
   },
   privateKeyInputPlaceholder: { en: "0x...", zn: "0x...", vn: "0x..." },
-  submit: { en: "Import wallet", zn: "Import wallet", vn: "Import wallet" },
-  submitting: { en: "Importing...", zn: "Importing...", vn: "Importing..." },
-  importedTitle: { en: "Imported wallet", zn: "Imported wallet", vn: "Imported wallet" },
-  copyAddress: { en: "Copy address", zn: "Copy address", vn: "Copy address" },
-  openWallet: { en: "Open wallet page", zn: "Open wallet page", vn: "Open wallet page" },
-  successTitle: { en: "Wallet imported", zn: "Wallet imported", vn: "Wallet imported" },
+  submit: { en: "Import wallet", zn: "导入钱包", vn: "Nhap wallet" },
+  submitting: { en: "Importing...", zn: "导入中...", vn: "Dang nhap..." },
+  importedTitle: { en: "Imported wallet", zn: "已导入钱包", vn: "Wallet da nhap" },
+  copyAddress: { en: "Copy address", zn: "复制地址", vn: "Sao chep dia chi" },
+  openWallet: { en: "Open wallet page", zn: "打开钱包页面", vn: "Mo trang wallet" },
+  successTitle: { en: "Wallet imported", zn: "钱包已导入", vn: "Da nhap wallet" },
   successDescription: {
     en: "The wallet was imported and stored securely by the backend.",
-    zn: "The wallet was imported and stored securely by the backend.",
-    vn: "The wallet was imported and stored securely by the backend.",
+    zn: "钱包已成功导入并由后端安全存储。",
+    vn: "Wallet da duoc nhap va luu tru an toan boi backend.",
   },
   emptyState: {
     en: "No wallet imported yet. Use the button above to import a main wallet or private key.",
-    zn: "No wallet imported yet. Use the button above to import a main wallet or private key.",
-    vn: "No wallet imported yet. Use the button above to import a main wallet or private key.",
+    zn: "还没有导入钱包。使用上方按钮导入主钱包或私钥。",
+    vn: "Chua co wallet nao duoc nhap. Dung nut ben tren de nhap wallet chinh hoac private key.",
   },
-  savedTab: { en: "Saved wallets", zn: "Saved wallets", vn: "Saved wallets" },
-  latestTab: { en: "Latest import", zn: "Latest import", vn: "Latest import" },
-  runsTab: { en: "Run history", zn: "Run history", vn: "Run history" },
+  savedTab: { en: "Saved wallets", zn: "已保存钱包", vn: "Wallet da luu" },
+  latestTab: { en: "Latest import", zn: "最近导入", vn: "Lan nhap gan nhat" },
+  runsTab: { en: "Run history", zn: "运行历史", vn: "Lich su chay" },
   savedEmptyState: {
     en: "No saved wallets yet. Import one once and it will stay here for reuse.",
-    zn: "No saved wallets yet. Import one once and it will stay here for reuse.",
-    vn: "No saved wallets yet. Import one once and it will stay here for reuse.",
+    zn: "还没有已保存的钱包。导入后会保留在这里供后续复用。",
+    vn: "Chua co wallet duoc luu. Nhap mot lan va wallet se duoc giu lai de tai su dung.",
   },
   savedLoading: {
     en: "Loading saved wallets...",
-    zn: "Loading saved wallets...",
-    vn: "Loading saved wallets...",
+    zn: "正在加载已保存钱包...",
+    vn: "Dang tai wallet da luu...",
   },
   savedError: {
     en: "Failed to load saved wallets.",
-    zn: "Failed to load saved wallets.",
-    vn: "Failed to load saved wallets.",
+    zn: "加载已保存钱包失败。",
+    vn: "Tai wallet da luu that bai.",
   },
-  openSavedWallet: { en: "Open saved wallet", zn: "Open saved wallet", vn: "Open saved wallet" },
-  privateKeyType: { en: "Private key", zn: "Private key", vn: "Private key" },
-  mainType: { en: "Seed wallet", zn: "Seed wallet", vn: "Seed wallet" },
-  deleteWallet: { en: "Delete wallet", zn: "Delete wallet", vn: "Delete wallet" },
-  deleteSuccessTitle: { en: "Wallet deleted", zn: "Wallet deleted", vn: "Wallet deleted" },
+  openSavedWallet: { en: "Open saved wallet", zn: "打开已保存钱包", vn: "Mo wallet da luu" },
+  privateKeyType: { en: "Private key", zn: "私钥钱包", vn: "Wallet private key" },
+  mainType: { en: "Seed wallet", zn: "助记词钱包", vn: "Wallet seed" },
+  deleteWallet: { en: "Delete wallet", zn: "删除钱包", vn: "Xoa wallet" },
+  deleteSuccessTitle: { en: "Wallet deleted", zn: "钱包已删除", vn: "Da xoa wallet" },
   deleteSuccessDescription: {
     en: "The saved wallet was removed.",
-    zn: "The saved wallet was removed.",
-    vn: "The saved wallet was removed.",
+    zn: "已移除保存的钱包。",
+    vn: "Wallet da luu da duoc xoa.",
+  },
+  deleteConfirm: {
+    en: "Delete wallet {address}?",
+    zn: "删除钱包 {address}？",
+    vn: "Xoa wallet {address}?",
+  },
+  runsTitle: { en: "Run history", zn: "运行历史", vn: "Lich su chay" },
+  runsDescription: {
+    en: "Each run records the batch, funding submission details, and the generated subwallets.",
+    zn: "每次运行都会记录批次、资金提交细节和生成的子钱包。",
+    vn: "Moi lan chay deu luu batch, chi tiet cap von va cac sub-wallet duoc tao.",
+  },
+  runsEmpty: {
+    en: "No runs yet. Execute one from a main wallet and it will appear here.",
+    zn: "还没有运行记录。从主钱包执行一次后会显示在这里。",
+    vn: "Chua co lan chay nao. Chay tu wallet chinh va ban ghi se hien thi tai day.",
   },
 } as const;
 
@@ -223,7 +239,7 @@ export function RecentDeals() {
 
   const handleDeleteWallet = async (event: MouseEvent<HTMLButtonElement>, walletToDelete: ImportedWallet) => {
     event.stopPropagation();
-    if (!window.confirm(`Delete wallet ${walletToDelete.address}?`)) {
+    if (!window.confirm(copy.deleteConfirm[locale].replace("{address}", walletToDelete.address))) {
       return;
     }
 
@@ -489,9 +505,9 @@ export function RecentDeals() {
 
         <TabsContent value="runs">
           <WalletRunHistory
-            title="Run history"
-            description="Each run records the batch, funding submission details, and the generated subwallets."
-            emptyMessage="No runs yet. Execute one from a main wallet and it will appear here."
+            title={copy.runsTitle[locale]}
+            description={copy.runsDescription[locale]}
+            emptyMessage={copy.runsEmpty[locale]}
           />
         </TabsContent>
       </Tabs>

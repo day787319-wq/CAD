@@ -5,6 +5,7 @@ import { MouseEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Coins, Copy, Fuel, Loader2, Pencil, PlusCircle, RefreshCw, Rocket, Trash2, WalletCards } from "lucide-react";
 import { useRouter } from "next/navigation";
 import type { Section } from "@/app/page";
+import { useI18n } from "@/components/i18n-provider";
 import { Header } from "@/components/dashboard/header";
 import { TemplateMarketCheckPanel } from "@/components/dashboard/template-market-check";
 import { WalletRunHistory } from "@/components/dashboard/wallet-run-history";
@@ -113,6 +114,34 @@ const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
 const TOKEN_TRANSFER_GAS_UNITS = 90_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
+
+const uiCopy = {
+  backToDashboard: { en: "Back to dashboard", zn: "返回仪表盘", vn: "Quay lai dashboard" },
+  loadingWallet: { en: "Loading wallet details...", zn: "正在加载钱包详情...", vn: "Dang tai chi tiet wallet..." },
+  walletNotFound: { en: "Wallet not found.", zn: "未找到钱包。", vn: "Khong tim thay wallet." },
+  mainWallet: { en: "Main wallet", zn: "主钱包", vn: "Wallet chinh" },
+  refreshBalances: { en: "Refresh balances", zn: "刷新余额", vn: "Lam moi so du" },
+  copyAddress: { en: "Copy address", zn: "复制地址", vn: "Sao chep dia chi" },
+  deleting: { en: "Deleting...", zn: "删除中...", vn: "Dang xoa..." },
+  deleteWallet: { en: "Delete wallet", zn: "删除钱包", vn: "Xoa wallet" },
+  runHistory: { en: "Run history", zn: "运行历史", vn: "Lich su chay" },
+  planRun: { en: "Plan run", zn: "规划运行", vn: "Lap ke hoach chay" },
+  templateLibrary: { en: "Template library", zn: "模板库", vn: "Thu vien mau" },
+  create: { en: "Create", zn: "创建", vn: "Tao moi" },
+  automationConsole: { en: "Automation console", zn: "自动化控制台", vn: "Bang dieu khien tu dong hoa" },
+  contractAutoDeploy: { en: "Contract Auto Deploy", zn: "合约自动部署", vn: "Tu dong deploy hop dong" },
+  budgetPreview: { en: "Budget Preview", zn: "预算预览", vn: "Preview ngan sach" },
+  gasEstimates: { en: "Gas Estimates", zn: "Gas 预估", vn: "Uoc tinh gas" },
+  runSettings: { en: "Run settings", zn: "运行设置", vn: "Cai dat run" },
+  automationFlow: { en: "Automation flow", zn: "自动化流程", vn: "Luong tu dong hoa" },
+  back: { en: "Back", zn: "返回", vn: "Quay lai" },
+  runAutomation: { en: "Run Automation", zn: "运行自动化", vn: "Chay tu dong hoa" },
+  running: { en: "Running...", zn: "运行中...", vn: "Dang chay..." },
+  checking: { en: "Checking...", zn: "检查中...", vn: "Dang kiem tra..." },
+  automationReview: { en: "Automation review", zn: "自动化复核", vn: "Xem lai tu dong hoa" },
+  automationRunning: { en: "Automation running", zn: "自动化运行中", vn: "Tu dong hoa dang chay" },
+  inProgress: { en: "In progress", zn: "进行中", vn: "Dang thuc hien" },
+} as const;
 
 type AutomationStepTone = "ready" | "planned" | "attention" | "optional";
 
@@ -369,6 +398,7 @@ function buildTemplateSummary(template: Template) {
 
 export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const router = useRouter();
+  const { locale } = useI18n();
   const { toast } = useToast();
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -724,7 +754,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         activeSection={activeSection}
         onSectionChange={(section) => {
           setActiveSection(section);
-          router.push("/");
+          router.push(section === "overview" ? "/" : `/?section=${section}`);
         }}
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
@@ -737,17 +767,17 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
             <Link href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground">
               <ArrowLeft className="h-4 w-4" />
-              Back to dashboard
+              {uiCopy.backToDashboard[locale]}
             </Link>
 
             {loadingWallet ? (
-              <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">Loading wallet details...</div>
+              <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">{uiCopy.loadingWallet[locale]}</div>
             ) : loadError || !wallet ? (
-              <div className="rounded-2xl border border-border bg-card p-6 text-sm text-destructive">{loadError ?? "Wallet not found."}</div>
+              <div className="rounded-2xl border border-border bg-card p-6 text-sm text-destructive">{loadError ?? uiCopy.walletNotFound[locale]}</div>
             ) : (
               <>
                 <SectionBlock
-                  title="Main wallet"
+                  title={uiCopy.mainWallet[locale]}
                   description="Each selected contract creates one new subwallet. This page checks local funding first, then the review step confirms the funding plan before submission."
                 >
                   <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -764,15 +794,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <Button type="button" variant="outline" onClick={handleRefreshWallet} disabled={refreshingWallet}>
                         <RefreshCw className={`h-4 w-4 ${refreshingWallet ? "animate-spin" : ""}`} />
-                        Refresh balances
+                        {uiCopy.refreshBalances[locale]}
                       </Button>
                       <Button type="button" variant="outline" onClick={handleCopyAddress}>
                         <Copy className="h-4 w-4" />
-                        Copy address
+                        {uiCopy.copyAddress[locale]}
                       </Button>
                       <Button type="button" variant="outline" onClick={handleDeleteWallet} disabled={deletingWallet}>
                         <Trash2 className="h-4 w-4" />
-                        {deletingWallet ? "Deleting..." : "Delete wallet"}
+                        {deletingWallet ? uiCopy.deleting[locale] : uiCopy.deleteWallet[locale]}
                       </Button>
                     </div>
                   </div>
@@ -835,14 +865,14 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 ) : (
                 <Tabs value={walletViewTab} onValueChange={setWalletViewTab} className="space-y-5">
                   <TabsList className="grid w-full grid-cols-2 sm:w-[320px]">
-                    <TabsTrigger value="plan">Plan run</TabsTrigger>
-                    <TabsTrigger value="runs">Run history</TabsTrigger>
+                    <TabsTrigger value="plan">{uiCopy.planRun[locale]}</TabsTrigger>
+                    <TabsTrigger value="runs">{uiCopy.runHistory[locale]}</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="plan" className="space-y-0">
                     <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
                   <SectionBlock
-                    title="Template library"
+                    title={uiCopy.templateLibrary[locale]}
                     description="Keep this side focused on selection. The full breakdown for the selected template appears on the right."
                   >
                     <div className="mb-4 flex items-center justify-between gap-3">
@@ -851,7 +881,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       </p>
                       <Button type="button" onClick={openCreate}>
                         <PlusCircle className="h-4 w-4" />
-                        Create
+                        {uiCopy.create[locale]}
                       </Button>
                     </div>
 
@@ -925,7 +955,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                   {selectedTemplate ? (
                     <div className="space-y-6">
                       <SectionBlock
-                        title="Automation console"
+                        title={uiCopy.automationConsole[locale]}
                         description="Review the live budget, route sizing, and deployment path before launching the automation."
                       >
                         <div className="rounded-[28px] bg-slate-100/90 p-4 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.45)] sm:p-5">
@@ -934,7 +964,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               <div className="max-w-2xl">
                                 <div className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-white">
                                   <Rocket className="h-3.5 w-3.5" />
-                                  Contract Auto Deploy
+                                  {uiCopy.contractAutoDeploy[locale]}
                                 </div>
                                 <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">Fund, wrap, swap, and deploy in one click</h2>
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
@@ -966,7 +996,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       <WalletCards className="h-5 w-5" />
                                     </div>
                                     <div>
-                                      <p className="text-lg font-semibold text-slate-950">Budget Preview</p>
+                                      <p className="text-lg font-semibold text-slate-950">{uiCopy.budgetPreview[locale]}</p>
                                       <p className="text-sm text-slate-500">Real values from the selected template and the connected wallet.</p>
                                     </div>
                                   </div>
@@ -1033,7 +1063,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       <Fuel className="h-5 w-5" />
                                     </div>
                                     <div>
-                                      <p className="text-lg font-semibold text-slate-950">Gas Estimates</p>
+                                      <p className="text-lg font-semibold text-slate-950">{uiCopy.gasEstimates[locale]}</p>
                                       <p className="text-sm text-slate-500">Funding, local wrap, swap, deploy, and distributor transfer costs for the selected wallet count.</p>
                                     </div>
                                   </div>
@@ -1096,7 +1126,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                               <div className="space-y-5">
                                 <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
-                                  <p className="text-lg font-semibold text-slate-950">Run settings</p>
+                                  <p className="text-lg font-semibold text-slate-950">{uiCopy.runSettings[locale]}</p>
                                   <div className="mt-4 space-y-4">
                                     <div>
                                       <label htmlFor="contract-count" className="text-sm font-medium text-slate-900">
@@ -1154,7 +1184,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 </div>
 
                                 <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
-                                  <p className="text-lg font-semibold text-slate-950">Automation flow</p>
+                                  <p className="text-lg font-semibold text-slate-950">{uiCopy.automationFlow[locale]}</p>
                                   <p className="mt-1 text-sm text-slate-500">Run history will log every movement in this order once the automation starts.</p>
                                   <div className="mt-4 space-y-3">
                                     {previewAutomationSteps.length > 0 ? (
@@ -1177,7 +1207,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                             <div className="mt-6 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
                               <Button type="button" variant="outline" onClick={() => setSelectedTemplateId("")}>
-                                Back
+                                {uiCopy.back[locale]}
                               </Button>
                               <Button
                                 type="button"
@@ -1186,7 +1216,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 disabled={!preview?.can_proceed || creatingSubWallets || preparingRun}
                               >
                                 <Rocket className="h-4 w-4" />
-                                {creatingSubWallets ? "Running..." : preparingRun ? "Checking..." : "Run Automation"}
+                                {creatingSubWallets ? uiCopy.running[locale] : preparingRun ? uiCopy.checking[locale] : uiCopy.runAutomation[locale]}
                               </Button>
                             </div>
                           </div>
@@ -1212,7 +1242,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <WalletRunHistory
                       mainWalletId={wallet.id}
                       refreshKey={runHistoryRefreshKey}
-                      title="Run history"
+                      title={uiCopy.runHistory[locale]}
                       description="Each run creates a fresh batch of wallets, funds them with ETH, wraps locally, approves and swaps when configured, deploys distributor contracts, transfers tokens into them, and stores a detailed movement log here."
                       emptyMessage="No runs for this main wallet yet. Execute one from the Plan run tab and it will appear here."
                     />
@@ -1245,7 +1275,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       >
         <DialogContent className="flex max-h-[88vh] w-[calc(100vw-1.5rem)] flex-col overflow-hidden p-0 sm:max-w-5xl">
           <DialogHeader className="shrink-0 border-b border-border/70 px-4 pt-5 pb-4 sm:px-6 sm:pt-6">
-            <DialogTitle>Automation review</DialogTitle>
+            <DialogTitle>{uiCopy.automationReview[locale]}</DialogTitle>
             <DialogDescription>
               Confirm the budget and automation sequence before submitting the run.
             </DialogDescription>
@@ -1259,7 +1289,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <div className="max-w-2xl">
                       <div className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-white">
                         <Rocket className="h-3.5 w-3.5" />
-                        Contract Auto Deploy
+                        {uiCopy.contractAutoDeploy[locale]}
                       </div>
                       <h3 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950">Final automation check</h3>
                       <p className="mt-2 text-sm leading-6 text-slate-600">
@@ -1291,7 +1321,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-700">Automation running</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-700">{uiCopy.automationRunning[locale]}</p>
                       <p className="mt-2 text-xl font-semibold text-slate-950">Running funding, wrap, swap, and deployment steps</p>
                       <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
                         The backend is creating the wallet batch, funding each sub-wallet with ETH, wrapping locally, approving the router, swapping into the configured tokens, deploying ManagedTokenDistributor contracts, and saving each tx hash. Full movement logs appear in Run history as soon as the run record is saved.
@@ -1299,7 +1329,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
                     <div className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3 py-1.5 text-sm font-medium text-sky-700">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      In progress
+                      {uiCopy.inProgress[locale]}
                     </div>
                   </div>
 
@@ -1423,11 +1453,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
               }}
               disabled={creatingSubWallets}
             >
-              Back
+              {uiCopy.back[locale]}
             </Button>
             <Button type="button" onClick={handleRun} disabled={creatingSubWallets}>
               <Rocket className="h-4 w-4" />
-              {creatingSubWallets ? "Running..." : "Run Automation"}
+              {creatingSubWallets ? uiCopy.running[locale] : uiCopy.runAutomation[locale]}
             </Button>
           </DialogFooter>
         </DialogContent>

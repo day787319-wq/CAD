@@ -1,6 +1,7 @@
 "use client";
 
 import { API_URL } from "@/lib/api";
+import { defaultLocale, localeTagByLocale, type SupportedLocale } from "@/lib/i18n";
 
 export const TEMPLATE_API_URL = API_URL;
 const ETH_TRANSFER_GAS_UNITS = 21_000;
@@ -298,16 +299,46 @@ export type TemplateMarketCheck = {
   price_snapshot: TemplatePriceSnapshot;
 };
 
-export function formatAmount(value: string | number | null | undefined) {
-  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
-  if (!Number.isFinite(numeric)) return "0";
-  return numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+function getActiveLocale() {
+  if (typeof window === "undefined") return defaultLocale;
+  const storedLocale = window.localStorage.getItem("treasury-locale");
+  if (storedLocale === "en" || storedLocale === "zn" || storedLocale === "vn") {
+    return storedLocale;
+  }
+  const htmlLang = document.documentElement.lang.toLowerCase();
+  if (htmlLang.startsWith("zh")) return "zn";
+  if (htmlLang.startsWith("vi")) return "vn";
+  return defaultLocale;
 }
 
-export function formatUsd(value: string | null | undefined) {
+function getLocaleTag(locale?: SupportedLocale) {
+  const resolvedLocale = locale ?? getActiveLocale();
+  return localeTagByLocale[resolvedLocale] ?? localeTagByLocale[defaultLocale];
+}
+
+const templateUtilityCopy = {
+  unavailable: {
+    en: "Unavailable",
+    zn: "不可用",
+    vn: "Khong kha dung",
+  },
+  autoBestRoute: {
+    en: "Auto best route",
+    zn: "自动最佳路径",
+    vn: "Tuyen toi uu tu dong",
+  },
+} as const;
+
+export function formatAmount(value: string | number | null | undefined, locale?: SupportedLocale) {
+  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
+  if (!Number.isFinite(numeric)) return "0";
+  return numeric.toLocaleString(getLocaleTag(locale), { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
+
+export function formatUsd(value: string | null | undefined, locale?: SupportedLocale) {
   const numeric = Number.parseFloat(value ?? "");
   if (!Number.isFinite(numeric)) return "--";
-  return numeric.toLocaleString(undefined, {
+  return numeric.toLocaleString(getLocaleTag(locale), {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
@@ -324,11 +355,12 @@ function parseDashboardTimestamp(value: string) {
   return new Date(hasTimeZone ? normalized : `${normalized}Z`);
 }
 
-export function formatRelativeTimestamp(value: string | null | undefined) {
-  if (!value) return "Unavailable";
+export function formatRelativeTimestamp(value: string | null | undefined, locale?: SupportedLocale) {
+  const resolvedLocale = locale ?? getActiveLocale();
+  if (!value) return templateUtilityCopy.unavailable[resolvedLocale];
   const date = parseDashboardTimestamp(value);
-  if (Number.isNaN(date.getTime())) return "Unavailable";
-  const formatted = new Intl.DateTimeFormat("en-US", {
+  if (Number.isNaN(date.getTime())) return templateUtilityCopy.unavailable[resolvedLocale];
+  const formatted = new Intl.DateTimeFormat(getLocaleTag(resolvedLocale), {
     timeZone: DASHBOARD_TIME_ZONE,
     year: "numeric",
     month: "numeric",
@@ -341,8 +373,9 @@ export function formatRelativeTimestamp(value: string | null | undefined) {
   return `${formatted} ${DASHBOARD_TIME_ZONE_LABEL}`;
 }
 
-export function formatFeeTier(value: number | null | undefined) {
-  if (value === null || value === undefined) return "Auto best route";
+export function formatFeeTier(value: number | null | undefined, locale?: SupportedLocale) {
+  const resolvedLocale = locale ?? getActiveLocale();
+  if (value === null || value === undefined) return templateUtilityCopy.autoBestRoute[resolvedLocale];
   if (value === 500) return "0.05%";
   if (value === 3000) return "0.30%";
   if (value === 10000) return "1.00%";

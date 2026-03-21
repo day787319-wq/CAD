@@ -8,6 +8,14 @@ interface LanguageSwitcherProps {
   className?: string;
 }
 
+const switcherCopy = {
+  label: {
+    en: "Language",
+    zn: "语言",
+    vn: "Ngon ngu",
+  },
+} as const;
+
 export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
   const { locale, setLocale, localeLabels } = useI18n();
 
@@ -17,7 +25,7 @@ export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
         "inline-flex items-center rounded-lg border border-border bg-card p-1",
         className
       )}
-      aria-label="Language"
+      aria-label={switcherCopy.label[locale]}
     >
       {supportedLocales.map((item) => (
         <button

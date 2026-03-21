@@ -7,10 +7,11 @@ import { sectionLabels } from "@/lib/i18n";
 import { useI18n } from "@/components/i18n-provider";
 import {
   LayoutDashboard,
+  Layers3,
+  BarChart3,
   GitBranch,
   Handshake,
   Users,
-  BarChart3,
   ChevronLeft,
   ChevronRight,
   CircleDollarSign,
@@ -28,6 +29,8 @@ interface SidebarProps {
 
 const navItems: { id: Section; icon: React.ElementType }[] = [
   { id: "overview", icon: LayoutDashboard },
+  { id: "templates", icon: Layers3 },
+  { id: "marketCheck", icon: BarChart3 },
   { id: "pipeline", icon: GitBranch },
   // { id: "deals", icon: Handshake },
   // { id: "customers", icon: Building2 },

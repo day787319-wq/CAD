@@ -3,6 +3,7 @@
 import { MouseEvent, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, Boxes, CheckCircle2, CircleDashed, CircleSlash, Copy, Download, Loader2, Rocket, ScrollText, WalletCards } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useI18n } from "@/components/i18n-provider";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -178,6 +179,234 @@ type WalletRun = {
 
 type AutomationStageStatus = "completed" | "running" | "failed" | "skipped" | "pending";
 const WETH_TOKEN_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+
+const uiCopy = {
+  liveUpdating: {
+    en: "Live automation progress is updating every 2 seconds.",
+    zn: "实时自动化进度每 2 秒更新一次。",
+    vn: "Tien trinh tu dong hoa truc tiep dang cap nhat moi 2 giay.",
+  },
+  loading: {
+    en: "Loading run history...",
+    zn: "正在加载运行历史...",
+    vn: "Dang tai lich su chay...",
+  },
+  mainWallet: {
+    en: "Main wallet",
+    zn: "主钱包",
+    vn: "Wallet chinh",
+  },
+  walletCount: {
+    en: "Wallet count",
+    zn: "钱包数量",
+    vn: "So luong wallet",
+  },
+  ethFunded: {
+    en: "ETH funded",
+    zn: "已注入 ETH",
+    vn: "ETH da cap",
+  },
+  contractsDeployed: {
+    en: "Contracts deployed",
+    zn: "已部署合约",
+    vn: "Hop dong da deploy",
+  },
+  runId: {
+    en: "Run ID",
+    zn: "运行 ID",
+    vn: "Run ID",
+  },
+  networkFeeEstimate: {
+    en: "Network fee estimate",
+    zn: "网络费预估",
+    vn: "Uoc tinh phi mang",
+  },
+  automationProgress: {
+    en: "Automation progress",
+    zn: "自动化进度",
+    vn: "Tien trinh tu dong hoa",
+  },
+  pollingLive: {
+    en: "Polling live",
+    zn: "实时轮询中",
+    vn: "Dang lay du lieu truc tiep",
+  },
+  wallets: {
+    en: "Wallets",
+    zn: "钱包",
+    vn: "Wallet",
+  },
+  funded: {
+    en: "Funded",
+    zn: "已注资",
+    vn: "Da cap von",
+  },
+  wrapped: {
+    en: "Wrapped",
+    zn: "已包装",
+    vn: "Da wrap",
+  },
+  swaps: {
+    en: "Swaps",
+    zn: "交换",
+    vn: "Swap",
+  },
+  deployed: {
+    en: "Deployed",
+    zn: "已部署",
+    vn: "Da deploy",
+  },
+  matrix: {
+    en: "Automation matrix",
+    zn: "自动化矩阵",
+    vn: "Ma tran tu dong hoa",
+  },
+  logs: {
+    en: "Logs",
+    zn: "日志",
+    vn: "Nhat ky",
+  },
+  movementLog: {
+    en: "Every movement saved by the automation flow.",
+    zn: "自动化流程保存的每一笔动作。",
+    vn: "Moi di chuyen duoc luu boi luong tu dong hoa.",
+  },
+  noLogs: {
+    en: "No movement logs were saved for this run.",
+    zn: "该运行未保存任何动作日志。",
+    vn: "Khong co nhat ky di chuyen nao duoc luu cho lan chay nay.",
+  },
+  movementEntries: {
+    en: "Movement entries",
+    zn: "动作条目",
+    vn: "Ban ghi di chuyen",
+  },
+  localWrap: {
+    en: "Local wrap",
+    zn: "本地包装",
+    vn: "Wrap noi bo",
+  },
+  contractDeployment: {
+    en: "Contract deployment",
+    zn: "合约部署",
+    vn: "Deploy hop dong",
+  },
+  deployedContracts: {
+    en: "Deployed contracts",
+    zn: "已部署合约",
+    vn: "Hop dong da deploy",
+  },
+  createdWallets: {
+    en: "Created wallets",
+    zn: "已创建钱包",
+    vn: "Wallet da tao",
+  },
+  openWallet: {
+    en: "Open wallet",
+    zn: "打开钱包",
+    vn: "Mo wallet",
+  },
+  copyAddress: {
+    en: "Copy address",
+    zn: "复制地址",
+    vn: "Sao chep dia chi",
+  },
+  exportKeystore: {
+    en: "Export keystore",
+    zn: "导出密钥库",
+    vn: "Xuat keystore",
+  },
+  status: {
+    en: "Status",
+    zn: "状态",
+    vn: "Trang thai",
+  },
+  expectedEth: {
+    en: "Expected ETH",
+    zn: "预期 ETH",
+    vn: "ETH du kien",
+  },
+  localWethWrap: {
+    en: "Local WETH wrap",
+    zn: "本地 WETH 包装",
+    vn: "Wrap WETH noi bo",
+  },
+  access: {
+    en: "Access",
+    zn: "访问",
+    vn: "Truy cap",
+  },
+  encryptedKeystore: {
+    en: "Encrypted keystore export",
+    zn: "加密密钥库导出",
+    vn: "Xuat keystore ma hoa",
+  },
+  unavailable: {
+    en: "Unavailable",
+    zn: "不可用",
+    vn: "Khong kha dung",
+  },
+  cancel: {
+    en: "Cancel",
+    zn: "取消",
+    vn: "Huy",
+  },
+  exportTitle: {
+    en: "Export encrypted keystore",
+    zn: "导出加密密钥库",
+    vn: "Xuat keystore ma hoa",
+  },
+  exportDescription: {
+    en: "This exports an encrypted keystore JSON only. Enter the dedicated wallet access passphrase from the backend, then choose a separate password for the exported keystore file.",
+    zn: "这里只会导出加密 keystore JSON。先输入后端提供的钱包访问口令，再为导出的 keystore 文件设置单独密码。",
+    vn: "Chi xuat file keystore JSON da ma hoa. Nhap mat khau truy cap wallet tu backend, sau do chon mat khau rieng cho file keystore da xuat.",
+  },
+  wallet: {
+    en: "Wallet",
+    zn: "钱包",
+    vn: "Wallet",
+  },
+  unlockPassphrase: {
+    en: "Unlock passphrase",
+    zn: "解锁口令",
+    vn: "Mat khau mo khoa",
+  },
+  unlockPlaceholder: {
+    en: "Dedicated wallet access passphrase",
+    zn: "专用钱包访问口令",
+    vn: "Mat khau truy cap wallet rieng",
+  },
+  keystorePassword: {
+    en: "Keystore password",
+    zn: "Keystore 密码",
+    vn: "Mat khau keystore",
+  },
+  minChars: {
+    en: "At least 12 characters",
+    zn: "至少 12 个字符",
+    vn: "Toi thieu 12 ky tu",
+  },
+  confirmKeystorePassword: {
+    en: "Confirm keystore password",
+    zn: "确认 keystore 密码",
+    vn: "Xac nhan mat khau keystore",
+  },
+  confirmPlaceholder: {
+    en: "Re-enter the keystore password",
+    zn: "重新输入 keystore 密码",
+    vn: "Nhap lai mat khau keystore",
+  },
+  downloadKeystore: {
+    en: "Download keystore",
+    zn: "下载 keystore",
+    vn: "Tai keystore",
+  },
+  exporting: {
+    en: "Exporting...",
+    zn: "导出中...",
+    vn: "Dang xuat...",
+  },
+} as const;
 
 function shortValue(value: string | null | undefined, head = 6, tail = 4) {
   if (!value) return "Unavailable";
@@ -479,6 +708,7 @@ export function WalletRunHistory({
   description?: string;
   emptyMessage?: string;
 }) {
+  const { locale } = useI18n();
   const router = useRouter();
   const { toast } = useToast();
   const [runs, setRuns] = useState<WalletRun[]>([]);
@@ -640,12 +870,12 @@ export function WalletRunHistory({
         <p className="text-base font-semibold text-foreground">{title}</p>
         <p className="mt-1 text-sm text-muted-foreground">{description}</p>
         {hasActiveRun ? (
-          <p className="mt-2 text-xs font-medium text-sky-700">Live automation progress is updating every 2 seconds.</p>
+          <p className="mt-2 text-xs font-medium text-sky-700">{uiCopy.liveUpdating[locale]}</p>
         ) : null}
       </div>
 
       {loading ? (
-        <div className="rounded-2xl border border-border/70 bg-secondary/20 p-6 text-sm text-muted-foreground">Loading run history...</div>
+        <div className="rounded-2xl border border-border/70 bg-secondary/20 p-6 text-sm text-muted-foreground">{uiCopy.loading[locale]}</div>
       ) : error ? (
         <div className="rounded-2xl border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">{error}</div>
       ) : runs.length === 0 ? (
@@ -679,21 +909,21 @@ export function WalletRunHistory({
 
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Main wallet</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.mainWallet[locale]}</p>
                         <p className="mt-1 break-all font-mono text-xs text-foreground">{shortValue(run.main_wallet_address, 10, 6)}</p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Wallet count</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.walletCount[locale]}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">{run.contract_count}</p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">ETH funded</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.ethFunded[locale]}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">
                           {formatAmount(run.preview?.funding?.total_eth_deducted, "ETH")}
                         </p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contracts deployed</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.contractsDeployed[locale]}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">{deployedContractCount}</p>
                       </div>
                     </div>
@@ -739,11 +969,11 @@ export function WalletRunHistory({
 
                           <div className="grid gap-3 sm:min-w-[280px]">
                             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Run ID</p>
+                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.runId[locale]}</p>
                               <p className="mt-1 break-all font-mono text-xs text-slate-700">{run.id}</p>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Network fee estimate</p>
+                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.networkFeeEstimate[locale]}</p>
                               <p className="mt-1 text-sm font-semibold text-slate-900">
                                 {formatAmount(run.preview?.execution?.total_network_fee_eth ?? run.funding_fee_estimate?.fee_eth, "ETH")}
                               </p>
@@ -753,12 +983,12 @@ export function WalletRunHistory({
 
                         <div className="mt-6">
                           <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                            <span>Automation progress</span>
+                            <span>{uiCopy.automationProgress[locale]}</span>
                             <div className="flex items-center gap-3">
                               {isRunLive ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-normal text-sky-700">
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  {runningStage ? `${runningStage.label} live` : "Polling live"}
+                                  {runningStage ? `${runningStage.label} live` : uiCopy.pollingLive[locale]}
                                 </span>
                               ) : null}
                               <span>{progressPercent}%</span>
@@ -773,23 +1003,23 @@ export function WalletRunHistory({
 
                         <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Wallets</p>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.wallets[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{run.sub_wallets?.length ?? 0}</p>
                           </div>
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Funded</p>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.funded[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{fundedWalletCount}</p>
                           </div>
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Wrapped</p>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.wrapped[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{wrappedTransactionCount}</p>
                           </div>
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Swaps</p>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.swaps[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{swapTransactionCount}</p>
                           </div>
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Deployed</p>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{uiCopy.deployed[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{deployedContractCount}</p>
                           </div>
                         </div>
@@ -829,7 +1059,7 @@ export function WalletRunHistory({
                         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200">
                           <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                             <Boxes className="h-4 w-4 text-slate-500" />
-                            <p className="text-sm font-semibold text-slate-900">Automation matrix</p>
+                            <p className="text-sm font-semibold text-slate-900">{uiCopy.matrix[locale]}</p>
                           </div>
                           {run.sub_wallets?.length ? (
                             <div className="overflow-x-auto">
@@ -928,15 +1158,15 @@ export function WalletRunHistory({
 
                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                       <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600">
-                            <ScrollText className="h-4 w-4" />
-                          </div>
-                          <div>
-                            <p className="text-lg font-semibold text-slate-950">Logs</p>
-                            <p className="text-sm text-slate-500">Every movement saved by the automation flow.</p>
-                          </div>
-                        </div>
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600">
+                                <ScrollText className="h-4 w-4" />
+                              </div>
+                              <div>
+                            <p className="text-lg font-semibold text-slate-950">{uiCopy.logs[locale]}</p>
+                            <p className="text-sm text-slate-500">{uiCopy.movementLog[locale]}</p>
+                              </div>
+                            </div>
 
                         {run.run_logs?.length ? (
                           <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
@@ -982,24 +1212,24 @@ export function WalletRunHistory({
                           </div>
                         ) : (
                           <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                            No movement logs were saved for this run.
+                            {uiCopy.noLogs[locale]}
                           </div>
                         )}
                       </div>
 
                       <div className="space-y-4">
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-500">Main wallet</p>
+                          <p className="text-[11px] uppercase tracking-wide text-slate-500">{uiCopy.mainWallet[locale]}</p>
                           <p className="mt-1 break-all font-mono text-xs text-slate-700">{run.main_wallet_address}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-500">Movement entries</p>
+                          <p className="text-[11px] uppercase tracking-wide text-slate-500">{uiCopy.movementEntries[locale]}</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">{run.run_logs?.length ?? 0}</p>
                           {latestLog ? <p className="mt-2 text-xs text-slate-500">{latestLog.message}</p> : null}
                         </div>
                         {wrappedTransactionCount > 0 ? (
                           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                            <p className="text-[11px] uppercase tracking-wide text-slate-500">Local wrap</p>
+                            <p className="text-[11px] uppercase tracking-wide text-slate-500">{uiCopy.localWrap[locale]}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">
                               {wrappedTransactionCount} wallet{wrappedTransactionCount === 1 ? "" : "s"} wrapped ETH into WETH
                             </p>
@@ -1009,7 +1239,7 @@ export function WalletRunHistory({
                           </div>
                         ) : null}
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-500">Contract deployment</p>
+                          <p className="text-[11px] uppercase tracking-wide text-slate-500">{uiCopy.contractDeployment[locale]}</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">
                             {run.contract_execution?.managed_token_distributor?.status?.replace(/_/g, " ") ?? "Unavailable"}
                           </p>
@@ -1019,7 +1249,7 @@ export function WalletRunHistory({
                         </div>
                         {run.deployed_contracts?.length ? (
                           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
-                            <p className="text-sm font-semibold text-slate-900">Deployed contracts</p>
+                            <p className="text-sm font-semibold text-slate-900">{uiCopy.deployedContracts[locale]}</p>
                             <div className="mt-3 space-y-3">
                               {run.deployed_contracts.map((contract, index) => (
                                 <div key={`${run.id}-contract-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
@@ -1051,7 +1281,7 @@ export function WalletRunHistory({
                     </div>
 
                     <div className="space-y-3">
-                      <p className="text-sm font-semibold text-foreground">Created wallets</p>
+                      <p className="text-sm font-semibold text-foreground">{uiCopy.createdWallets[locale]}</p>
                       {run.sub_wallets?.map((subWallet) => {
                         return (
                           <div key={subWallet.wallet_id} className="rounded-2xl border border-border/70 bg-background px-4 py-4">
@@ -1069,11 +1299,11 @@ export function WalletRunHistory({
 
                               <div className="flex flex-wrap items-center gap-2">
                                 <Button type="button" variant="outline" size="sm" onClick={() => router.push(`/wallets/${subWallet.wallet_id}`)}>
-                                  Open wallet
+                                  {uiCopy.openWallet[locale]}
                                 </Button>
                                 <Button type="button" variant="outline" size="sm" onClick={(event) => handleCopy(event, subWallet.address, "Address")}>
                                   <Copy className="h-4 w-4" />
-                                  Copy address
+                                  {uiCopy.copyAddress[locale]}
                                 </Button>
                                 <Button
                                   type="button"
@@ -1083,34 +1313,34 @@ export function WalletRunHistory({
                                   disabled={exportingWalletId === subWallet.wallet_id}
                                 >
                                   {exportingWalletId === subWallet.wallet_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                                  Export keystore
+                                  {uiCopy.exportKeystore[locale]}
                                 </Button>
                               </div>
                             </div>
 
                             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Status</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.status[locale]}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">{subWallet.status ?? "created"}</p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Expected ETH</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.expectedEth[locale]}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">
                                   {formatAmount(subWallet.expected_funding?.eth, "ETH")}
                                 </p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Local WETH wrap</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.localWethWrap[locale]}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">
                                   {formatAmount(subWallet.expected_local_wrap_weth ?? subWallet.expected_funding?.weth, "WETH")}
                                 </p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Access</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.access[locale]}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">
                                   {(subWallet.private_key_access?.export_supported ?? subWallet.private_key_access?.reveal_supported)
-                                    ? "Encrypted keystore export"
-                                    : "Unavailable"}
+                                    ? uiCopy.encryptedKeystore[locale]
+                                    : uiCopy.unavailable[locale]}
                                 </p>
                               </div>
                             </div>
@@ -1242,56 +1472,54 @@ export function WalletRunHistory({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Export encrypted keystore</DialogTitle>
-            <DialogDescription>
-              This exports an encrypted keystore JSON only. Enter the dedicated wallet access passphrase from the backend, then choose a separate password for the exported keystore file.
-            </DialogDescription>
+            <DialogTitle>{uiCopy.exportTitle[locale]}</DialogTitle>
+            <DialogDescription>{uiCopy.exportDescription[locale]}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
             <div className="rounded-xl border border-border/70 bg-secondary/10 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Wallet</p>
-              <p className="mt-1 break-all font-mono text-xs text-foreground">{exportTarget?.address ?? "Unavailable"}</p>
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{uiCopy.wallet[locale]}</p>
+              <p className="mt-1 break-all font-mono text-xs text-foreground">{exportTarget?.address ?? uiCopy.unavailable[locale]}</p>
             </div>
 
             <div className="space-y-2">
               <label htmlFor="wallet-access-passphrase" className="text-sm font-medium text-foreground">
-                Unlock passphrase
+                {uiCopy.unlockPassphrase[locale]}
               </label>
               <Input
                 id="wallet-access-passphrase"
                 type="password"
                 value={accessPassphrase}
                 onChange={(event) => setAccessPassphrase(event.target.value)}
-                placeholder="Dedicated wallet access passphrase"
+                placeholder={uiCopy.unlockPlaceholder[locale]}
                 autoComplete="off"
               />
             </div>
 
             <div className="space-y-2">
               <label htmlFor="wallet-export-passphrase" className="text-sm font-medium text-foreground">
-                Keystore password
+                {uiCopy.keystorePassword[locale]}
               </label>
               <Input
                 id="wallet-export-passphrase"
                 type="password"
                 value={exportPassphrase}
                 onChange={(event) => setExportPassphrase(event.target.value)}
-                placeholder="At least 12 characters"
+                placeholder={uiCopy.minChars[locale]}
                 autoComplete="off"
               />
             </div>
 
             <div className="space-y-2">
               <label htmlFor="wallet-export-passphrase-confirm" className="text-sm font-medium text-foreground">
-                Confirm keystore password
+                {uiCopy.confirmKeystorePassword[locale]}
               </label>
               <Input
                 id="wallet-export-passphrase-confirm"
                 type="password"
                 value={confirmExportPassphrase}
                 onChange={(event) => setConfirmExportPassphrase(event.target.value)}
-                placeholder="Re-enter the keystore password"
+                placeholder={uiCopy.confirmPlaceholder[locale]}
                 autoComplete="off"
               />
             </div>
@@ -1299,10 +1527,10 @@ export function WalletRunHistory({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setExportTarget(null)} disabled={Boolean(exportingWalletId)}>
-              Cancel
+              {uiCopy.cancel[locale]}
             </Button>
             <Button type="button" onClick={handleExportKeystore} disabled={!exportTarget || Boolean(exportingWalletId)}>
-              {exportingWalletId ? "Exporting..." : "Download keystore"}
+              {exportingWalletId ? uiCopy.exporting[locale] : uiCopy.downloadKeystore[locale]}
             </Button>
           </DialogFooter>
         </DialogContent>

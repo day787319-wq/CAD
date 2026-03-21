@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { OverviewSection } from "@/components/dashboard/sections/overview";
+import { TemplateLibraryStarter } from "@/components/dashboard/template-library-starter";
+import { TemplateLiveCheckSection } from "@/components/dashboard/sections/market-check";
 import { PipelineSection } from "@/components/dashboard/sections/pipeline";
 import { DealsSection } from "@/components/dashboard/sections/deals";
 import { CustomersSection } from "@/components/dashboard/sections/customers";
@@ -12,16 +15,59 @@ import { ForecastingSection } from "@/components/dashboard/sections/forecasting"
 import { ReportsSection } from "@/components/dashboard/sections/reports";
 import { SettingsSection } from "@/components/dashboard/sections/settings";
 
-export type Section = "overview" | "pipeline" | "deals" | "customers" | "team" | "forecasting" | "reports" | "settings";
+export type Section = "overview" | "templates" | "marketCheck" | "pipeline" | "deals" | "customers" | "team" | "forecasting" | "reports" | "settings";
+
+function isSection(value: string | null): value is Section {
+  return [
+    "overview",
+    "templates",
+    "marketCheck",
+    "pipeline",
+    "deals",
+    "customers",
+    "team",
+    "forecasting",
+    "reports",
+    "settings",
+  ].includes(value ?? "");
+}
 
 export default function Dashboard() {
+  const searchParams = useSearchParams();
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const requestedSection = searchParams.get("section");
+    if (isSection(requestedSection)) {
+      setActiveSection(requestedSection);
+    }
+  }, [searchParams]);
 
   const renderSection = () => {
     switch (activeSection) {
       case "overview":
         return <OverviewSection />;
+      case "templates":
+        return (
+          <TemplateLibraryStarter
+            selectedTemplateId={selectedTemplateId}
+            onSelectedTemplateChange={setSelectedTemplateId}
+            onOpenLiveCheck={(templateId) => {
+              setSelectedTemplateId(templateId);
+              setActiveSection("marketCheck");
+            }}
+          />
+        );
+      case "marketCheck":
+        return (
+          <TemplateLiveCheckSection
+            selectedTemplateId={selectedTemplateId}
+            onSelectedTemplateChange={setSelectedTemplateId}
+            onOpenTemplateLibrary={() => setActiveSection("templates")}
+          />
+        );
       case "pipeline":
         return <PipelineSection />;
       case "deals":

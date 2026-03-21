@@ -23,6 +23,7 @@ FastAPI backend for importing main wallets via seed phrase and batch-creating mu
    - `MASTER_PASSPHRASE`: Strong password (20+ chars).
    - `WALLET_ACCESS_PASSPHRASE`: Separate strong password (20+ chars) used only when exporting encrypted subwallet keystores.
    - `ETHEREUM_RPC_URL`: Ethereum RPC (e.g., Infura: https://mainnet.infura.io/v3/YOUR_PROJECT_ID).
+   - Optional timeout tuning: `ETH_TRANSACTION_RECEIPT_TIMEOUT_SECONDS`, `TOKEN_APPROVAL_POST_TIMEOUT_GRACE_SECONDS`, `TOKEN_SWAP_POST_TIMEOUT_GRACE_SECONDS`, `MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_GRACE_SECONDS`, and `FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS` all default to `500`.
 
 4. **Start ScyllaDB** (Local):
    - Docker: `docker run --name scylla -d -p 9042:9042 scylladb/scylla --developer-mode=1`

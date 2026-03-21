@@ -219,19 +219,20 @@ ERC20_TRANSFER_GAS_LIMIT = 90_000
 WETH_DEPOSIT_GAS_LIMIT = 120_000
 UNISWAP_V3_SWAP_GAS_LIMIT = 350_000
 MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT = 900_000
-DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS = 180
+DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS = int(os.getenv("ETH_TRANSACTION_RECEIPT_TIMEOUT_SECONDS", "500"))
 TOKEN_APPROVAL_MAX_ATTEMPTS = 3
 TOKEN_SWAP_MAX_ATTEMPTS = 3
 MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_MAX_ATTEMPTS = 3
 TOKEN_APPROVAL_GAS_PRICE_BUMP_MULTIPLIER = Decimal("1.20")
 TOKEN_SWAP_GAS_PRICE_BUMP_MULTIPLIER = Decimal("1.20")
 MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_PRICE_BUMP_MULTIPLIER = Decimal("1.20")
-TOKEN_APPROVAL_POST_TIMEOUT_GRACE_SECONDS = 45
+TOKEN_APPROVAL_POST_TIMEOUT_GRACE_SECONDS = int(os.getenv("TOKEN_APPROVAL_POST_TIMEOUT_GRACE_SECONDS", "500"))
 TOKEN_APPROVAL_POST_TIMEOUT_POLL_INTERVAL_SECONDS = 5
-TOKEN_SWAP_POST_TIMEOUT_GRACE_SECONDS = 45
+TOKEN_SWAP_POST_TIMEOUT_GRACE_SECONDS = int(os.getenv("TOKEN_SWAP_POST_TIMEOUT_GRACE_SECONDS", "500"))
 TOKEN_SWAP_POST_TIMEOUT_POLL_INTERVAL_SECONDS = 5
-MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_GRACE_SECONDS = 45
+MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_GRACE_SECONDS = int(os.getenv("MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_GRACE_SECONDS", "500"))
 MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_POLL_INTERVAL_SECONDS = 5
+FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS = int(os.getenv("FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS", "500"))
 
 
 class WalletTransactionError(RuntimeError):
@@ -835,6 +836,34 @@ def get_bumped_gas_price_wei(
     if bumped <= previous_gas_price_wei:
         bumped = previous_gas_price_wei + 1
     return max(latest_gas_price_wei, bumped)
+
+
+def get_transaction_count(
+    web3_client: Web3,
+    address: str,
+    block_identifier: str = "pending",
+) -> int:
+    return int(
+        web3_client.eth.get_transaction_count(
+            Web3.to_checksum_address(address),
+            block_identifier,
+        )
+    )
+
+
+def resolve_retry_nonce(
+    web3_client: Web3,
+    *,
+    wallet_address: str,
+    current_nonce: int | None,
+) -> int:
+    if current_nonce is None:
+        return get_transaction_count(web3_client, wallet_address, "pending")
+
+    latest_nonce = get_transaction_count(web3_client, wallet_address, "latest")
+    if latest_nonce > current_nonce:
+        return get_transaction_count(web3_client, wallet_address, "pending")
+    return current_nonce
 
 
 def recover_deployment_after_timeout(
@@ -2204,7 +2233,7 @@ def execute_wallet_run(
                     address=Web3.to_checksum_address(WETH_ADDRESS),
                     abi=WETH_ABI,
                 )
-                subwallet_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
+                subwallet_nonce = get_transaction_count(web3_client, subwallet_address, "pending")
 
                 if per_wallet_wrap_weth > 0:
                     wrap_amount_wei = decimal_to_wei(per_wallet_wrap_weth)
@@ -2269,7 +2298,7 @@ def execute_wallet_run(
                             "to_address": WETH_ADDRESS,
                         },
                     )
-                    subwallet_nonce += 1
+                    subwallet_nonce = get_transaction_count(web3_client, subwallet_address, "pending")
 
                 approval_ready = not stablecoin_routes
                 if stablecoin_routes:
@@ -2280,6 +2309,7 @@ def execute_wallet_run(
                         max_approval_attempts = TOKEN_APPROVAL_MAX_ATTEMPTS
                         approval_attempt_used = 0
                         approval_amount_units = decimal_to_wei(swap_budget_per_wallet)
+                        approval_nonce = subwallet_nonce
 
                         for approval_attempt in range(1, max_approval_attempts + 1):
                             approval_attempt_used = approval_attempt
@@ -2300,6 +2330,7 @@ def execute_wallet_run(
                                         "amount_weth": format_decimal(swap_budget_per_wallet),
                                         "attempt": approval_attempt,
                                         "max_attempts": max_approval_attempts,
+                                        "nonce": approval_nonce,
                                         "gas_price_wei": approval_gas_price_wei,
                                         "previous_error": str(last_approval_error) if last_approval_error else None,
                                     },
@@ -2313,7 +2344,7 @@ def execute_wallet_run(
                                     private_key=sub_wallet["private_key"],
                                     spender_address=UNISWAP_V3_ROUTER_ADDRESS,
                                     amount_units=approval_amount_units,
-                                    nonce=subwallet_nonce,
+                                    nonce=approval_nonce,
                                     gas_price_wei=approval_gas_price_wei,
                                 )
                                 break
@@ -2327,7 +2358,7 @@ def execute_wallet_run(
                                         spender_address=UNISWAP_V3_ROUTER_ADDRESS,
                                         amount_units=approval_amount_units,
                                         tx_hash=exc.tx_hash,
-                                        nonce=subwallet_nonce,
+                                        nonce=approval_nonce,
                                         gas_price_wei=exc.gas_price_wei,
                                     )
                                     if approval_receipt:
@@ -2347,12 +2378,18 @@ def execute_wallet_run(
                                                 "amount_weth": format_decimal(swap_budget_per_wallet),
                                                 "attempt": approval_attempt,
                                                 "max_attempts": max_approval_attempts,
+                                                "nonce": approval_nonce,
                                                 "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
                                             },
                                         )
                                         break
 
                                     if approval_attempt < max_approval_attempts:
+                                        next_approval_nonce = resolve_retry_nonce(
+                                            web3_client,
+                                            wallet_address=sub_wallet["address"],
+                                            current_nonce=approval_nonce,
+                                        )
                                         approval_gas_price_wei = get_bumped_gas_price_wei(
                                             web3_client,
                                             exc.gas_price_wei,
@@ -2374,12 +2411,52 @@ def execute_wallet_run(
                                                 "amount_weth": format_decimal(swap_budget_per_wallet),
                                                 "attempt": approval_attempt,
                                                 "max_attempts": max_approval_attempts,
-                                                "replacement_nonce": subwallet_nonce,
+                                                "replacement_nonce": approval_nonce,
+                                                "next_nonce": next_approval_nonce,
                                                 "next_gas_price_wei": approval_gas_price_wei,
                                             },
                                         )
+                                        approval_nonce = next_approval_nonce
                                         continue
                                 raise
+
+                        if (
+                            not approval_receipt
+                            and last_approval_error
+                            and last_approval_error.retryable
+                        ):
+                            approval_receipt = recover_approval_after_timeout(
+                                web3_client,
+                                token_address=WETH_ADDRESS,
+                                owner_address=sub_wallet["address"],
+                                spender_address=UNISWAP_V3_ROUTER_ADDRESS,
+                                amount_units=approval_amount_units,
+                                tx_hash=last_approval_error.tx_hash,
+                                nonce=approval_nonce,
+                                gas_price_wei=last_approval_error.gas_price_wei,
+                                grace_seconds=FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS,
+                            )
+                            if approval_receipt:
+                                record_run_log(
+                                    stage="approval",
+                                    event="weth_router_approval_recovered_after_extended_timeout",
+                                    status="confirmed",
+                                    message=(
+                                        f"WETH router approval for subwallet {item['address']} "
+                                        f"was confirmed after the extended reconciliation window."
+                                    ),
+                                    tx_hash=last_approval_error.tx_hash,
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    details={
+                                        "spender": UNISWAP_V3_ROUTER_ADDRESS,
+                                        "amount_weth": format_decimal(swap_budget_per_wallet),
+                                        "attempt": approval_attempt_used,
+                                        "max_attempts": max_approval_attempts,
+                                        "nonce": approval_nonce,
+                                        "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
+                                    },
+                                )
 
                         if not approval_receipt:
                             raise last_approval_error or RuntimeError("WETH router approval did not produce a confirmation")
@@ -2410,10 +2487,11 @@ def execute_wallet_run(
                                 "amount_weth": format_decimal(swap_budget_per_wallet),
                                 "attempt": approval_attempt_used,
                                 "max_attempts": max_approval_attempts,
+                                "nonce": approval_nonce,
                                 "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
                             },
                         )
-                        subwallet_nonce += 1
+                        subwallet_nonce = get_transaction_count(web3_client, subwallet_address, "pending")
                     except Exception as exc:
                         approval_failure_count += 1
                         subwallet_errors.append(str(exc))
@@ -2470,6 +2548,7 @@ def execute_wallet_run(
                             last_swap_error: WalletTransactionError | None = None
                             max_swap_attempts = TOKEN_SWAP_MAX_ATTEMPTS
                             swap_attempt_used = 0
+                            swap_nonce = subwallet_nonce
 
                             for swap_attempt in range(1, max_swap_attempts + 1):
                                 swap_attempt_used = swap_attempt
@@ -2491,6 +2570,7 @@ def execute_wallet_run(
                                             "amount_in_weth": format_decimal(amount_in),
                                             "attempt": swap_attempt,
                                             "max_attempts": max_swap_attempts,
+                                            "nonce": swap_nonce,
                                             "gas_price_wei": swap_gas_price_wei,
                                             "previous_error": str(last_swap_error) if last_swap_error else None,
                                         },
@@ -2505,7 +2585,7 @@ def execute_wallet_run(
                                         amount_in=amount_in,
                                         fee_tier=template.get("fee_tier"),
                                         slippage_percent=template.get("slippage_percent"),
-                                        nonce=subwallet_nonce,
+                                        nonce=swap_nonce,
                                         gas_price_wei=swap_gas_price_wei,
                                     )
                                     break
@@ -2517,7 +2597,7 @@ def execute_wallet_run(
                                             wallet_address=sub_wallet["address"],
                                             token_out=token_out,
                                             tx_hash=exc.tx_hash,
-                                            nonce=subwallet_nonce,
+                                            nonce=swap_nonce,
                                             gas_price_wei=exc.gas_price_wei,
                                             swap_details=exc.details,
                                         )
@@ -2539,12 +2619,18 @@ def execute_wallet_run(
                                                     "amount_in_weth": format_decimal(amount_in),
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
+                                                    "nonce": swap_nonce,
                                                     "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
                                                 },
                                             )
                                             break
 
                                         if swap_attempt < max_swap_attempts:
+                                            next_swap_nonce = resolve_retry_nonce(
+                                                web3_client,
+                                                wallet_address=sub_wallet["address"],
+                                                current_nonce=swap_nonce,
+                                            )
                                             swap_gas_price_wei = get_bumped_gas_price_wei(
                                                 web3_client,
                                                 exc.gas_price_wei,
@@ -2567,17 +2653,57 @@ def execute_wallet_run(
                                                     "amount_in_weth": format_decimal(amount_in),
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
-                                                    "replacement_nonce": subwallet_nonce,
+                                                    "replacement_nonce": swap_nonce,
+                                                    "next_nonce": next_swap_nonce,
                                                     "next_gas_price_wei": swap_gas_price_wei,
                                                 },
                                             )
+                                            swap_nonce = next_swap_nonce
                                             continue
                                     raise
+
+                            if (
+                                not swap_receipt
+                                and last_swap_error
+                                and last_swap_error.retryable
+                            ):
+                                swap_receipt = recover_swap_after_timeout(
+                                    web3_client,
+                                    wallet_address=sub_wallet["address"],
+                                    token_out=token_out,
+                                    tx_hash=last_swap_error.tx_hash,
+                                    nonce=swap_nonce,
+                                    gas_price_wei=last_swap_error.gas_price_wei,
+                                    swap_details=last_swap_error.details,
+                                    grace_seconds=FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS,
+                                )
+                                if swap_receipt:
+                                    record_run_log(
+                                        stage="swap",
+                                        event="stablecoin_swap_recovered_after_extended_timeout",
+                                        status="confirmed",
+                                        message=(
+                                            f"WETH to {token_out['symbol']} swap for subwallet {item['address']} "
+                                            f"was confirmed after the extended reconciliation window."
+                                        ),
+                                        tx_hash=last_swap_error.tx_hash,
+                                        wallet_id=item["wallet_id"],
+                                        wallet_address=item["address"],
+                                        details={
+                                            "token_in": "WETH",
+                                            "token_out": token_out["symbol"],
+                                            "amount_in_weth": format_decimal(amount_in),
+                                            "attempt": swap_attempt_used,
+                                            "max_attempts": max_swap_attempts,
+                                            "nonce": swap_nonce,
+                                            "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
+                                        },
+                                    )
 
                             if not swap_receipt:
                                 raise last_swap_error or RuntimeError(f"WETH to {token_out['symbol']} swap did not produce a confirmation")
 
-                            subwallet_nonce += 1
+                            subwallet_nonce = get_transaction_count(web3_client, subwallet_address, "pending")
                             amount_out = parse_decimal_amount(swap_receipt["amount_out"] or "0", "amount_out")
                             item["swap_transactions"].append(
                                 {
@@ -2621,6 +2747,7 @@ def execute_wallet_run(
                                     "fee_tier": swap_receipt["fee_tier"],
                                     "attempt": swap_attempt_used,
                                     "max_attempts": max_swap_attempts,
+                                    "nonce": swap_nonce,
                                     "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
                                 },
                             )
@@ -2703,7 +2830,7 @@ def execute_wallet_run(
                 for target in deployment_targets:
                     deployment_info = build_deployment_record(item=item, target=target)
                     try:
-                        deployment_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
+                        deployment_nonce = get_transaction_count(web3_client, subwallet_address, "pending")
                         deployment_gas_price_wei = int(web3_client.eth.gas_price)
                         deployed = None
                         last_retry_error: WalletTransactionError | None = None
@@ -2725,6 +2852,7 @@ def execute_wallet_run(
                                         "amount": format_decimal(target["amount"]),
                                         "attempt": deploy_attempt,
                                         "max_attempts": max_deploy_attempts,
+                                        "nonce": deployment_nonce,
                                     },
                                 )
                             else:
@@ -2744,6 +2872,7 @@ def execute_wallet_run(
                                         "amount": format_decimal(target["amount"]),
                                         "attempt": deploy_attempt,
                                         "max_attempts": max_deploy_attempts,
+                                        "nonce": deployment_nonce,
                                         "gas_price_wei": deployment_gas_price_wei,
                                         "previous_error": str(last_retry_error) if last_retry_error else None,
                                     },
@@ -2792,12 +2921,18 @@ def execute_wallet_run(
                                                 "contract_address": deployed["contract_address"],
                                                 "attempt": deploy_attempt,
                                                 "max_attempts": max_deploy_attempts,
+                                                "nonce": deployment_nonce,
                                                 "confirmation_source": deployed.get("confirmation_source") or "receipt",
                                             },
                                         )
                                         break
 
                                     if deploy_attempt < max_deploy_attempts:
+                                        next_deployment_nonce = resolve_retry_nonce(
+                                            web3_client,
+                                            wallet_address=sub_wallet["address"],
+                                            current_nonce=deployment_nonce,
+                                        )
                                         deployment_gas_price_wei = get_bumped_gas_price_wei(
                                             web3_client,
                                             exc.gas_price_wei,
@@ -2817,11 +2952,47 @@ def execute_wallet_run(
                                                 "attempt": deploy_attempt,
                                                 "max_attempts": max_deploy_attempts,
                                                 "replacement_nonce": deployment_nonce,
+                                                "next_nonce": next_deployment_nonce,
                                                 "next_gas_price_wei": deployment_gas_price_wei,
                                             },
                                         )
+                                        deployment_nonce = next_deployment_nonce
                                         continue
                                 raise
+
+                        if (
+                            not deployed
+                            and last_retry_error
+                            and last_retry_error.retryable
+                        ):
+                            deployed = recover_deployment_after_timeout(
+                                web3_client,
+                                deployer_address=sub_wallet["address"],
+                                nonce=deployment_nonce,
+                                tx_hash=last_retry_error.tx_hash,
+                                gas_price_wei=last_retry_error.gas_price_wei,
+                                grace_seconds=FINAL_TIMEOUT_RECONCILIATION_GRACE_SECONDS,
+                            )
+                            if deployed:
+                                record_run_log(
+                                    stage="deployment",
+                                    event="managed_token_distributor_deployment_recovered_after_extended_timeout",
+                                    status="completed",
+                                    message=(
+                                        f"ManagedTokenDistributor deployment for {target['token']['symbol']} "
+                                        f"was confirmed after the extended reconciliation window on subwallet {item['address']}."
+                                    ),
+                                    tx_hash=last_retry_error.tx_hash,
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    details={
+                                        "contract_address": deployed["contract_address"],
+                                        "attempt": deploy_attempt_used,
+                                        "max_attempts": max_deploy_attempts,
+                                        "nonce": deployment_nonce,
+                                        "confirmation_source": deployed.get("confirmation_source") or "receipt",
+                                    },
+                                )
 
                         if not deployed:
                             raise last_retry_error or RuntimeError("ManagedTokenDistributor deployment did not produce a receipt")
@@ -2842,6 +3013,7 @@ def execute_wallet_run(
                                 "amount": format_decimal(target["amount"]),
                                 "attempt": deploy_attempt_used,
                                 "max_attempts": max_deploy_attempts,
+                                "nonce": deployment_nonce,
                                 "confirmation_source": deployed.get("confirmation_source") or "receipt",
                             },
                         )
@@ -2853,7 +3025,7 @@ def execute_wallet_run(
                             private_key=sub_wallet["private_key"],
                             recipient_address=deployed["contract_address"],
                             amount_units=int(target["amount_units"]),
-                            nonce=web3_client.eth.get_transaction_count(subwallet_address, "pending"),
+                            nonce=get_transaction_count(web3_client, subwallet_address, "pending"),
                         )
                         deployment_info["funding_tx_hash"] = funding_receipt["tx_hash"]
                         deployment_info["funding_status"] = funding_receipt["status"]
