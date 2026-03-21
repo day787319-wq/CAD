@@ -161,6 +161,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       const payload = {
         name: form.name,
         template_version: "v2",
+        recipient_address: form.recipient_address || null,
         gas_reserve_eth_per_contract: form.gas_reserve_eth_per_contract,
         swap_budget_eth_per_contract: form.swap_budget_eth_per_contract,
         direct_contract_eth_per_contract: form.direct_contract_eth_per_contract,
@@ -233,6 +234,21 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </div>
 
               <div className="space-y-2 sm:col-span-2">
+                <label htmlFor="recipient-address" className="text-sm font-medium text-foreground">
+                  Recipient address
+                </label>
+                <Input
+                  id="recipient-address"
+                  value={form.recipient_address}
+                  placeholder="0x..."
+                  onChange={(event) => setForm((current) => ({ ...current, recipient_address: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Required when stablecoin swaps or direct WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet.
+                </p>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="template-notes" className="text-sm font-medium text-foreground">
                   Notes
                 </label>
@@ -263,6 +279,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   value={form.gas_reserve_eth_per_contract}
                   onChange={(event) => setForm((current) => ({ ...current, gas_reserve_eth_per_contract: event.target.value }))}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Optional baseline. Preview will automatically add extra unwrapped ETH when local wrap, swap, deploy, or token-transfer gas needs more headroom.
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -289,9 +308,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 className="mt-1 h-4 w-4 rounded border-border"
               />
               <span>
-                <span className="block text-sm font-medium text-foreground">Wrap ETH into WETH when needed</span>
+                <span className="block text-sm font-medium text-foreground">Use local sub-wallet wrapping when WETH is needed</span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  Use this when the template needs WETH for stablecoin swaps or direct WETH funding.
+                  The safer production flow funds ETH first, keeps gas unwrapped, then wraps only the WETH budget inside each sub-wallet.
                 </span>
               </span>
             </label>
@@ -505,7 +524,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="direct-eth" className="text-sm font-medium text-foreground">
-                  ETH sent into contract
+                  Direct ETH kept in sub-wallet
                 </label>
                 <Input
                   id="direct-eth"
@@ -516,13 +535,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  This amount is reserved per template before a new subwallet would be created.
+                  This ETH stays unwrapped in the sub-wallet after funding. Use it for gas headroom or any ETH-side action in the run.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="direct-weth" className="text-sm font-medium text-foreground">
-                  WETH sent into contract
+                  Direct WETH distributor funding
                 </label>
                 <Input
                   id="direct-weth"
@@ -533,7 +552,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_weth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Optional. Existing WETH is used first, then ETH can be wrapped later if auto-wrap stays enabled.
+                  Optional. The sub-wallet wraps this amount locally after funding, then transfers it into a deployed ManagedTokenDistributor.
                 </p>
               </div>
             </div>
@@ -572,7 +591,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
             <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
               {needsWeth
-                ? "This template needs WETH. Existing WETH will be used first, and ETH can be wrapped if auto-wrap is enabled."
+                ? "This template needs WETH. The run will fund ETH first, leave gas unwrapped, and wrap only the required WETH budget inside each sub-wallet."
                 : "This template does not require WETH unless you add swap budget or direct WETH funding."}
             </div>
 
@@ -580,8 +599,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               Fee tier: {options?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? "Auto best route"}
             </div>
 
+            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+              Recipient: {form.recipient_address || "Not set"}
+            </div>
+
             <div className="rounded-xl border border-border/70 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
-              We will later compare these per-template ETH and WETH requirements against the selected main wallet before any subwallets are created.
+              We will later compare these per-template ETH requirements against the selected main wallet before any subwallets are created. WETH is produced locally inside each sub-wallet when the flow needs it.
             </div>
           </SectionCard>
 

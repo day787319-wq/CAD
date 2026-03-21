@@ -45,6 +45,8 @@ FastAPI backend for importing main wallets via seed phrase and batch-creating mu
 
 - **GET /api/wallets/{id}**: Get single wallet info (address, type, parent_id, etc.; no keys).
 
+- **POST /api/wallets/runs**: Creates subwallets, submits the funding transfers, and records the imported contract data using the existing saved main-wallet, subwallet, and template records.
+
 ## Security Warnings
 - **Seed Phrase Input**: Extremely sensitive—use test phrases only. Prod: Implement secure upload or wallet connect.
 - Encrypted storage (mnemonics/private keys) with PBKDF2-derived Fernet keys and a per-wallet random salt.
@@ -56,4 +58,5 @@ FastAPI backend for importing main wallets via seed phrase and batch-creating mu
 - **Balances**: WETH on mainnet; 0 for new/unfunded addresses. For testnet, update RPC/WETH address.
 - **Limits**: Max 100 subs per request to avoid overload.
 - **Storage**: Mains store encrypted mnemonic; subs store encrypted child private key (for independence if main deleted).
+- **Imported Contracts**: The `backend/contracts/artifacts` folder is mapped onto the existing wallet/template data model. Main wallet addresses already come from the saved wallet store, and subwallet addresses are attached when a run creates them.
 - Test: Use /docs—generate a mnemonic, import, then batch subs (balances=0 initially).

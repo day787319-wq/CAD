@@ -1,10 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 
 from src.services.wallet_service import (
+    create_wallet_run as create_wallet_run_service,
     delete_wallet as delete_wallet_service,
-    execute_wallet_run as execute_wallet_run_service,
     generate_sub_wallets as generate_sub_wallets_service,
     generate_main_wallet as generate_main_wallet_service,
     get_wallet_details as get_wallet_details_service,
@@ -17,6 +17,7 @@ from src.services.wallet_service import (
     list_wallet_runs as list_wallet_runs_service,
     quote_wallet_batch_swap as quote_wallet_batch_swap_service,
     quote_uniswap_swap as quote_uniswap_swap_service,
+    run_wallet_run_job as run_wallet_run_job_service,
     store_wallet,
 )
 
@@ -130,9 +131,17 @@ async def create_sub_wallets(request: SubWalletRequest):
 
 
 @router.post("/runs")
-async def execute_wallet_run_endpoint(request: WalletRunRequest):
+async def execute_wallet_run_endpoint(request: WalletRunRequest, background_tasks: BackgroundTasks):
     try:
-        return execute_wallet_run_service(request.main_id, request.template_id, request.count)
+        run_record = create_wallet_run_service(request.main_id, request.template_id, request.count)
+        background_tasks.add_task(
+            run_wallet_run_job_service,
+            run_record,
+            request.main_id,
+            request.template_id,
+            request.count,
+        )
+        return run_record
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except RuntimeError as re:

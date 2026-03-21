@@ -109,7 +109,7 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
                 <MetricCard label="Per-contract ETH" value={`${formatAmount(marketCheck.per_contract.required_eth)} ETH`} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
                 <MetricCard label="Per-contract WETH" value={`${formatAmount(marketCheck.per_contract.required_weth)} WETH`} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
-                <MetricCard label="Live total cost" value={formatUsd(marketCheck.totals.combined_cost_usd)} hint="Current ETH + WETH cost for one contract" />
+                <MetricCard label="Live total cost" value={formatUsd(marketCheck.totals.combined_cost_usd)} hint="Current ETH funding cost for one contract" />
                 <MetricCard label="Stable output USD" value={formatUsd(marketCheck.totals.stablecoin_output_total_usd)} hint="Estimated current value of routed stable outputs" />
                 <MetricCard label="Slippage" value={`${formatAmount(marketCheck.slippage_percent)}%`} />
                 <MetricCard label="Fee tier" value={formatFeeTier(marketCheck.fee_tier)} />
@@ -157,7 +157,7 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
-                  This template does not include a stablecoin swap route, so only ETH and WETH funding costs are shown.
+                  This template does not include a stablecoin swap route, so the preview focuses on ETH funding, local WETH wrap requirements, and any direct distributor funding.
                 </div>
               )}
             </>

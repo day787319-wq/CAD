@@ -141,7 +141,7 @@ export function TemplateLibraryStarter() {
             <div className="min-w-0">
               <p className="text-sm font-semibold text-foreground">One template equals one contract / one subwallet</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Define gas reserve, direct ETH/WETH funding, and optional stablecoin swap budgets here. A main wallet is not needed yet.
+                Define the ETH-first funding plan here: gas reserve, direct ETH, optional local-WETH distributor funding, and stablecoin swap budgets. A main wallet is not needed yet.
               </p>
             </div>
           </div>

@@ -212,6 +212,7 @@ class ScyllaDB:
                 gas_reserve_eth_per_subwallet text,
                 contract_budget_eth_per_subwallet text,
                 notes text,
+                recipient_address text,
                 is_active boolean,
                 source text,
                 created_at timestamp,
@@ -251,6 +252,7 @@ class ScyllaDB:
                 "ALTER TABLE templates ADD auto_wrap_eth_to_weth boolean",
                 "ALTER TABLE templates ADD stablecoin_distribution_mode text",
                 "ALTER TABLE templates ADD stablecoin_allocations text",
+                "ALTER TABLE templates ADD recipient_address text",
             ]
             for statement in template_alter_statements:
                 try:
@@ -327,6 +329,7 @@ class ScyllaDB:
             "gas_reserve_eth_per_subwallet": template["gas_reserve_eth_per_subwallet"],
             "contract_budget_eth_per_subwallet": template["contract_budget_eth_per_subwallet"],
             "notes": template.get("notes"),
+            "recipient_address": template.get("recipient_address"),
             "is_active": bool(template.get("is_active", True)),
             "source": template.get("source", "library"),
             "created_at": created_at,
@@ -354,6 +357,7 @@ class ScyllaDB:
                     gas_reserve_eth_per_subwallet,
                     contract_budget_eth_per_subwallet,
                     notes,
+                    recipient_address,
                     is_active,
                     source,
                     created_at,
@@ -366,7 +370,7 @@ class ScyllaDB:
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
@@ -382,6 +386,7 @@ class ScyllaDB:
                     payload["gas_reserve_eth_per_subwallet"],
                     payload["contract_budget_eth_per_subwallet"],
                     payload["notes"],
+                    payload["recipient_address"],
                     payload["is_active"],
                     payload["source"],
                     payload["created_at"],

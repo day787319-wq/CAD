@@ -3,6 +3,12 @@
 import { API_URL } from "@/lib/api";
 
 export const TEMPLATE_API_URL = API_URL;
+const ETH_TRANSFER_GAS_UNITS = 21_000;
+const WRAP_GAS_UNITS = 120_000;
+const APPROVE_GAS_UNITS = 70_000;
+const SWAP_GAS_UNITS = 350_000;
+const TOKEN_TRANSFER_GAS_UNITS = 90_000;
+const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
 
 export type StablecoinOption = {
   symbol: string;
@@ -23,6 +29,7 @@ export type Template = {
   id: string;
   name: string;
   template_version: "v2";
+  recipient_address?: string | null;
   gas_reserve_eth_per_contract: string;
   swap_budget_eth_per_contract: string;
   direct_contract_eth_per_contract: string;
@@ -52,6 +59,7 @@ export type TemplateOptions = {
   }>;
   defaults: {
     template_version: "v2";
+    recipient_address?: string | null;
     gas_reserve_eth_per_contract: string;
     swap_budget_eth_per_contract: string;
     direct_contract_eth_per_contract: string;
@@ -67,10 +75,17 @@ export type TemplateOptions = {
     swap_budget_note: string;
     swap_settings_note?: string;
   };
+  contract_sync?: {
+    enabled: boolean;
+    main_wallet_registry_enabled: boolean;
+    sub_wallet_registry_enabled: boolean;
+    message: string;
+  };
 };
 
 export type TemplateEditorForm = {
   name: string;
+  recipient_address: string;
   gas_reserve_eth_per_contract: string;
   swap_budget_eth_per_contract: string;
   direct_contract_eth_per_contract: string;
@@ -131,6 +146,14 @@ export type TemplatePreview = {
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
   stablecoin_quotes: TemplateStablecoinQuote[];
   price_snapshot: TemplatePriceSnapshot;
+  contract_sync?: {
+    enabled: boolean;
+    main_wallet_registry_enabled: boolean;
+    sub_wallet_registry_enabled: boolean;
+    main_wallet_registration_required: boolean;
+    expected_action_count: number;
+    message: string;
+  };
 };
 
 export type TemplateWalletSupportPreview = {
@@ -158,8 +181,22 @@ export type TemplateWalletSupportPreview = {
   };
   execution: {
     funding_network_fee_eth: string;
+    main_wallet_network_fee_eth?: string;
+    local_execution_gas_fee_eth?: string;
+    local_execution_gas_fee_per_wallet_eth?: string;
+    contract_sync_network_fee_eth: string;
+    total_network_fee_eth: string;
     estimated_gas_price_gwei: string | null;
+    estimated_gas_units?: number | null;
+    local_execution_gas_units_per_wallet?: number | null;
     funding_transaction_count: number;
+    wrap_transaction_count: number;
+    approval_transaction_count: number;
+    swap_transaction_count: number;
+    deployment_transaction_count: number;
+    contract_funding_transaction_count: number;
+    contract_sync_transaction_count: number;
+    total_transaction_count: number;
     total_eth_required_with_fees: string;
     remaining_eth_after_run: string;
   };
@@ -168,6 +205,10 @@ export type TemplateWalletSupportPreview = {
     swap_budget_eth: string;
     direct_contract_eth: string;
     direct_contract_weth: string;
+    configured_unwrapped_eth?: string;
+    minimum_unwrapped_eth?: string;
+    auto_added_gas_buffer_eth?: string;
+    local_execution_gas_fee_eth?: string;
     required_eth: string;
     required_weth: string;
     total_eth_if_no_weth_available: string;
@@ -179,6 +220,10 @@ export type TemplateWalletSupportPreview = {
     swap_budget_eth_total: string;
     direct_contract_eth_total: string;
     direct_contract_weth_total: string;
+    configured_unwrapped_eth_total?: string;
+    minimum_unwrapped_eth_total?: string;
+    auto_added_gas_buffer_eth_total?: string;
+    local_execution_gas_fee_eth_total?: string;
     total_eth_if_no_weth_available_total: string;
   };
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
@@ -189,6 +234,14 @@ export type TemplateWalletSupportPreview = {
     per_contract_weth_amount: string | null;
     total_weth_amount: string | null;
   }>;
+  contract_sync: {
+    enabled: boolean;
+    main_wallet_registry_enabled: boolean;
+    sub_wallet_registry_enabled: boolean;
+    main_wallet_registration_required: boolean;
+    expected_action_count: number;
+    message: string;
+  };
 };
 
 export type TemplateStablecoinQuote = {
@@ -345,6 +398,7 @@ export function getStablecoinDistributionRows(input: {
 export function defaultTemplateForm(options: TemplateOptions | null): TemplateEditorForm {
   return {
     name: "",
+    recipient_address: options?.defaults.recipient_address ?? "",
     gas_reserve_eth_per_contract: options?.defaults.gas_reserve_eth_per_contract ?? "0.02",
     swap_budget_eth_per_contract: options?.defaults.swap_budget_eth_per_contract ?? "0",
     direct_contract_eth_per_contract: options?.defaults.direct_contract_eth_per_contract ?? "0",
@@ -361,6 +415,7 @@ export function defaultTemplateForm(options: TemplateOptions | null): TemplateEd
 export function templateToForm(template: Template): TemplateEditorForm {
   return {
     name: template.name,
+    recipient_address: template.recipient_address ?? "",
     gas_reserve_eth_per_contract: template.gas_reserve_eth_per_contract,
     swap_budget_eth_per_contract: template.swap_budget_eth_per_contract,
     direct_contract_eth_per_contract: template.direct_contract_eth_per_contract,
@@ -390,56 +445,6 @@ export function buildTemplateWalletSupportPreview(input: {
   const swapBudget = toFiniteNumber(template.swap_budget_eth_per_contract) ?? 0;
   const directEth = toFiniteNumber(template.direct_contract_eth_per_contract) ?? 0;
   const directWeth = toFiniteNumber(template.direct_contract_weth_per_contract) ?? 0;
-
-  const requiredEthPerContract = gasReserve + directEth;
-  const requiredWethPerContract = swapBudget + directWeth;
-  const requiredEthTotal = requiredEthPerContract * contractCount;
-  const requiredWethTotal = requiredWethPerContract * contractCount;
-
-  const availableEth = wallet.eth_balance ?? 0;
-  const availableWeth = wallet.weth_balance ?? 0;
-  const autoWrap = template.auto_wrap_eth_to_weth;
-  const wethFromMainWallet = Math.min(availableWeth, requiredWethTotal);
-  const wethShortfall = Math.max(requiredWethTotal - wethFromMainWallet, 0);
-  const gasPriceGwei = wallet.funding_gas_price_gwei ?? null;
-  const gasPriceEth = gasPriceGwei === null ? 0 : gasPriceGwei / 1_000_000_000;
-  const fundingTransactionCount =
-    (autoWrap && wethShortfall > 0 ? 1 : 0) +
-    (requiredEthPerContract > 0 ? contractCount : 0) +
-    (requiredWethPerContract > 0 ? contractCount : 0);
-  const fundingNetworkFeeEth = fundingTransactionCount > 0
-    ? gasPriceEth * ((autoWrap && wethShortfall > 0 ? 120000 : 0) + (requiredEthPerContract > 0 ? 21000 * contractCount : 0) + (requiredWethPerContract > 0 ? 90000 * contractCount : 0))
-    : 0;
-  const wrappableEth = autoWrap ? Math.max(availableEth - requiredEthTotal - fundingNetworkFeeEth, 0) : 0;
-  const effectiveWethAvailable = availableWeth + wrappableEth;
-  const wethFromWrappedEth = autoWrap ? wethShortfall : 0;
-  const totalEthDeducted = requiredEthTotal + wethFromWrappedEth;
-  const totalEthRequiredWithFees = totalEthDeducted + fundingNetworkFeeEth;
-  const remainingEthAfterFunding = availableEth - totalEthDeducted;
-  const remainingEthAfterRun = availableEth - totalEthRequiredWithFees;
-  const remainingWethAfterFunding = availableWeth - wethFromMainWallet;
-  const canProceed = autoWrap
-    ? availableEth >= totalEthRequiredWithFees
-    : availableEth >= requiredEthTotal + fundingNetworkFeeEth && availableWeth >= requiredWethTotal;
-
-  let shortfallReason: string | null = null;
-  if (availableEth < requiredEthTotal + fundingNetworkFeeEth && availableWeth >= requiredWethTotal) {
-    shortfallReason =
-      `Not enough ETH in the main wallet. Need ${toAmountString((requiredEthTotal + fundingNetworkFeeEth) - availableEth)} more ETH ` +
-      "to cover direct funding and the network fee for the funding transactions.";
-  } else if (availableEth < requiredEthTotal) {
-    shortfallReason =
-      `Not enough ETH in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ETH ` +
-      "to fund gas reserve and direct ETH for the new subwallets.";
-  } else if (!autoWrap && availableWeth < requiredWethTotal) {
-    shortfallReason =
-      `Not enough WETH in the main wallet. Need ${toAmountString(requiredWethTotal - availableWeth)} more WETH because auto-wrap is disabled.`;
-  } else if (autoWrap && availableEth < totalEthRequiredWithFees) {
-    shortfallReason =
-      `Not enough ETH in the main wallet. Need ${toAmountString(totalEthRequiredWithFees - availableEth)} more ETH ` +
-      "to wrap into WETH, fund the new subwallets, and cover network fees.";
-  }
-
   const stablecoinRoutes = getStablecoinDistributionRows(template).map((allocation) => {
     const perContractWethAmount = toFiniteNumber(allocation.weth_amount_per_contract);
     return {
@@ -451,6 +456,63 @@ export function buildTemplateWalletSupportPreview(input: {
         perContractWethAmount === null ? null : toAmountString(perContractWethAmount * contractCount),
     };
   });
+  const routeCount = stablecoinRoutes.filter((route) => (toFiniteNumber(route.per_contract_weth_amount) ?? 0) > 0).length;
+  const deploymentContractsPerWallet = routeCount + (directWeth > 0 ? 1 : 0);
+  const requiresRecipient = deploymentContractsPerWallet > 0;
+  const deploymentEnabled = requiresRecipient && Boolean(template.recipient_address);
+  const configuredUnwrappedEthPerContract = gasReserve + directEth;
+  const requiredWethPerContract = swapBudget + directWeth;
+  const wrapTransactionCount = requiredWethPerContract > 0 ? contractCount : 0;
+  const approvalTransactionCount = routeCount > 0 ? contractCount : 0;
+  const swapTransactionCount = contractCount * routeCount;
+  const deploymentTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
+  const contractFundingTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
+
+  const availableEth = wallet.eth_balance ?? 0;
+  const availableWeth = wallet.weth_balance ?? 0;
+  const wethFromMainWallet = 0;
+  const gasPriceGwei = wallet.funding_gas_price_gwei ?? null;
+  const gasPriceEth = gasPriceGwei === null ? 0 : gasPriceGwei / 1_000_000_000;
+  const localExecutionGasUnitsPerWallet =
+    (requiredWethPerContract > 0 ? WRAP_GAS_UNITS : 0) +
+    (routeCount > 0 ? APPROVE_GAS_UNITS : 0) +
+    routeCount * SWAP_GAS_UNITS +
+    (deploymentEnabled ? deploymentContractsPerWallet * (DISTRIBUTOR_DEPLOY_GAS_UNITS + TOKEN_TRANSFER_GAS_UNITS) : 0);
+  const localExecutionGasFeePerWalletEth = localExecutionGasUnitsPerWallet * gasPriceEth;
+  const minimumUnwrappedEthPerContract = Math.max(configuredUnwrappedEthPerContract, localExecutionGasFeePerWalletEth);
+  const autoAddedGasBufferEthPerContract = Math.max(minimumUnwrappedEthPerContract - configuredUnwrappedEthPerContract, 0);
+  const requiredEthPerContract = minimumUnwrappedEthPerContract + requiredWethPerContract;
+  const requiredEthTotal = requiredEthPerContract * contractCount;
+  const requiredWethTotal = requiredWethPerContract * contractCount;
+
+  const fundingTransactionCount = requiredEthPerContract > 0 ? contractCount : 0;
+  const fundingGasUnits = fundingTransactionCount * ETH_TRANSFER_GAS_UNITS;
+  const estimatedGasUnits = fundingGasUnits + localExecutionGasUnitsPerWallet * contractCount;
+  const fundingNetworkFeeEth = gasPriceEth * fundingGasUnits;
+  const localExecutionGasFeeEth = localExecutionGasFeePerWalletEth * contractCount;
+  const wrappableEth = requiredWethTotal;
+  const effectiveWethAvailable = requiredWethTotal;
+  const wethFromWrappedEth = requiredWethTotal;
+  const totalEthDeducted = requiredEthTotal;
+  const totalNetworkFeeEth = fundingNetworkFeeEth + localExecutionGasFeeEth;
+  const totalEthRequiredWithFees = totalEthDeducted + fundingNetworkFeeEth;
+  const remainingEthAfterFunding = availableEth - totalEthDeducted;
+  const remainingEthAfterRun = availableEth - totalEthRequiredWithFees;
+  const remainingWethAfterFunding = availableWeth;
+  const canProceed = availableEth >= totalEthRequiredWithFees && (!requiresRecipient || Boolean(template.recipient_address));
+
+  let shortfallReason: string | null = null;
+  if (requiresRecipient && !template.recipient_address) {
+    shortfallReason = "recipient_address is required when stablecoin swaps or direct contract WETH are enabled.";
+  } else if (availableEth < requiredEthTotal) {
+    shortfallReason =
+      `Not enough ETH in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ETH ` +
+      "to fund the sub-wallet gas reserve, direct ETH, automatic local execution gas headroom, and the local WETH wrap budget.";
+  } else if (availableEth < totalEthRequiredWithFees) {
+    shortfallReason =
+      `Not enough ETH in the main wallet. Need ${toAmountString(totalEthRequiredWithFees - availableEth)} more ETH ` +
+      "to fund the new sub-wallets and cover the main-wallet funding transaction fees.";
+  }
 
   return {
     template_id: template.id,
@@ -469,15 +531,35 @@ export function buildTemplateWalletSupportPreview(input: {
     },
     funding: {
       eth_sent_to_subwallets: toAmountString(requiredEthTotal),
-      weth_sent_to_subwallets: toAmountString(requiredWethTotal),
+      weth_sent_to_subwallets: "0",
       weth_from_main_wallet: toAmountString(wethFromMainWallet),
       weth_from_wrapped_eth: toAmountString(wethFromWrappedEth),
       total_eth_deducted: toAmountString(totalEthDeducted),
     },
     execution: {
       funding_network_fee_eth: toAmountString(fundingNetworkFeeEth),
+      main_wallet_network_fee_eth: toAmountString(fundingNetworkFeeEth),
+      local_execution_gas_fee_eth: toAmountString(localExecutionGasFeeEth),
+      local_execution_gas_fee_per_wallet_eth: toAmountString(localExecutionGasFeePerWalletEth),
+      contract_sync_network_fee_eth: "0",
+      total_network_fee_eth: toAmountString(totalNetworkFeeEth),
       estimated_gas_price_gwei: gasPriceGwei === null ? null : toAmountString(gasPriceGwei),
+      estimated_gas_units: estimatedGasUnits,
+      local_execution_gas_units_per_wallet: localExecutionGasUnitsPerWallet,
       funding_transaction_count: fundingTransactionCount,
+      wrap_transaction_count: wrapTransactionCount,
+      approval_transaction_count: approvalTransactionCount,
+      swap_transaction_count: swapTransactionCount,
+      deployment_transaction_count: deploymentTransactionCount,
+      contract_funding_transaction_count: contractFundingTransactionCount,
+      contract_sync_transaction_count: 0,
+      total_transaction_count:
+        fundingTransactionCount +
+        wrapTransactionCount +
+        approvalTransactionCount +
+        swapTransactionCount +
+        deploymentTransactionCount +
+        contractFundingTransactionCount,
       total_eth_required_with_fees: toAmountString(totalEthRequiredWithFees),
       remaining_eth_after_run: toAmountString(remainingEthAfterRun),
     },
@@ -487,9 +569,13 @@ export function buildTemplateWalletSupportPreview(input: {
       swap_budget_eth: toAmountString(swapBudget),
       direct_contract_eth: toAmountString(directEth),
       direct_contract_weth: toAmountString(directWeth),
+      configured_unwrapped_eth: toAmountString(configuredUnwrappedEthPerContract),
+      minimum_unwrapped_eth: toAmountString(minimumUnwrappedEthPerContract),
+      auto_added_gas_buffer_eth: toAmountString(autoAddedGasBufferEthPerContract),
+      local_execution_gas_fee_eth: toAmountString(localExecutionGasFeePerWalletEth),
       required_eth: toAmountString(requiredEthPerContract),
       required_weth: toAmountString(requiredWethPerContract),
-      total_eth_if_no_weth_available: toAmountString(requiredEthPerContract + requiredWethPerContract),
+      total_eth_if_no_weth_available: toAmountString(requiredEthPerContract),
     },
     totals: {
       required_eth_total: toAmountString(requiredEthTotal),
@@ -498,9 +584,21 @@ export function buildTemplateWalletSupportPreview(input: {
       swap_budget_eth_total: toAmountString(swapBudget * contractCount),
       direct_contract_eth_total: toAmountString(directEth * contractCount),
       direct_contract_weth_total: toAmountString(directWeth * contractCount),
-      total_eth_if_no_weth_available_total: toAmountString((requiredEthPerContract + requiredWethPerContract) * contractCount),
+      configured_unwrapped_eth_total: toAmountString(configuredUnwrappedEthPerContract * contractCount),
+      minimum_unwrapped_eth_total: toAmountString(minimumUnwrappedEthPerContract * contractCount),
+      auto_added_gas_buffer_eth_total: toAmountString(autoAddedGasBufferEthPerContract * contractCount),
+      local_execution_gas_fee_eth_total: toAmountString(localExecutionGasFeeEth),
+      total_eth_if_no_weth_available_total: toAmountString(requiredEthTotal),
     },
     stablecoin_distribution_mode: template.stablecoin_distribution_mode,
     stablecoin_routes: stablecoinRoutes,
+    contract_sync: {
+      enabled: false,
+      main_wallet_registry_enabled: false,
+      sub_wallet_registry_enabled: false,
+      main_wallet_registration_required: false,
+      expected_action_count: 0,
+      message: "Final review re-checks the funding plan and stores the run activity log.",
+    },
   };
 }

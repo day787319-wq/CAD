@@ -26,6 +26,7 @@ class StablecoinAllocationRequest(BaseModel):
 class TemplateUpsertRequest(BaseModel):
     name: str
     template_version: str = "v2"
+    recipient_address: str | None = None
     gas_reserve_eth_per_contract: str = "0"
     swap_budget_eth_per_contract: str = "0"
     direct_contract_eth_per_contract: str = "0"

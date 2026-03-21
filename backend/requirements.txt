@@ -7,3 +7,4 @@ eth-account>=0.13.1
 cryptography>=42.0.0
 mnemonic==0.21
 cassandra-driver>=3.29.2
+py-solc-x>=2.0.3
