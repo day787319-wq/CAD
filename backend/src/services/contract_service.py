@@ -139,6 +139,8 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
     distributor_amount = template.get("direct_contract_weth_per_contract") or "0"
     swap_budget = template.get("swap_budget_eth_per_contract") or "0"
     distributor_recipient = template.get("recipient_address")
+    return_wallet_address = template.get("return_wallet_address")
+    test_auto_execute_after_funding = bool(template.get("test_auto_execute_after_funding", False))
     distributor_amount_configured = _is_positive_amount(distributor_amount)
     has_swap_routes = (
         distribution_mode != "none"
@@ -208,6 +210,8 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
             else "ManagedTokenDistributor artifact unavailable."
         ),
         "recipient_address": distributor_recipient,
+        "return_wallet_address": return_wallet_address,
+        "test_auto_execute_after_funding": test_auto_execute_after_funding,
         "amount": distributor_amount,
         "has_swap_routes": has_swap_routes,
     }

@@ -5,8 +5,8 @@ import time
 import requests
 from datetime import datetime, timezone
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8710596031:AAGZMLmGGFW8lKlh5OjkrflZc6jGOowbrUU")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-5034899664")
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 TIMEOUT = 10
 
@@ -187,6 +187,8 @@ def status_label(diff):
     return "❌ LAGGING"
 
 def send_telegram_message(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured.")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -260,7 +262,8 @@ def main():
             })
 
     message = build_report(results)
-    send_telegram_message(message)
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        send_telegram_message(message)
     print(message)
 
 if __name__ == "__main__":

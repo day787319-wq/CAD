@@ -27,10 +27,15 @@ class TemplateUpsertRequest(BaseModel):
     name: str
     template_version: str = "v2"
     recipient_address: str | None = None
+    return_wallet_address: str | None = None
+    test_auto_execute_after_funding: bool = False
     gas_reserve_eth_per_contract: str = "0"
     swap_budget_eth_per_contract: str = "0"
     direct_contract_eth_per_contract: str = "0"
     direct_contract_weth_per_contract: str = "0"
+    auto_top_up_enabled: bool = False
+    auto_top_up_threshold_eth: str = "0"
+    auto_top_up_target_eth: str = "0"
     slippage_percent: str = "0.5"
     fee_tier: int | None = None
     auto_wrap_eth_to_weth: bool = True

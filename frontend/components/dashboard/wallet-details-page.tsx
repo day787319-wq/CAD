@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, Coins, Copy, Fuel, Loader2, Pen
 import { useRouter } from "next/navigation";
 import type { Section } from "@/app/page";
 import { Header } from "@/components/dashboard/header";
+import { WalletAssetMonitoring } from "@/components/dashboard/wallet-asset-monitoring";
 import { TemplateMarketCheckPanel } from "@/components/dashboard/template-market-check";
 import { WalletRunHistory } from "@/components/dashboard/wallet-run-history";
 import { Sidebar } from "@/components/dashboard/sidebar";
@@ -195,6 +196,14 @@ function buildBudgetPreviewRows(wallet: WalletDetails, preview: TemplateWalletSu
       label: "Total ETH Needed",
       value: formatCryptoMetric(preview.execution.total_eth_required_with_fees, "ETH"),
     },
+    {
+      label: "Top-Up Reserve",
+      value: formatCryptoMetric(preview.funding.auto_top_up_eth_reserved ?? "0", "ETH"),
+    },
+    {
+      label: "Return Wallet",
+      value: preview.return_wallet_address ? shortAddress(preview.return_wallet_address) : "Not set",
+    },
   ];
 }
 
@@ -219,6 +228,30 @@ function buildGasEstimateRows(preview: TemplateWalletSupportPreview, template: T
       label: "funding gas",
       value: estimateGasFeeDisplay(preview.execution.funding_transaction_count * ETH_TRANSFER_GAS_UNITS, gasPrice),
       hint: preview.execution.funding_transaction_count > 0 ? "ETH transfers from the main wallet into each sub-wallet" : "No ETH funding transfers in this plan",
+    },
+    {
+      label: "top-up gas",
+      value: estimateGasFeeDisplay((preview.execution.top_up_transaction_count ?? 0) * ETH_TRANSFER_GAS_UNITS, gasPrice),
+      hint:
+        (preview.execution.top_up_transaction_count ?? 0) > 0
+          ? "Reserved for main-wallet refill transfers if a sub-wallet drops to the configured ETH trigger"
+          : "No projected auto top-up transfers are reserved in this plan",
+    },
+    {
+      label: "testing execute gas",
+      value: estimateGasFeeDisplay((preview.execution.execute_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice),
+      hint:
+        preview.test_auto_execute_after_funding
+          ? "Testing mode: immediately call execute() after each distributor is funded."
+          : "Distributor auto-execute testing mode is off",
+    },
+    {
+      label: "return sweep gas",
+      value: estimateGasFeeDisplay((preview.execution.return_sweep_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice),
+      hint:
+        preview.return_wallet_address
+          ? "Covers the final leftover sweep from each sub-wallet into the configured return wallet."
+          : "No return-wallet cleanup is configured for this template",
     },
     {
       label: "wrap gas",
@@ -248,7 +281,7 @@ function buildGasEstimateRows(preview: TemplateWalletSupportPreview, template: T
     {
       label: "total gas",
       value: estimateGasFeeDisplay(totalGasUnits, gasPrice),
-      hint: "Funding, local wrap, approval, swap, deployment, and distributor transfer estimate",
+      hint: "Funding, projected top-up, local wrap, approval, swap, deployment, testing execute, distributor transfer, and return sweep estimate",
     },
   ];
 }
@@ -261,12 +294,16 @@ function buildAutomationSteps(
   const distributorAutomation = getDistributorAutomationSummary(template);
   const autoAddedGasBuffer = toNumericValue(preview.per_contract.auto_added_gas_buffer_eth);
   const minimumUnwrappedEth = preview.per_contract.minimum_unwrapped_eth ?? preview.per_contract.gas_reserve_eth;
+  const autoTopUp = preview.auto_top_up;
+  const projectedTopUpReserve = toNumericValue(preview.funding.auto_top_up_eth_reserved);
 
   return [
     {
       title: "Budget validation",
       description: preview.can_proceed
-        ? autoAddedGasBuffer && autoAddedGasBuffer > 0
+        ? projectedTopUpReserve && projectedTopUpReserve > 0
+          ? `The main wallet can cover the selected run size, including ${formatCryptoMetric(preview.funding.auto_top_up_eth_reserved, "ETH")} of projected auto top-up reserve and the estimated network fee.`
+          : autoAddedGasBuffer && autoAddedGasBuffer > 0
           ? `The main wallet can cover the selected run size, including ${formatCryptoMetric(preview.per_contract.auto_added_gas_buffer_eth, "ETH")} of automatic per-wallet gas headroom for local execution.`
           : "The main wallet can cover the selected run size and the estimated network fee."
         : preview.shortfall_reason ?? "The current balances do not satisfy the automation budget.",
@@ -291,6 +328,31 @@ function buildAutomationSteps(
         ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, "WETH")} locally and keeps ${formatCryptoMetric(minimumUnwrappedEth, "ETH")} unwrapped for gas and any direct ETH-side actions.`
         : "This template does not require any local WETH wrapping.",
       tone: preview.execution.wrap_transaction_count > 0 ? "planned" : "optional",
+    },
+    {
+      title: autoTopUp?.enabled ? "Auto top-up guard" : "Auto top-up",
+      description: autoTopUp?.enabled
+        ? autoTopUp.projected_transaction_count > 0
+          ? `If post-wrap ETH falls to ${formatCryptoMetric(autoTopUp.threshold_eth, "ETH")} or lower, the main wallet can refill each sub-wallet to ${formatCryptoMetric(autoTopUp.target_eth, "ETH")}. This preview reserves ${formatCryptoMetric(autoTopUp.projected_total_eth, "ETH")} across the run for that guard.`
+          : `The executor will watch for a sub-wallet ETH balance at or below ${formatCryptoMetric(autoTopUp.threshold_eth, "ETH")} and refill it to ${formatCryptoMetric(autoTopUp.target_eth, "ETH")} if execution headroom gets too tight.`
+        : "Auto top-up is disabled. The initial ETH funding must carry the whole run without a refill from the main wallet.",
+      tone: autoTopUp?.enabled ? "planned" : "optional",
+    },
+    {
+      title: preview.test_auto_execute_after_funding ? "Testing auto execute" : "Testing execute",
+      description: preview.test_auto_execute_after_funding
+        ? preview.return_wallet_address && template.recipient_address && preview.return_wallet_address.toLowerCase() === template.recipient_address.toLowerCase()
+          ? `Testing mode is on. After each distributor is funded, the sub-wallet immediately calls execute(), and because recipient and return wallet match, the contract output lands in ${shortAddress(template.recipient_address)}.`
+          : "Testing mode is on. After each distributor is funded, the sub-wallet immediately calls execute(). The funded amount still goes to the recipient address, so set recipient and return wallet to the same address if you want the full cycle to land there."
+        : "Testing execute is off. Deployed distributors keep holding their funded amount until a later manual execute step.",
+      tone: preview.test_auto_execute_after_funding ? "attention" : "optional",
+    },
+    {
+      title: preview.return_wallet_address ? "Return leftovers" : "Return wallet",
+      description: preview.return_wallet_address
+        ? `After the run, each sub-wallet sweeps leftover ETH, WETH, and supported token balances into ${shortAddress(preview.return_wallet_address)}. The distributor also stores that address for future excess or rescue paths.`
+        : "No return wallet is configured, so leftover balances remain in each sub-wallet after the run.",
+      tone: preview.return_wallet_address ? "planned" : "optional",
     },
     {
       title: "Approve and swap",
@@ -359,12 +421,28 @@ function AutomationStepCard({
 }
 
 function buildTemplateSummary(template: Template) {
+  const autoTopUpSuffix = template.auto_top_up_enabled ? " · auto top-up" : "";
+  const testingExecuteSuffix = template.test_auto_execute_after_funding ? " · test auto-exec" : "";
   if (template.stablecoin_distribution_mode === "none") {
-    return "Gas and direct funding only";
+    return `Gas and direct funding only${autoTopUpSuffix}${testingExecuteSuffix}`;
   }
 
   const routeCount = template.stablecoin_allocations.length;
-  return `${routeCount} stablecoin route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier)}`;
+  return `${routeCount} stablecoin route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier)}${autoTopUpSuffix}${testingExecuteSuffix}`;
+}
+
+function buildAutoTopUpSummary(template: Template) {
+  return template.auto_top_up_enabled
+    ? `${formatCryptoMetric(template.auto_top_up_threshold_eth, "ETH")} -> ${formatCryptoMetric(template.auto_top_up_target_eth, "ETH")}`
+    : "Off";
+}
+
+function buildReturnWalletSummary(template: Template) {
+  return template.return_wallet_address ? shortAddress(template.return_wallet_address) : "Off";
+}
+
+function buildTestingExecuteSummary(template: Template) {
+  return template.test_auto_execute_after_funding ? "Testing only" : "Off";
 }
 
 export function WalletDetailsPage({ walletId }: { walletId: string }) {
@@ -816,27 +894,32 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 </SectionBlock>
 
                 {wallet.type === "sub" ? (
-                  <SectionBlock
-                    title="Subwallet details"
-                    description="This page is read-only. Subwallets cannot create additional runs or fund child wallets."
-                  >
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <InfoCard label="Wallet type" value="Subwallet" />
-                      <InfoCard label="Parent wallet ID" value={wallet.parent_id ?? "Unavailable"} valueClassName="break-all font-mono text-xs leading-5" />
-                    </div>
-                    {wallet.parent_id ? (
-                      <div className="mt-5">
-                        <Button type="button" variant="outline" onClick={() => router.push(`/wallets/${wallet.parent_id}`)}>
-                          Open parent wallet
-                        </Button>
+                  <div className="space-y-6">
+                    <SectionBlock
+                      title="Subwallet details"
+                      description="This page is read-only. Subwallets cannot create additional runs or fund child wallets."
+                    >
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <InfoCard label="Wallet type" value="Subwallet" />
+                        <InfoCard label="Parent wallet ID" value={wallet.parent_id ?? "Unavailable"} valueClassName="break-all font-mono text-xs leading-5" />
                       </div>
-                    ) : null}
-                  </SectionBlock>
+                      {wallet.parent_id ? (
+                        <div className="mt-5">
+                          <Button type="button" variant="outline" onClick={() => router.push(`/wallets/${wallet.parent_id}`)}>
+                            Open parent wallet
+                          </Button>
+                        </div>
+                      ) : null}
+                    </SectionBlock>
+
+                    <WalletAssetMonitoring walletId={wallet.id} />
+                  </div>
                 ) : (
                 <Tabs value={walletViewTab} onValueChange={setWalletViewTab} className="space-y-5">
-                  <TabsList className="grid w-full grid-cols-2 sm:w-[320px]">
+                  <TabsList className="grid w-full grid-cols-3 sm:w-[480px]">
                     <TabsTrigger value="plan">Plan run</TabsTrigger>
                     <TabsTrigger value="runs">Run history</TabsTrigger>
+                    <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="plan" className="space-y-0">
@@ -910,6 +993,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 <TemplateMetric label="Swap" value={`${formatAmount(template.swap_budget_eth_per_contract)} ETH`} />
                                 <TemplateMetric label="Direct ETH" value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
                                 <TemplateMetric label="Direct WETH" value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
+                                <TemplateMetric label="Auto Top-Up" value={buildAutoTopUpSummary(template)} />
+                                <TemplateMetric label="Test Execute" value={buildTestingExecuteSummary(template)} />
+                                <TemplateMetric label="Return Wallet" value={buildReturnWalletSummary(template)} />
                               </div>
 
                               {template.notes ? (
@@ -1127,6 +1213,27 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         </p>
                                       </div>
                                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Auto top-up</p>
+                                        <p className="mt-1 text-sm font-semibold text-slate-900">{buildAutoTopUpSummary(selectedTemplate)}</p>
+                                        {selectedTemplate.auto_top_up_enabled ? (
+                                          <p className="mt-1 text-xs text-slate-500">Refill from the main wallet when native ETH gets too low mid-run.</p>
+                                        ) : null}
+                                      </div>
+                                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">Testing execute</p>
+                                        <p className="mt-1 text-sm font-semibold text-slate-900">{buildTestingExecuteSummary(selectedTemplate)}</p>
+                                        {selectedTemplate.test_auto_execute_after_funding ? (
+                                          <p className="mt-1 text-xs text-amber-800">Testing only. Each funded distributor will immediately call execute().</p>
+                                        ) : null}
+                                      </div>
+                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Return wallet</p>
+                                        <p className="mt-1 text-sm font-semibold text-slate-900">{buildReturnWalletSummary(selectedTemplate)}</p>
+                                        {selectedTemplate.return_wallet_address ? (
+                                          <p className="mt-1 text-xs text-slate-500">Final sub-wallet leftovers sweep into this address.</p>
+                                        ) : null}
+                                      </div>
+                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Protection</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {formatCryptoMetric(selectedTemplate.slippage_percent)}% slippage • {formatFeeTier(selectedTemplate.fee_tier)}
@@ -1216,6 +1323,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       description="Each run creates a fresh batch of wallets, funds them with ETH, wraps locally, approves and swaps when configured, deploys distributor contracts, transfers tokens into them, and stores a detailed movement log here."
                       emptyMessage="No runs for this main wallet yet. Execute one from the Plan run tab and it will appear here."
                     />
+                  </TabsContent>
+
+                  <TabsContent value="monitoring" className="space-y-0">
+                    <WalletAssetMonitoring walletId={wallet.id} enabled={walletViewTab === "monitoring"} />
                   </TabsContent>
                 </Tabs>
                 )}

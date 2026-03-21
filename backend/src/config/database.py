@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -151,6 +152,12 @@ class ScyllaDB:
             Path(__file__).resolve().parents[2] / "runtime" / "wallet_run_store.json",
             Path(__file__).resolve().parents[2] / "data" / "wallet_run_store.json",
         )
+        self.asset_monitor_storage_path = resolve_local_store_path(
+            "LOCAL_ASSET_MONITOR_STORE",
+            Path(__file__).resolve().parents[2] / "runtime" / "asset_monitor_store.json",
+            Path(__file__).resolve().parents[2] / "data" / "asset_monitor_store.json",
+        )
+        self._asset_monitor_lock = threading.RLock()
 
     def _ensure_session(self):
         if self.session is not None:
@@ -179,6 +186,7 @@ class ScyllaDB:
         self._ensure_session()
         ensure_private_file(self.template_storage_path)
         ensure_private_file(self.run_storage_path)
+        ensure_private_file(self.asset_monitor_storage_path, default_contents='{"snapshots": {}, "events": []}')
         self.session.execute(
             f"""
             CREATE KEYSPACE IF NOT EXISTS {self.keyspace}
@@ -213,6 +221,8 @@ class ScyllaDB:
                 contract_budget_eth_per_subwallet text,
                 notes text,
                 recipient_address text,
+                return_wallet_address text,
+                test_auto_execute_after_funding boolean,
                 is_active boolean,
                 source text,
                 created_at timestamp,
@@ -221,6 +231,9 @@ class ScyllaDB:
                 swap_budget_eth_per_contract text,
                 direct_contract_eth_per_contract text,
                 direct_contract_weth_per_contract text,
+                auto_top_up_enabled boolean,
+                auto_top_up_threshold_eth text,
+                auto_top_up_target_eth text,
                 auto_wrap_eth_to_weth boolean,
                 stablecoin_distribution_mode text,
                 stablecoin_allocations text
@@ -242,6 +255,25 @@ class ScyllaDB:
             )
         """
         )
+        self.session.execute(
+            """
+            CREATE TABLE IF NOT EXISTS asset_monitor_snapshots (
+                address text PRIMARY KEY,
+                updated_at timestamp,
+                payload_json text
+            )
+        """
+        )
+        self.session.execute(
+            """
+            CREATE TABLE IF NOT EXISTS asset_monitor_events (
+                id text PRIMARY KEY,
+                address text,
+                observed_at timestamp,
+                payload_json text
+            )
+        """
+        )
         if self.mode == "scylla":
             template_alter_statements = [
                 "ALTER TABLE templates ADD template_version text",
@@ -249,10 +281,15 @@ class ScyllaDB:
                 "ALTER TABLE templates ADD swap_budget_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_weth_per_contract text",
+                "ALTER TABLE templates ADD auto_top_up_enabled boolean",
+                "ALTER TABLE templates ADD auto_top_up_threshold_eth text",
+                "ALTER TABLE templates ADD auto_top_up_target_eth text",
                 "ALTER TABLE templates ADD auto_wrap_eth_to_weth boolean",
                 "ALTER TABLE templates ADD stablecoin_distribution_mode text",
                 "ALTER TABLE templates ADD stablecoin_allocations text",
                 "ALTER TABLE templates ADD recipient_address text",
+                "ALTER TABLE templates ADD return_wallet_address text",
+                "ALTER TABLE templates ADD test_auto_execute_after_funding boolean",
             ]
             for statement in template_alter_statements:
                 try:
@@ -279,6 +316,22 @@ class ScyllaDB:
     def _write_local_runs(self, payload: dict):
         self.run_storage_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def _read_local_asset_monitor_payload(self) -> dict:
+        ensure_private_file(self.asset_monitor_storage_path, default_contents='{"snapshots": {}, "events": []}')
+        payload = json.loads(self.asset_monitor_storage_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("snapshots", {})
+        payload.setdefault("events", [])
+        return payload
+
+    def _write_local_asset_monitor_payload(self, payload: dict):
+        normalized = {
+            "snapshots": payload.get("snapshots") or {},
+            "events": payload.get("events") or [],
+        }
+        self.asset_monitor_storage_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+
     def _serialize_template_record(self, record: dict | None):
         if record is None:
             return None
@@ -297,6 +350,27 @@ class ScyllaDB:
         created_at = payload.get("created_at")
         if isinstance(created_at, datetime):
             payload["created_at"] = created_at.isoformat()
+
+        payload_json = payload.get("payload_json")
+        if isinstance(payload_json, str):
+            try:
+                parsed = json.loads(payload_json)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                payload.update(parsed)
+        payload.pop("payload_json", None)
+        return payload
+
+    def _serialize_asset_monitor_record(self, record: dict | None):
+        if record is None:
+            return None
+
+        payload = dict(record)
+        for field in ("updated_at", "observed_at"):
+            value = payload.get(field)
+            if isinstance(value, datetime):
+                payload[field] = value.isoformat()
 
         payload_json = payload.get("payload_json")
         if isinstance(payload_json, str):
@@ -330,6 +404,8 @@ class ScyllaDB:
             "contract_budget_eth_per_subwallet": template["contract_budget_eth_per_subwallet"],
             "notes": template.get("notes"),
             "recipient_address": template.get("recipient_address"),
+            "return_wallet_address": template.get("return_wallet_address"),
+            "test_auto_execute_after_funding": bool(template.get("test_auto_execute_after_funding", False)),
             "is_active": bool(template.get("is_active", True)),
             "source": template.get("source", "library"),
             "created_at": created_at,
@@ -338,6 +414,9 @@ class ScyllaDB:
             "swap_budget_eth_per_contract": template.get("swap_budget_eth_per_contract"),
             "direct_contract_eth_per_contract": template.get("direct_contract_eth_per_contract"),
             "direct_contract_weth_per_contract": template.get("direct_contract_weth_per_contract"),
+            "auto_top_up_enabled": bool(template.get("auto_top_up_enabled", False)),
+            "auto_top_up_threshold_eth": template.get("auto_top_up_threshold_eth"),
+            "auto_top_up_target_eth": template.get("auto_top_up_target_eth"),
             "auto_wrap_eth_to_weth": template.get("auto_wrap_eth_to_weth"),
             "stablecoin_distribution_mode": template.get("stablecoin_distribution_mode"),
             "stablecoin_allocations": template.get("stablecoin_allocations"),
@@ -358,6 +437,8 @@ class ScyllaDB:
                     contract_budget_eth_per_subwallet,
                     notes,
                     recipient_address,
+                    return_wallet_address,
+                    test_auto_execute_after_funding,
                     is_active,
                     source,
                     created_at,
@@ -366,11 +447,14 @@ class ScyllaDB:
                     swap_budget_eth_per_contract,
                     direct_contract_eth_per_contract,
                     direct_contract_weth_per_contract,
+                    auto_top_up_enabled,
+                    auto_top_up_threshold_eth,
+                    auto_top_up_target_eth,
                     auto_wrap_eth_to_weth,
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
@@ -387,6 +471,8 @@ class ScyllaDB:
                     payload["contract_budget_eth_per_subwallet"],
                     payload["notes"],
                     payload["recipient_address"],
+                    payload["return_wallet_address"],
+                    payload["test_auto_execute_after_funding"],
                     payload["is_active"],
                     payload["source"],
                     payload["created_at"],
@@ -395,6 +481,9 @@ class ScyllaDB:
                     payload["swap_budget_eth_per_contract"],
                     payload["direct_contract_eth_per_contract"],
                     payload["direct_contract_weth_per_contract"],
+                    payload["auto_top_up_enabled"],
+                    payload["auto_top_up_threshold_eth"],
+                    payload["auto_top_up_target_eth"],
                     payload["auto_wrap_eth_to_weth"],
                     payload["stablecoin_distribution_mode"],
                     payload["stablecoin_allocations"],
@@ -523,6 +612,114 @@ class ScyllaDB:
                 deleted += 1
         self._write_local_runs(payload)
         return deleted
+
+    def upsert_asset_monitor_snapshot(self, snapshot: dict):
+        self.connect_keyspace()
+        payload = dict(snapshot)
+        updated_at = payload.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at)
+        if updated_at is None:
+            updated_at = datetime.utcnow()
+        payload["updated_at"] = updated_at
+
+        if self.mode == "scylla":
+            self.session.execute(
+                """
+                    INSERT INTO asset_monitor_snapshots (address, updated_at, payload_json)
+                    VALUES (%s, %s, %s)
+                """,
+                (
+                    payload["address"],
+                    updated_at,
+                    json.dumps({**payload, "updated_at": updated_at.isoformat()}),
+                ),
+            )
+            return self._serialize_asset_monitor_record(payload)
+
+        with self._asset_monitor_lock:
+            local_payload = self._read_local_asset_monitor_payload()
+            local_payload["snapshots"][payload["address"].lower()] = {
+                **payload,
+                "updated_at": updated_at.isoformat(),
+            }
+            self._write_local_asset_monitor_payload(local_payload)
+            return self._serialize_asset_monitor_record(local_payload["snapshots"][payload["address"].lower()])
+
+    def list_asset_monitor_snapshots(self, addresses: list[str] | None = None):
+        self.connect_keyspace()
+        normalized_addresses = {address.lower() for address in (addresses or []) if address}
+
+        if self.mode == "scylla":
+            rows = self.session.execute("SELECT * FROM asset_monitor_snapshots")
+            snapshots = [self._serialize_asset_monitor_record(dict(row._asdict())) for row in rows.all()]
+        else:
+            with self._asset_monitor_lock:
+                payload = self._read_local_asset_monitor_payload()
+            snapshots = [self._serialize_asset_monitor_record(record) for record in payload.get("snapshots", {}).values()]
+
+        if normalized_addresses:
+            snapshots = [snapshot for snapshot in snapshots if (snapshot.get("address") or "").lower() in normalized_addresses]
+        snapshots.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+        return snapshots
+
+    def append_asset_monitor_event(self, event: dict):
+        self.connect_keyspace()
+        payload = dict(event)
+        observed_at = payload.get("observed_at")
+        if isinstance(observed_at, str):
+            observed_at = datetime.fromisoformat(observed_at)
+        if observed_at is None:
+            observed_at = datetime.utcnow()
+        payload["observed_at"] = observed_at
+
+        if self.mode == "scylla":
+            self.session.execute(
+                """
+                    INSERT INTO asset_monitor_events (id, address, observed_at, payload_json)
+                    VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    payload["id"],
+                    payload["address"],
+                    observed_at,
+                    json.dumps({**payload, "observed_at": observed_at.isoformat()}),
+                ),
+            )
+            return self._serialize_asset_monitor_record(payload)
+
+        with self._asset_monitor_lock:
+            local_payload = self._read_local_asset_monitor_payload()
+            local_payload.setdefault("events", []).append(
+                {
+                    **payload,
+                    "observed_at": observed_at.isoformat(),
+                }
+            )
+            local_payload["events"] = sorted(
+                local_payload["events"],
+                key=lambda item: item.get("observed_at") or "",
+                reverse=True,
+            )[:1000]
+            self._write_local_asset_monitor_payload(local_payload)
+            return self._serialize_asset_monitor_record(local_payload["events"][0])
+
+    def list_asset_monitor_events(self, addresses: list[str] | None = None, limit: int = 100):
+        self.connect_keyspace()
+        normalized_addresses = {address.lower() for address in (addresses or []) if address}
+
+        if self.mode == "scylla":
+            rows = self.session.execute("SELECT * FROM asset_monitor_events")
+            events = [self._serialize_asset_monitor_record(dict(row._asdict())) for row in rows.all()]
+        else:
+            with self._asset_monitor_lock:
+                payload = self._read_local_asset_monitor_payload()
+            events = [self._serialize_asset_monitor_record(record) for record in payload.get("events", [])]
+
+        if normalized_addresses:
+            events = [event for event in events if (event.get("address") or "").lower() in normalized_addresses]
+        events.sort(key=lambda item: item.get("observed_at") or "", reverse=True)
+        return events[: max(int(limit), 0)]
 
 
 db = ScyllaDB()

@@ -9,6 +9,7 @@ const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
 const TOKEN_TRANSFER_GAS_UNITS = 90_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
+const DISTRIBUTOR_EXECUTE_GAS_UNITS = 180_000;
 
 export type StablecoinOption = {
   symbol: string;
@@ -30,10 +31,15 @@ export type Template = {
   name: string;
   template_version: "v2";
   recipient_address?: string | null;
+  return_wallet_address?: string | null;
+  test_auto_execute_after_funding: boolean;
   gas_reserve_eth_per_contract: string;
   swap_budget_eth_per_contract: string;
   direct_contract_eth_per_contract: string;
   direct_contract_weth_per_contract: string;
+  auto_top_up_enabled: boolean;
+  auto_top_up_threshold_eth: string;
+  auto_top_up_target_eth: string;
   slippage_percent: string;
   fee_tier: number | null;
   auto_wrap_eth_to_weth: boolean;
@@ -60,10 +66,15 @@ export type TemplateOptions = {
   defaults: {
     template_version: "v2";
     recipient_address?: string | null;
+    return_wallet_address?: string | null;
+    test_auto_execute_after_funding: boolean;
     gas_reserve_eth_per_contract: string;
     swap_budget_eth_per_contract: string;
     direct_contract_eth_per_contract: string;
     direct_contract_weth_per_contract: string;
+    auto_top_up_enabled: boolean;
+    auto_top_up_threshold_eth: string;
+    auto_top_up_target_eth: string;
     slippage_percent: string;
     fee_tier: number | null;
     auto_wrap_eth_to_weth: boolean;
@@ -74,6 +85,9 @@ export type TemplateOptions = {
     summary: string;
     swap_budget_note: string;
     swap_settings_note?: string;
+    auto_top_up_note?: string;
+    return_wallet_note?: string;
+    test_auto_execute_note?: string;
   };
   contract_sync?: {
     enabled: boolean;
@@ -86,10 +100,15 @@ export type TemplateOptions = {
 export type TemplateEditorForm = {
   name: string;
   recipient_address: string;
+  return_wallet_address: string;
+  test_auto_execute_after_funding: boolean;
   gas_reserve_eth_per_contract: string;
   swap_budget_eth_per_contract: string;
   direct_contract_eth_per_contract: string;
   direct_contract_weth_per_contract: string;
+  auto_top_up_enabled: boolean;
+  auto_top_up_threshold_eth: string;
+  auto_top_up_target_eth: string;
   slippage_percent: string;
   fee_tier: number | null;
   auto_wrap_eth_to_weth: boolean;
@@ -98,10 +117,24 @@ export type TemplateEditorForm = {
   notes: string;
 };
 
+export type TemplateAutoTopUpPreview = {
+  enabled: boolean;
+  threshold_eth: string;
+  target_eth: string;
+  projected_post_wrap_eth_per_contract: string;
+  projected_triggered: boolean;
+  projected_eth_per_contract: string;
+  projected_total_eth: string;
+  projected_transaction_count: number;
+  projected_network_fee_eth: string;
+};
+
 export type TemplatePreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  return_wallet_address?: string | null;
+  test_auto_execute_after_funding?: boolean;
   slippage_percent: string;
   fee_tier: number | null;
   can_proceed: boolean;
@@ -119,6 +152,7 @@ export type TemplatePreview = {
     weth_sent_to_subwallets: string;
     weth_from_main_wallet: string;
     weth_from_wrapped_eth: string;
+    auto_top_up_eth_reserved?: string;
     total_eth_deducted: string;
   };
   per_contract: {
@@ -126,6 +160,9 @@ export type TemplatePreview = {
     swap_budget_eth: string;
     direct_contract_eth: string;
     direct_contract_weth: string;
+    auto_top_up_threshold_eth?: string;
+    auto_top_up_target_eth?: string;
+    projected_auto_top_up_eth?: string;
     required_eth: string;
     required_weth: string;
     total_eth_if_no_weth_available: string;
@@ -137,12 +174,14 @@ export type TemplatePreview = {
     swap_budget_eth_total: string;
     direct_contract_eth_total: string;
     direct_contract_weth_total: string;
+    projected_auto_top_up_eth_total?: string;
     total_eth_if_no_weth_available_total: string;
     required_eth_total_usd: string | null;
     required_weth_total_usd: string | null;
     combined_cost_usd: string | null;
     stablecoin_output_total_usd: string | null;
   };
+  auto_top_up?: TemplateAutoTopUpPreview;
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
   stablecoin_quotes: TemplateStablecoinQuote[];
   price_snapshot: TemplatePriceSnapshot;
@@ -160,6 +199,8 @@ export type TemplateWalletSupportPreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  return_wallet_address?: string | null;
+  test_auto_execute_after_funding?: boolean;
   slippage_percent: string;
   fee_tier: number | null;
   can_proceed: boolean;
@@ -177,10 +218,12 @@ export type TemplateWalletSupportPreview = {
     weth_sent_to_subwallets: string;
     weth_from_main_wallet: string;
     weth_from_wrapped_eth: string;
+    auto_top_up_eth_reserved?: string;
     total_eth_deducted: string;
   };
   execution: {
     funding_network_fee_eth: string;
+    top_up_network_fee_eth?: string;
     main_wallet_network_fee_eth?: string;
     local_execution_gas_fee_eth?: string;
     local_execution_gas_fee_per_wallet_eth?: string;
@@ -188,8 +231,13 @@ export type TemplateWalletSupportPreview = {
     total_network_fee_eth: string;
     estimated_gas_price_gwei: string | null;
     estimated_gas_units?: number | null;
+    execute_gas_units_per_wallet?: number | null;
+    return_sweep_gas_units_per_wallet?: number | null;
     local_execution_gas_units_per_wallet?: number | null;
     funding_transaction_count: number;
+    top_up_transaction_count?: number;
+    execute_transaction_count?: number;
+    return_sweep_transaction_count?: number;
     wrap_transaction_count: number;
     approval_transaction_count: number;
     swap_transaction_count: number;
@@ -205,6 +253,9 @@ export type TemplateWalletSupportPreview = {
     swap_budget_eth: string;
     direct_contract_eth: string;
     direct_contract_weth: string;
+    auto_top_up_threshold_eth?: string;
+    auto_top_up_target_eth?: string;
+    projected_auto_top_up_eth?: string;
     configured_unwrapped_eth?: string;
     minimum_unwrapped_eth?: string;
     auto_added_gas_buffer_eth?: string;
@@ -220,12 +271,14 @@ export type TemplateWalletSupportPreview = {
     swap_budget_eth_total: string;
     direct_contract_eth_total: string;
     direct_contract_weth_total: string;
+    projected_auto_top_up_eth_total?: string;
     configured_unwrapped_eth_total?: string;
     minimum_unwrapped_eth_total?: string;
     auto_added_gas_buffer_eth_total?: string;
     local_execution_gas_fee_eth_total?: string;
     total_eth_if_no_weth_available_total: string;
   };
+  auto_top_up?: TemplateAutoTopUpPreview;
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
   stablecoin_routes: Array<{
     token_symbol: string;
@@ -418,10 +471,15 @@ export function defaultTemplateForm(options: TemplateOptions | null): TemplateEd
   return {
     name: "",
     recipient_address: options?.defaults.recipient_address ?? "",
+    return_wallet_address: options?.defaults.return_wallet_address ?? "",
+    test_auto_execute_after_funding: options?.defaults.test_auto_execute_after_funding ?? false,
     gas_reserve_eth_per_contract: options?.defaults.gas_reserve_eth_per_contract ?? "0.02",
     swap_budget_eth_per_contract: options?.defaults.swap_budget_eth_per_contract ?? "0",
     direct_contract_eth_per_contract: options?.defaults.direct_contract_eth_per_contract ?? "0",
     direct_contract_weth_per_contract: options?.defaults.direct_contract_weth_per_contract ?? "0",
+    auto_top_up_enabled: options?.defaults.auto_top_up_enabled ?? false,
+    auto_top_up_threshold_eth: options?.defaults.auto_top_up_threshold_eth ?? "0",
+    auto_top_up_target_eth: options?.defaults.auto_top_up_target_eth ?? "0",
     slippage_percent: options?.defaults.slippage_percent ?? "0.5",
     fee_tier: options?.defaults.fee_tier ?? null,
     auto_wrap_eth_to_weth: options?.defaults.auto_wrap_eth_to_weth ?? true,
@@ -435,10 +493,15 @@ export function templateToForm(template: Template): TemplateEditorForm {
   return {
     name: template.name,
     recipient_address: template.recipient_address ?? "",
+    return_wallet_address: template.return_wallet_address ?? "",
+    test_auto_execute_after_funding: template.test_auto_execute_after_funding,
     gas_reserve_eth_per_contract: template.gas_reserve_eth_per_contract,
     swap_budget_eth_per_contract: template.swap_budget_eth_per_contract,
     direct_contract_eth_per_contract: template.direct_contract_eth_per_contract,
     direct_contract_weth_per_contract: template.direct_contract_weth_per_contract,
+    auto_top_up_enabled: template.auto_top_up_enabled,
+    auto_top_up_threshold_eth: template.auto_top_up_threshold_eth,
+    auto_top_up_target_eth: template.auto_top_up_target_eth,
     slippage_percent: template.slippage_percent,
     fee_tier: template.fee_tier,
     auto_wrap_eth_to_weth: template.auto_wrap_eth_to_weth,
@@ -464,6 +527,11 @@ export function buildTemplateWalletSupportPreview(input: {
   const swapBudget = toFiniteNumber(template.swap_budget_eth_per_contract) ?? 0;
   const directEth = toFiniteNumber(template.direct_contract_eth_per_contract) ?? 0;
   const directWeth = toFiniteNumber(template.direct_contract_weth_per_contract) ?? 0;
+  const returnWalletConfigured = Boolean(template.return_wallet_address);
+  const testAutoExecuteAfterFunding = template.test_auto_execute_after_funding;
+  const autoTopUpEnabled = template.auto_top_up_enabled;
+  const autoTopUpThreshold = toFiniteNumber(template.auto_top_up_threshold_eth) ?? 0;
+  const autoTopUpTarget = toFiniteNumber(template.auto_top_up_target_eth) ?? 0;
   const stablecoinRoutes = getStablecoinDistributionRows(template).map((allocation) => {
     const perContractWethAmount = toFiniteNumber(allocation.weth_amount_per_contract);
     return {
@@ -481,11 +549,14 @@ export function buildTemplateWalletSupportPreview(input: {
   const deploymentEnabled = requiresRecipient && Boolean(template.recipient_address);
   const configuredUnwrappedEthPerContract = gasReserve + directEth;
   const requiredWethPerContract = swapBudget + directWeth;
+  const returnSweepTokenTransferCountPerWallet = returnWalletConfigured ? routeCount + (requiredWethPerContract > 0 ? 1 : 0) : 0;
+  const returnSweepTransactionCountPerWallet = returnWalletConfigured ? 1 + returnSweepTokenTransferCountPerWallet : 0;
   const wrapTransactionCount = requiredWethPerContract > 0 ? contractCount : 0;
   const approvalTransactionCount = routeCount > 0 ? contractCount : 0;
   const swapTransactionCount = contractCount * routeCount;
   const deploymentTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
   const contractFundingTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
+  const executeTransactionCount = deploymentEnabled && testAutoExecuteAfterFunding ? contractCount * deploymentContractsPerWallet : 0;
 
   const availableEth = wallet.eth_balance ?? 0;
   const availableWeth = wallet.weth_balance ?? 0;
@@ -496,25 +567,40 @@ export function buildTemplateWalletSupportPreview(input: {
     (requiredWethPerContract > 0 ? WRAP_GAS_UNITS : 0) +
     (routeCount > 0 ? APPROVE_GAS_UNITS : 0) +
     routeCount * SWAP_GAS_UNITS +
-    (deploymentEnabled ? deploymentContractsPerWallet * (DISTRIBUTOR_DEPLOY_GAS_UNITS + TOKEN_TRANSFER_GAS_UNITS) : 0);
+    (deploymentEnabled ? deploymentContractsPerWallet * (DISTRIBUTOR_DEPLOY_GAS_UNITS + TOKEN_TRANSFER_GAS_UNITS) : 0) +
+    (deploymentEnabled && testAutoExecuteAfterFunding ? deploymentContractsPerWallet * DISTRIBUTOR_EXECUTE_GAS_UNITS : 0) +
+    (returnWalletConfigured ? ETH_TRANSFER_GAS_UNITS + returnSweepTokenTransferCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0);
   const localExecutionGasFeePerWalletEth = localExecutionGasUnitsPerWallet * gasPriceEth;
   const minimumUnwrappedEthPerContract = Math.max(configuredUnwrappedEthPerContract, localExecutionGasFeePerWalletEth);
   const autoAddedGasBufferEthPerContract = Math.max(minimumUnwrappedEthPerContract - configuredUnwrappedEthPerContract, 0);
   const requiredEthPerContract = minimumUnwrappedEthPerContract + requiredWethPerContract;
   const requiredEthTotal = requiredEthPerContract * contractCount;
   const requiredWethTotal = requiredWethPerContract * contractCount;
+  const wrapGasFeePerWalletEth = (requiredWethPerContract > 0 ? WRAP_GAS_UNITS : 0) * gasPriceEth;
+  const projectedPostWrapEthPerContract = Math.max(requiredEthPerContract - requiredWethPerContract - wrapGasFeePerWalletEth, 0);
+  const projectedAutoTopUpTriggered =
+    autoTopUpEnabled &&
+    requiredWethPerContract > 0 &&
+    projectedPostWrapEthPerContract <= autoTopUpThreshold &&
+    autoTopUpTarget > projectedPostWrapEthPerContract;
+  const projectedAutoTopUpEthPerContract = projectedAutoTopUpTriggered ? autoTopUpTarget - projectedPostWrapEthPerContract : 0;
+  const projectedAutoTopUpEthTotal = projectedAutoTopUpEthPerContract * contractCount;
 
   const fundingTransactionCount = requiredEthPerContract > 0 ? contractCount : 0;
+  const topUpTransactionCount = projectedAutoTopUpEthPerContract > 0 ? contractCount : 0;
+  const returnSweepTransactionCount = contractCount * returnSweepTransactionCountPerWallet;
   const fundingGasUnits = fundingTransactionCount * ETH_TRANSFER_GAS_UNITS;
-  const estimatedGasUnits = fundingGasUnits + localExecutionGasUnitsPerWallet * contractCount;
+  const topUpGasUnits = topUpTransactionCount * ETH_TRANSFER_GAS_UNITS;
+  const estimatedGasUnits = fundingGasUnits + localExecutionGasUnitsPerWallet * contractCount + topUpGasUnits;
   const fundingNetworkFeeEth = gasPriceEth * fundingGasUnits;
+  const topUpNetworkFeeEth = gasPriceEth * topUpGasUnits;
   const localExecutionGasFeeEth = localExecutionGasFeePerWalletEth * contractCount;
   const wrappableEth = requiredWethTotal;
   const effectiveWethAvailable = requiredWethTotal;
   const wethFromWrappedEth = requiredWethTotal;
   const totalEthDeducted = requiredEthTotal;
-  const totalNetworkFeeEth = fundingNetworkFeeEth + localExecutionGasFeeEth;
-  const totalEthRequiredWithFees = totalEthDeducted + fundingNetworkFeeEth;
+  const totalNetworkFeeEth = fundingNetworkFeeEth + topUpNetworkFeeEth + localExecutionGasFeeEth;
+  const totalEthRequiredWithFees = totalEthDeducted + projectedAutoTopUpEthTotal + fundingNetworkFeeEth + topUpNetworkFeeEth;
   const remainingEthAfterFunding = availableEth - totalEthDeducted;
   const remainingEthAfterRun = availableEth - totalEthRequiredWithFees;
   const remainingWethAfterFunding = availableWeth;
@@ -530,13 +616,15 @@ export function buildTemplateWalletSupportPreview(input: {
   } else if (availableEth < totalEthRequiredWithFees) {
     shortfallReason =
       `Not enough ETH in the main wallet. Need ${toAmountString(totalEthRequiredWithFees - availableEth)} more ETH ` +
-      "to fund the new sub-wallets and cover the main-wallet funding transaction fees.";
+      "to fund the new sub-wallets, reserve projected auto top-ups, and cover the main-wallet funding transaction fees.";
   }
 
   return {
     template_id: template.id,
     wallet_id: wallet.id,
     contract_count: contractCount,
+    return_wallet_address: template.return_wallet_address ?? null,
+    test_auto_execute_after_funding: template.test_auto_execute_after_funding,
     slippage_percent: template.slippage_percent,
     fee_tier: template.fee_tier,
     can_proceed: canProceed,
@@ -553,19 +641,26 @@ export function buildTemplateWalletSupportPreview(input: {
       weth_sent_to_subwallets: "0",
       weth_from_main_wallet: toAmountString(wethFromMainWallet),
       weth_from_wrapped_eth: toAmountString(wethFromWrappedEth),
+      auto_top_up_eth_reserved: toAmountString(projectedAutoTopUpEthTotal),
       total_eth_deducted: toAmountString(totalEthDeducted),
     },
     execution: {
       funding_network_fee_eth: toAmountString(fundingNetworkFeeEth),
-      main_wallet_network_fee_eth: toAmountString(fundingNetworkFeeEth),
+      top_up_network_fee_eth: toAmountString(topUpNetworkFeeEth),
+      main_wallet_network_fee_eth: toAmountString(fundingNetworkFeeEth + topUpNetworkFeeEth),
       local_execution_gas_fee_eth: toAmountString(localExecutionGasFeeEth),
       local_execution_gas_fee_per_wallet_eth: toAmountString(localExecutionGasFeePerWalletEth),
       contract_sync_network_fee_eth: "0",
       total_network_fee_eth: toAmountString(totalNetworkFeeEth),
       estimated_gas_price_gwei: gasPriceGwei === null ? null : toAmountString(gasPriceGwei),
       estimated_gas_units: estimatedGasUnits,
+      execute_gas_units_per_wallet: deploymentEnabled && testAutoExecuteAfterFunding ? deploymentContractsPerWallet * DISTRIBUTOR_EXECUTE_GAS_UNITS : 0,
+      return_sweep_gas_units_per_wallet: returnWalletConfigured ? ETH_TRANSFER_GAS_UNITS + returnSweepTokenTransferCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0,
       local_execution_gas_units_per_wallet: localExecutionGasUnitsPerWallet,
       funding_transaction_count: fundingTransactionCount,
+      top_up_transaction_count: topUpTransactionCount,
+      execute_transaction_count: executeTransactionCount,
+      return_sweep_transaction_count: returnSweepTransactionCount,
       wrap_transaction_count: wrapTransactionCount,
       approval_transaction_count: approvalTransactionCount,
       swap_transaction_count: swapTransactionCount,
@@ -574,6 +669,9 @@ export function buildTemplateWalletSupportPreview(input: {
       contract_sync_transaction_count: 0,
       total_transaction_count:
         fundingTransactionCount +
+        topUpTransactionCount +
+        executeTransactionCount +
+        returnSweepTransactionCount +
         wrapTransactionCount +
         approvalTransactionCount +
         swapTransactionCount +
@@ -588,6 +686,9 @@ export function buildTemplateWalletSupportPreview(input: {
       swap_budget_eth: toAmountString(swapBudget),
       direct_contract_eth: toAmountString(directEth),
       direct_contract_weth: toAmountString(directWeth),
+      auto_top_up_threshold_eth: toAmountString(autoTopUpThreshold),
+      auto_top_up_target_eth: toAmountString(autoTopUpTarget),
+      projected_auto_top_up_eth: toAmountString(projectedAutoTopUpEthPerContract),
       configured_unwrapped_eth: toAmountString(configuredUnwrappedEthPerContract),
       minimum_unwrapped_eth: toAmountString(minimumUnwrappedEthPerContract),
       auto_added_gas_buffer_eth: toAmountString(autoAddedGasBufferEthPerContract),
@@ -603,11 +704,23 @@ export function buildTemplateWalletSupportPreview(input: {
       swap_budget_eth_total: toAmountString(swapBudget * contractCount),
       direct_contract_eth_total: toAmountString(directEth * contractCount),
       direct_contract_weth_total: toAmountString(directWeth * contractCount),
+      projected_auto_top_up_eth_total: toAmountString(projectedAutoTopUpEthTotal),
       configured_unwrapped_eth_total: toAmountString(configuredUnwrappedEthPerContract * contractCount),
       minimum_unwrapped_eth_total: toAmountString(minimumUnwrappedEthPerContract * contractCount),
       auto_added_gas_buffer_eth_total: toAmountString(autoAddedGasBufferEthPerContract * contractCount),
       local_execution_gas_fee_eth_total: toAmountString(localExecutionGasFeeEth),
       total_eth_if_no_weth_available_total: toAmountString(requiredEthTotal),
+    },
+    auto_top_up: {
+      enabled: autoTopUpEnabled,
+      threshold_eth: toAmountString(autoTopUpThreshold),
+      target_eth: toAmountString(autoTopUpTarget),
+      projected_post_wrap_eth_per_contract: toAmountString(projectedPostWrapEthPerContract),
+      projected_triggered: projectedAutoTopUpTriggered,
+      projected_eth_per_contract: toAmountString(projectedAutoTopUpEthPerContract),
+      projected_total_eth: toAmountString(projectedAutoTopUpEthTotal),
+      projected_transaction_count: topUpTransactionCount,
+      projected_network_fee_eth: toAmountString(topUpNetworkFeeEth),
     },
     stablecoin_distribution_mode: template.stablecoin_distribution_mode,
     stablecoin_routes: stablecoinRoutes,

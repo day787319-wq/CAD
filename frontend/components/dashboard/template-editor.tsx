@@ -73,6 +73,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     [form.stablecoin_allocations],
   );
   const hasStablecoinSwap = form.stablecoin_distribution_mode !== "none";
+  const topUpEnabled = form.auto_top_up_enabled;
   const needsWeth = Number(form.swap_budget_eth_per_contract || "0") > 0 || Number(form.direct_contract_weth_per_contract || "0") > 0;
   const totalEthIfNoWeth =
     Number(form.gas_reserve_eth_per_contract || "0") +
@@ -162,10 +163,15 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         name: form.name,
         template_version: "v2",
         recipient_address: form.recipient_address || null,
+        return_wallet_address: form.return_wallet_address || null,
+        test_auto_execute_after_funding: form.test_auto_execute_after_funding,
         gas_reserve_eth_per_contract: form.gas_reserve_eth_per_contract,
         swap_budget_eth_per_contract: form.swap_budget_eth_per_contract,
         direct_contract_eth_per_contract: form.direct_contract_eth_per_contract,
         direct_contract_weth_per_contract: form.direct_contract_weth_per_contract,
+        auto_top_up_enabled: form.auto_top_up_enabled,
+        auto_top_up_threshold_eth: form.auto_top_up_threshold_eth,
+        auto_top_up_target_eth: form.auto_top_up_target_eth,
         slippage_percent: form.slippage_percent,
         fee_tier: form.fee_tier,
         auto_wrap_eth_to_weth: form.auto_wrap_eth_to_weth,
@@ -249,6 +255,22 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </div>
 
               <div className="space-y-2 sm:col-span-2">
+                <label htmlFor="return-wallet-address" className="text-sm font-medium text-foreground">
+                  Return wallet address
+                </label>
+                <Input
+                  id="return-wallet-address"
+                  value={form.return_wallet_address}
+                  placeholder="0x..."
+                  onChange={(event) => setForm((current) => ({ ...current, return_wallet_address: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {options?.hints.return_wallet_note ??
+                    "Optional. After the run, leftover ETH, WETH, and supported token balances still sitting in a sub-wallet will be swept here."}
+                </p>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="template-notes" className="text-sm font-medium text-foreground">
                   Notes
                 </label>
@@ -260,6 +282,38 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 />
               </div>
             </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Testing Execute"
+            description="Optional testing mode to prove the full deploy-and-send path on-chain."
+          >
+            <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <input
+                type="checkbox"
+                checked={form.test_auto_execute_after_funding}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    test_auto_execute_after_funding: event.target.checked,
+                  }))
+                }
+                className="mt-1 h-4 w-4 rounded border-border"
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">Testing only: execute distributor immediately after funding</span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  {options?.hints.test_auto_execute_note ??
+                    "After each ManagedTokenDistributor is deployed and funded, the sub-wallet will call execute() right away. If you want the contract output to end in the return wallet during testing, set the recipient address to the same address."}
+                </span>
+              </span>
+            </label>
+
+            {form.test_auto_execute_after_funding ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                This bypasses the normal hold-in-contract behavior for testing. `execute()` still sends the funded amount to the recipient address, not the return wallet.
+              </div>
+            ) : null}
           </SectionCard>
 
           <SectionCard
@@ -303,17 +357,82 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <label className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3">
               <input
                 type="checkbox"
-                checked={form.auto_wrap_eth_to_weth}
-                onChange={(event) => setForm((current) => ({ ...current, auto_wrap_eth_to_weth: event.target.checked }))}
+                checked
+                disabled
+                readOnly
                 className="mt-1 h-4 w-4 rounded border-border"
               />
               <span>
-                <span className="block text-sm font-medium text-foreground">Use local sub-wallet wrapping when WETH is needed</span>
+                <span className="block text-sm font-medium text-foreground">Local sub-wallet wrapping is always used when WETH is needed</span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  The safer production flow funds ETH first, keeps gas unwrapped, then wraps only the WETH budget inside each sub-wallet.
+                  The current execution engine funds ETH first, keeps gas unwrapped, and wraps the required WETH amount inside each sub-wallet. Direct main-wallet WETH funding is not available in this flow.
                 </span>
               </span>
             </label>
+          </SectionCard>
+
+          <SectionCard
+            title="Auto Top-Up"
+            description="Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ETH balance gets too low."
+          >
+            <label className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <input
+                type="checkbox"
+                checked={form.auto_top_up_enabled}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    auto_top_up_enabled: event.target.checked,
+                  }))
+                }
+                className="mt-1 h-4 w-4 rounded border-border"
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">Enable auto top-up from the main wallet</span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  {options?.hints.auto_top_up_note ??
+                    "When a sub-wallet reaches the trigger threshold after local execution starts, the main wallet can send another ETH transfer to refill it to the target."}
+                </span>
+              </span>
+            </label>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="auto-top-up-threshold" className="text-sm font-medium text-foreground">
+                  Trigger threshold ETH
+                </label>
+                <Input
+                  id="auto-top-up-threshold"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={form.auto_top_up_threshold_eth}
+                  disabled={!topUpEnabled}
+                  onChange={(event) => setForm((current) => ({ ...current, auto_top_up_threshold_eth: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  If the sub-wallet balance falls to or below this value during the run, the executor will try to refill it before continuing.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="auto-top-up-target" className="text-sm font-medium text-foreground">
+                  Refill target ETH
+                </label>
+                <Input
+                  id="auto-top-up-target"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={form.auto_top_up_target_eth}
+                  disabled={!topUpEnabled}
+                  onChange={(event) => setForm((current) => ({ ...current, auto_top_up_target_eth: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The main wallet will top the sub-wallet back up to this native ETH target. Set it higher than the trigger.
+                </p>
+              </div>
+            </div>
           </SectionCard>
 
           <SectionCard
@@ -562,7 +681,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title="Review"
             description="This summary is per contract. The wallet flow will multiply these numbers by the selected contract count."
           >
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas reserve</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} ETH</p>
@@ -578,6 +697,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Direct WETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_weth_per_contract)} WETH</p>
+              </div>
+              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Auto top-up</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">
+                  {topUpEnabled
+                    ? `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ETH`
+                    : "Off"}
+                </p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Slippage</p>
@@ -600,8 +727,31 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             </div>
 
             <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+              Auto top-up: {topUpEnabled
+                ? `Enabled at ${formatAmount(form.auto_top_up_threshold_eth)} ETH, refilling to ${formatAmount(form.auto_top_up_target_eth)} ETH.`
+                : "Disabled"}
+            </div>
+
+            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+              Testing auto execute: {form.test_auto_execute_after_funding ? "Enabled" : "Disabled"}
+            </div>
+
+            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
               Recipient: {form.recipient_address || "Not set"}
             </div>
+
+            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+              Return wallet: {form.return_wallet_address || "Not set"}
+            </div>
+
+            {form.test_auto_execute_after_funding &&
+            form.recipient_address &&
+            form.return_wallet_address &&
+            form.recipient_address.toLowerCase() !== form.return_wallet_address.toLowerCase() ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Testing note: this will execute to the recipient, not the return wallet. Make both addresses the same if you want the full test cycle to land there.
+              </div>
+            ) : null}
 
             <div className="rounded-xl border border-border/70 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
               We will later compare these per-template ETH requirements against the selected main wallet before any subwallets are created. WETH is produced locally inside each sub-wallet when the flow needs it.

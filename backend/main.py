@@ -21,6 +21,8 @@ ENV_PATH = BACKEND_DIR / ".env"
 
 from src.routers.wallet_router import router as wallet_router
 from src.routers.template_router import router as template_router
+from src.routers.monitor_router import router as monitor_router
+from src.services.monitor_service import start_asset_monitoring_worker, stop_asset_monitoring_worker
 
 # Silence web3 "method not available" noise from private nodes
 logging.getLogger("web3").setLevel(logging.CRITICAL)
@@ -28,8 +30,13 @@ logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 load_dotenv(ENV_PATH)
 
-BTC_USER = os.getenv("BTC_USER", "btcrpc")
-BTC_PASS = os.getenv("BTC_PASS", "70F5HHWQF0DFaaH5dJEBpXzuu38dB4B3")
+BTC_USER = os.getenv("BTC_USER", "")
+BTC_PASS = os.getenv("BTC_PASS", "")
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in (os.getenv("CORS_ALLOWED_ORIGINS") or "*").split(",")
+    if origin.strip()
+]
 
 POA_CHAINS = {"BNB", "POLYGON", "OP", "BASE", "XLAYER"}
 
@@ -127,7 +134,7 @@ def _check_evm(chain: str, rpc: str) -> dict:
 
 
 def _check_btc(chain: str, rpc: str) -> dict:
-    auth = (BTC_USER, BTC_PASS)
+    auth = (BTC_USER, BTC_PASS) if BTC_USER and BTC_PASS else None
     info = _jsonrpc_post(rpc, "getblockchaininfo", auth=auth)
     mempool = _jsonrpc_post(rpc, "getmempoolinfo", auth=auth)
     net = _jsonrpc_post(rpc, "getnetworkinfo", auth=auth)
@@ -241,8 +248,8 @@ app = FastAPI(title="Treasury V2 Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=CORS_ALLOWED_ORIGINS != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -259,8 +266,19 @@ def health():
     return {"ok": True}
 
 
+@app.on_event("startup")
+def start_background_services():
+    start_asset_monitoring_worker()
+
+
+@app.on_event("shutdown")
+def stop_background_services():
+    stop_asset_monitoring_worker()
+
+
 app.include_router(wallet_router)
 app.include_router(template_router)
+app.include_router(monitor_router)
 
 
 if __name__ == "__main__":
