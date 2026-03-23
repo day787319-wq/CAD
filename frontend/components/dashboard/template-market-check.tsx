@@ -17,7 +17,7 @@ import {
 
 function MetricCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+    <div className="cad-panel-muted px-4 py-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
       {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
@@ -174,7 +174,7 @@ export function TemplateMarketCheckPanel({
         : `Auto-refresh in ${secondsUntilRefresh}s`;
 
   return (
-    <div className="mt-4 rounded-2xl border border-border/70 bg-secondary/10 p-4">
+    <div className="cad-panel mt-4 px-4 py-4 sm:px-5 sm:py-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-semibold text-foreground">{showToggle ? "Optional live market check" : "Live market check"}</p>
@@ -202,14 +202,14 @@ export function TemplateMarketCheckPanel({
       {open ? (
         <div className="mt-4 space-y-4">
           {loading && !marketCheck ? (
-            <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-muted flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading current market pricing...
             </div>
           ) : null}
 
           {error ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <div className="rounded-2xl bg-destructive/8 px-4 py-3 text-sm text-destructive ring-1 ring-destructive/15">
               {error}
             </div>
           ) : null}
@@ -238,7 +238,7 @@ export function TemplateMarketCheckPanel({
               </div>
 
               {marketCheck.price_snapshot.error ? (
-                <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+                <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
                   Market data warning: {marketCheck.price_snapshot.error}
                 </div>
               ) : null}
@@ -247,7 +247,7 @@ export function TemplateMarketCheckPanel({
                 <div className="space-y-3">
                   <p className="text-sm font-semibold text-foreground">Stablecoin route pricing</p>
                   {marketCheck.stablecoin_quotes.map((quote) => (
-                    <div key={quote.token_address} className="rounded-xl border border-border/70 bg-background/70 p-4">
+                    <div key={quote.token_address} className="cad-panel-soft p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-foreground">{quote.token_symbol}</p>
@@ -272,7 +272,7 @@ export function TemplateMarketCheckPanel({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
                   This template does not include a stablecoin swap route, so the preview focuses on sub-wallet ETH, local WETH wrap requirements, and any direct contract ETH/WETH funding.
                 </div>
               )}

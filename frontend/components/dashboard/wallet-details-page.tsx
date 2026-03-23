@@ -65,7 +65,7 @@ function InfoCard({
   className?: string;
 }) {
   return (
-    <div className={`min-w-0 rounded-xl border border-border/70 bg-background/70 px-4 py-3 ${className ?? ""}`}>
+    <div className={`cad-panel-muted min-w-0 px-4 py-3 ${className ?? ""}`}>
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className={`mt-1 break-words text-sm font-semibold text-foreground ${valueClassName ?? ""}`}>{value}</p>
       {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
@@ -83,7 +83,7 @@ function SectionBlock({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/70 p-5">
+    <div className="cad-panel px-5 py-5">
       <div className="mb-4">
         <p className="text-base font-semibold text-foreground">{title}</p>
         {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
@@ -101,7 +101,7 @@ function TemplateMetric({
   value: string;
 }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-secondary/10 px-3 py-2">
+    <div className="rounded-xl bg-secondary/45 px-3 py-2">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
     </div>
@@ -185,10 +185,15 @@ function getDistributorAutomationSummary(template: Template) {
   };
 }
 
-function buildBudgetPreviewRows(wallet: WalletDetails, preview: TemplateWalletSupportPreview) {
+function buildBudgetPreviewRows(wallet: WalletDetails, preview: TemplateWalletSupportPreview, template: Template) {
+  const configuredTotals = buildConfiguredTemplateTotals(template, preview.contract_count);
   return [
     { label: "Chain", value: "Ethereum Mainnet" },
     { label: "Sub-Wallets", value: `${preview.contract_count}` },
+    {
+      label: "Configured Template Total",
+      value: `${formatCryptoMetric(configuredTotals.totalEth, "ETH")} + ${formatCryptoMetric(configuredTotals.totalWeth, "WETH")}`,
+    },
     {
       label: "Main Wallet Balance",
       value: `${formatCryptoMetric(wallet.eth_balance, "ETH")} / ${formatCryptoMetric(wallet.weth_balance, "WETH")}`,
@@ -383,13 +388,13 @@ function buildAutomationSteps(
 function automationToneClass(tone: AutomationStepTone) {
   switch (tone) {
     case "ready":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+      return "bg-sky-100 text-sky-700";
     case "attention":
-      return "border-rose-200 bg-rose-50 text-rose-700";
+      return "bg-rose-100 text-rose-700";
     case "optional":
-      return "border-slate-200 bg-slate-100 text-slate-600";
+      return "bg-slate-200 text-slate-600";
     default:
-      return "border-sky-200 bg-sky-50 text-sky-700";
+      return "bg-sky-50 text-sky-700";
   }
 }
 
@@ -410,9 +415,9 @@ function AutomationStepCard({
   index: number;
 }) {
   return (
-    <div className="relative rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.35)]">
+    <div className="cad-panel-soft relative px-4 py-4">
       <div className="flex items-start gap-3">
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold ${automationToneClass(step.tone)}`}>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${automationToneClass(step.tone)}`}>
           {index + 1}
         </div>
         <div className="min-w-0">
@@ -447,6 +452,24 @@ function buildReturnWalletSummary(template: Template) {
 
 function buildTestingExecuteSummary(template: Template) {
   return template.test_auto_execute_after_funding ? "Testing only" : "Off";
+}
+
+function buildConfiguredTemplateTotals(template: Template, contractCount: number) {
+  const normalizedCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
+  const nativePerContract =
+    (toNumericValue(template.gas_reserve_eth_per_contract) ?? 0) +
+    (toNumericValue(template.direct_contract_eth_per_contract) ?? 0) +
+    (toNumericValue(template.direct_contract_native_eth_per_contract) ?? 0);
+  const wethPerContract =
+    (toNumericValue(template.swap_budget_eth_per_contract) ?? 0) +
+    (toNumericValue(template.direct_contract_weth_per_contract) ?? 0);
+
+  return {
+    contractCount: normalizedCount,
+    totalEth: nativePerContract * normalizedCount,
+    totalWeth: wethPerContract * normalizedCount,
+    nativeOnlyEquivalent: (nativePerContract + wethPerContract) * normalizedCount,
+  };
 }
 
 export function WalletDetailsPage({ walletId }: { walletId: string }) {
@@ -790,11 +813,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
   const activeRunPreview = reviewPreview ?? preview;
   const selectedDistributorAutomation = selectedTemplate ? getDistributorAutomationSummary(selectedTemplate) : null;
-  const previewBudgetRows = wallet && preview ? buildBudgetPreviewRows(wallet, preview) : [];
+  const previewBudgetRows = wallet && preview && selectedTemplate ? buildBudgetPreviewRows(wallet, preview, selectedTemplate) : [];
   const previewSwapRows = preview ? buildSwapPreviewRows(preview) : [];
   const previewGasRows = preview && selectedTemplate ? buildGasEstimateRows(preview, selectedTemplate) : [];
   const previewAutomationSteps = preview && selectedTemplate ? buildAutomationSteps(preview, selectedTemplate, wallet?.type ?? "main") : [];
-  const reviewBudgetRows = wallet && activeRunPreview ? buildBudgetPreviewRows(wallet, activeRunPreview) : [];
+  const reviewBudgetRows = wallet && activeRunPreview && selectedTemplate ? buildBudgetPreviewRows(wallet, activeRunPreview, selectedTemplate) : [];
   const reviewGasRows = activeRunPreview && selectedTemplate ? buildGasEstimateRows(activeRunPreview, selectedTemplate) : [];
   const reviewAutomationSteps =
     activeRunPreview && selectedTemplate ? buildAutomationSteps(activeRunPreview, selectedTemplate, wallet?.type ?? "main") : [];
@@ -862,7 +885,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                   <div
                     className={`mt-5 rounded-xl border px-4 py-3 text-sm ${
                       wallet.balances_live
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+                        ? "border-sky-200 bg-sky-50 text-sky-700"
                         : "border-amber-500/30 bg-amber-500/10 text-amber-800"
                     }`}
                   >
@@ -945,9 +968,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     {templatesError ? <p className="mb-4 text-sm text-destructive">{templatesError}</p> : null}
 
                     {loadingTemplates ? (
-                      <div className="rounded-2xl border border-border/70 bg-secondary/20 p-4 text-sm text-muted-foreground">Loading templates...</div>
+                      <div className="cad-panel-soft p-4 text-sm text-muted-foreground">Loading templates...</div>
                     ) : templates.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-border bg-secondary/20 p-6 text-center text-sm text-muted-foreground">
+                      <div className="cad-panel-soft p-6 text-center text-sm text-muted-foreground">
                         No active v2 templates yet. Create one first, then return here to check wallet support.
                       </div>
                     ) : (
@@ -966,8 +989,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   setSelectedTemplateId(template.id);
                                 }
                               }}
-                              className={`rounded-2xl border p-4 text-left transition ${
-                                active ? "border-accent bg-accent/10 shadow-sm" : "border-border bg-background/70 hover:bg-secondary/20"
+                              className={`rounded-2xl p-4 text-left transition ${
+                                active
+                                  ? "bg-accent/85 shadow-[0_18px_38px_-28px_rgba(56,189,248,0.32)] ring-1 ring-sky-200"
+                                  : "bg-card ring-1 ring-border/70 hover:bg-secondary/30"
                               }`}
                             >
                               <div className="flex items-start justify-between gap-3">
@@ -1019,11 +1044,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         title="Automation console"
                         description="Review the live budget, route sizing, and deployment path before launching the automation."
                       >
-                        <div className="rounded-[28px] bg-slate-100/90 p-4 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.45)] sm:p-5">
-                          <div className="rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.35)] sm:p-6">
+                        <div className="cad-panel-accent p-4 shadow-[0_28px_60px_-44px_rgba(14,165,233,0.45)] sm:p-5">
+                          <div className="rounded-[24px] bg-white/92 p-5 sm:p-6">
                             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                               <div className="max-w-2xl">
-                                <div className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-white">
+                                <div className="inline-flex items-center gap-2 rounded-full bg-primary px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-primary-foreground">
                                   <Rocket className="h-3.5 w-3.5" />
                                   Contract Auto Deploy
                                 </div>
@@ -1034,12 +1059,12 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               </div>
 
                               <div className="grid gap-3 sm:min-w-[280px]">
-                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <div className="cad-panel-muted px-4 py-3">
                                   <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Template</p>
                                   <p className="mt-1 text-sm font-semibold text-slate-900">{selectedTemplate.name}</p>
                                   <p className="mt-1 text-xs text-slate-500">{buildTemplateSummary(selectedTemplate)}</p>
                                 </div>
-                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <div className="cad-panel-muted px-4 py-3">
                                   <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Recipient</p>
                                   <p className="mt-1 break-all font-mono text-xs text-slate-700">{selectedTemplate.recipient_address ?? "Not set"}</p>
                                   {selectedDistributorAutomation ? (
@@ -1051,7 +1076,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                             <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_320px]">
                               <div className="space-y-5">
-                                <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                <div className="cad-panel-soft px-5 py-5">
                                   <div className="flex items-center gap-3">
                                     <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
                                       <WalletCards className="h-5 w-5" />
@@ -1062,7 +1087,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </div>
                                   </div>
 
-                                  <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
+                                  <div className="mt-5 cad-panel-muted px-4 py-2">
                                     {preview ? (
                                       previewBudgetRows.map((row) => <BudgetPreviewRow key={row.label} label={row.label} value={row.value} />)
                                     ) : (
@@ -1073,7 +1098,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   </div>
                                 </div>
 
-                                <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                <div className="cad-panel-soft px-5 py-5">
                                   <div className="flex items-center gap-3">
                                     <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
                                       <Coins className="h-5 w-5" />
@@ -1084,7 +1109,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </div>
                                   </div>
 
-                                  <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
+                                  <div className="cad-panel-muted mt-5 overflow-hidden">
                                     <div className="overflow-x-auto">
                                       <table className="min-w-full divide-y divide-slate-200 text-sm">
                                         <thead className="bg-slate-50">
@@ -1118,7 +1143,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   </div>
                                 </div>
 
-                                <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                <div className="cad-panel-soft px-5 py-5">
                                   <div className="flex items-center gap-3">
                                     <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
                                       <Fuel className="h-5 w-5" />
@@ -1132,7 +1157,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   <div className="mt-5 space-y-3">
                                     {preview ? (
                                       previewGasRows.map((row) => (
-                                        <div key={row.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <div key={row.label} className="cad-panel-muted px-4 py-3">
                                           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                                             <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{row.label}</p>
                                             <p className="text-sm font-semibold text-slate-900">{row.value}</p>
@@ -1141,7 +1166,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         </div>
                                       ))
                                     ) : (
-                                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                                      <div className="cad-panel-muted px-4 py-6 text-sm text-slate-500">
                                         Gas estimates appear once the live preview is available.
                                       </div>
                                     )}
@@ -1149,21 +1174,21 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 </div>
 
                                 {!wallet.balances_live ? (
-                                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+                                  <div className="rounded-2xl bg-amber-50 px-4 py-4 text-sm text-amber-800">
                                     {wallet.balance_error ?? "Live wallet balances are unavailable, so the support preview is paused."}
                                   </div>
                                 ) : null}
 
                                 {contractCountError ? (
-                                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-700">
+                                  <div className="rounded-2xl bg-rose-50 px-4 py-4 text-sm text-rose-700">
                                     {contractCountError}
                                   </div>
                                 ) : null}
 
                                 {preview ? (
                                   <div
-                                    className={`rounded-2xl border px-4 py-4 text-sm ${
-                                      preview.can_proceed ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"
+                                    className={`rounded-2xl px-4 py-4 text-sm ${
+                                      preview.can_proceed ? "bg-sky-50 text-sky-900 ring-1 ring-sky-100" : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
                                     }`}
                                   >
                                     <div className="flex items-start gap-3">
@@ -1186,7 +1211,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               </div>
 
                               <div className="space-y-5">
-                                <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                <div className="cad-panel-soft px-5 py-5">
                                   <p className="text-lg font-semibold text-slate-950">Run settings</p>
                                   <div className="mt-4 space-y-4">
                                     <div>
@@ -1200,52 +1225,52 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         max={100}
                                         value={contractCount}
                                         onChange={(event) => setContractCount(event.target.value)}
-                                        className="mt-2 border-slate-200 bg-slate-50"
+                                        className="mt-2 bg-background/80"
                                       />
                                     </div>
 
                                     <div className="grid gap-3">
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">One-template budget</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, "ETH")} gas reserve • {formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, "ETH")} swap budget
                                         </p>
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Sub-wallet ETH / contract funding</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, "ETH")} kept local • {formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, "ETH")} ETH + {formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, "WETH")} WETH to distributor
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500">Sub-wallet ETH remains local. Direct contract ETH and direct contract WETH are transferred into ManagedTokenDistributor.</p>
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Auto top-up</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">{buildAutoTopUpSummary(selectedTemplate)}</p>
                                         {selectedTemplate.auto_top_up_enabled ? (
                                           <p className="mt-1 text-xs text-slate-500">Refill from the main wallet when native ETH gets too low mid-run.</p>
                                         ) : null}
                                       </div>
-                                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                                      <div className="rounded-2xl bg-amber-50 px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">Testing execute</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">{buildTestingExecuteSummary(selectedTemplate)}</p>
                                         {selectedTemplate.test_auto_execute_after_funding ? (
                                           <p className="mt-1 text-xs text-amber-800">Testing only. Each funded distributor will immediately call execute().</p>
                                         ) : null}
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Return wallet</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">{buildReturnWalletSummary(selectedTemplate)}</p>
                                         {selectedTemplate.return_wallet_address ? (
                                           <p className="mt-1 text-xs text-slate-500">Final sub-wallet leftovers sweep into this address.</p>
                                         ) : null}
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Protection</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {formatCryptoMetric(selectedTemplate.slippage_percent)}% slippage • {formatFeeTier(selectedTemplate.fee_tier)}
                                         </p>
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Local wrap</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {(toNumericValue(selectedTemplate.swap_budget_eth_per_contract) ?? 0) > 0 || (toNumericValue(selectedTemplate.direct_contract_weth_per_contract) ?? 0) > 0
@@ -1253,7 +1278,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                             : "Not needed"}
                                         </p>
                                       </div>
-                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                      <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Distributor flow</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {selectedDistributorAutomation?.title ?? "Auto deploy disabled"}
@@ -1266,14 +1291,14 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   </div>
                                 </div>
 
-                                <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                <div className="cad-panel-soft px-5 py-5">
                                   <p className="text-lg font-semibold text-slate-950">Automation flow</p>
                                   <p className="mt-1 text-sm text-slate-500">Run history will log every movement in this order once the automation starts.</p>
                                   <div className="mt-4 space-y-3">
                                     {previewAutomationSteps.length > 0 ? (
                                       previewAutomationSteps.map((step, index) => <AutomationStepCard key={step.title} step={step} index={index} />)
                                     ) : (
-                                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                                      <div className="cad-panel-muted px-4 py-6 text-sm text-slate-500">
                                         The automation flow appears once the preview is available.
                                       </div>
                                     )}
@@ -1281,7 +1306,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 </div>
 
                                 {selectedTemplate.notes ? (
-                                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 text-sm leading-6 text-slate-600 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                                  <div className="cad-panel-soft px-5 py-5 text-sm leading-6 text-slate-600">
                                     {selectedTemplate.notes}
                                   </div>
                                 ) : null}
@@ -1316,7 +1341,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       title="Template details"
                       description="Select a template from the library to see its plan, routing split, and wallet support preview."
                     >
-                      <div className="rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+                      <div className="cad-panel-soft px-4 py-6 text-sm text-muted-foreground">
                         Select a template to preview wallet support and per-route totals.
                       </div>
                     </SectionBlock>
@@ -1373,11 +1398,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
           {wallet && selectedTemplate && activeRunPreview ? (
             <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
-              <div className="rounded-[28px] bg-slate-100/90 p-4 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.45)]">
-                <div className="rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.35)] sm:p-6">
+              <div className="cad-panel-accent p-4 shadow-[0_28px_60px_-44px_rgba(14,165,233,0.45)]">
+                <div className="rounded-[24px] bg-white/92 p-5 sm:p-6">
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                     <div className="max-w-2xl">
-                      <div className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-white">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-primary px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-primary-foreground">
                         <Rocket className="h-3.5 w-3.5" />
                         Contract Auto Deploy
                       </div>
@@ -1388,14 +1413,14 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
 
                     <div className="grid gap-3 sm:min-w-[280px]">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Source wallet</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{shortAddress(wallet.address)}</p>
                         <p className="mt-1 text-xs text-slate-500">
                           {wallet.type === "imported_private_key" ? "Linked wallets from private key" : "Derived wallets from seed"}
                         </p>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Recipient</p>
                         <p className="mt-1 break-all font-mono text-xs text-slate-700">{selectedTemplate.recipient_address ?? "Not set"}</p>
                         {selectedDistributorAutomation ? (
@@ -1408,7 +1433,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
               </div>
 
               {creatingSubWallets ? (
-                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                <div className="cad-panel-accent px-5 py-5 shadow-[0_18px_40px_-34px_rgba(56,189,248,0.3)]">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-700">Automation running</p>
@@ -1417,7 +1442,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         The backend is creating the wallet batch, funding each sub-wallet with ETH, wrapping locally, approving the router, swapping into the configured tokens, deploying ManagedTokenDistributor contracts, and saving each tx hash. Full movement logs appear in Run history as soon as the run record is saved.
                       </p>
                     </div>
-                    <div className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3 py-1.5 text-sm font-medium text-sky-700">
+                    <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-sm font-medium text-sky-700 ring-1 ring-sky-100">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       In progress
                     </div>
@@ -1428,15 +1453,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                   </div>
 
                   <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-2xl border border-sky-100 bg-white px-4 py-3">
+                    <div className="cad-panel-muted px-4 py-3">
                       <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Step 1</p>
                       <p className="mt-1 text-sm font-semibold text-slate-900">Create {activeRunPreview.contract_count} sub-wallet{activeRunPreview.contract_count === 1 ? "" : "s"}</p>
                     </div>
-                    <div className="rounded-2xl border border-sky-100 bg-white px-4 py-3">
+                    <div className="cad-panel-muted px-4 py-3">
                       <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Step 2</p>
                       <p className="mt-1 text-sm font-semibold text-slate-900">Fund ETH and preserve gas locally</p>
                     </div>
-                    <div className="rounded-2xl border border-sky-100 bg-white px-4 py-3">
+                    <div className="cad-panel-muted px-4 py-3">
                       <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Step 3</p>
                       <p className="mt-1 text-sm font-semibold text-slate-900">
                         Local wrap, approve, swap, and deploy
@@ -1455,20 +1480,20 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_320px]">
                 <div className="space-y-5">
-                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                  <div className="cad-panel-soft px-5 py-5">
                     <p className="text-lg font-semibold text-slate-950">Budget preview</p>
-                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
+                    <div className="cad-panel-muted mt-4 px-4 py-2">
                       {reviewBudgetRows.map((row) => (
                         <BudgetPreviewRow key={row.label} label={row.label} value={row.value} />
                       ))}
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                  <div className="cad-panel-soft px-5 py-5">
                     <p className="text-lg font-semibold text-slate-950">Gas estimates</p>
                     <div className="mt-4 space-y-3">
                       {reviewGasRows.map((row) => (
-                        <div key={row.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div key={row.label} className="cad-panel-muted px-4 py-3">
                           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                             <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{row.label}</p>
                             <p className="text-sm font-semibold text-slate-900">{row.value}</p>
@@ -1479,12 +1504,12 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                  <div className="cad-panel-soft px-5 py-5">
                     <p className="text-lg font-semibold text-slate-950">Route summary</p>
                     {reviewStablecoinRoutes.length ? (
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         {reviewStablecoinRoutes.map((route) => (
-                          <div key={route.token_address} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                          <div key={route.token_address} className="cad-panel-muted px-4 py-3">
                             <p className="text-sm font-semibold text-slate-900">{route.token_symbol}</p>
                             <p className="mt-1 text-xs text-slate-500">
                               {formatCryptoMetric(route.per_contract_weth_amount, "WETH")} per wallet
@@ -1501,7 +1526,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 </div>
 
                 <div className="space-y-5">
-                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                  <div className="cad-panel-soft px-5 py-5">
                     <p className="text-lg font-semibold text-slate-950">Automation flow</p>
                     <div className="mt-4 space-y-3">
                       {reviewAutomationSteps.map((step, index) => (
@@ -1510,29 +1535,29 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+                  <div className="cad-panel-soft px-5 py-5">
                     <p className="text-lg font-semibold text-slate-950">Key numbers</p>
                     <div className="mt-4 grid gap-3">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Wallets to create</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{activeRunPreview.contract_count}</p>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">ETH deducted</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.total_eth_deducted, "ETH")}</p>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Local WETH wrap</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.weth_from_wrapped_eth, "WETH")}</p>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Estimated remaining ETH</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.execution.remaining_eth_after_run, "ETH")}</p>
                       </div>
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                  <div className="rounded-2xl bg-amber-50 px-4 py-4 text-sm text-amber-900">
                     Detailed logs are saved for wallet creation, ETH funding, local wrap steps, approvals, swaps, distributor transfers, and each ManagedTokenDistributor deployment in Run history.
                   </div>
                 </div>

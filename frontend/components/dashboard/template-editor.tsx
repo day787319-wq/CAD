@@ -54,10 +54,10 @@ function SectionCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-secondary/10 p-4">
-      <div className="mb-4">
-        <p className="text-sm font-semibold text-foreground">{title}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+    <div className="cad-panel px-5 py-5 sm:px-6 sm:py-6">
+      <div className="mb-5">
+        <p className="text-sm font-semibold tracking-[0.01em] text-foreground">{title}</p>
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{description}</p>
       </div>
       <div className="space-y-4">{children}</div>
     </div>
@@ -86,7 +86,7 @@ function LiveValueHint({
   value: string | null;
 }) {
   if (value === null) return null;
-  return <p className="text-xs text-emerald-700">{label}: {formatUsd(value)}</p>;
+  return <p className="text-xs font-medium text-sky-700">{label}: {formatUsd(value)}</p>;
 }
 
 export function TemplateEditor({ open, onOpenChange, options, template, onSaved }: TemplateEditorProps) {
@@ -326,7 +326,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         </DialogHeader>
 
         <form className="space-y-5" onSubmit={handleSubmit}>
-          <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-4 py-3">
+          <div className="cad-panel-accent px-4 py-4">
             <p className="text-sm font-semibold text-foreground">Live USD labels</p>
             <p className="mt-1 text-xs text-muted-foreground">
               ETH, WETH, and stablecoin spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.
@@ -406,7 +406,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title="Testing Execute"
             description="Optional testing mode to prove the full deploy-and-send path on-chain."
           >
-            <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <label className="cad-panel-soft flex items-start gap-3 px-4 py-3">
               <input
                 type="checkbox"
                 checked={form.test_auto_execute_after_funding}
@@ -428,7 +428,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             </label>
 
             {form.test_auto_execute_after_funding ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 This bypasses the normal hold-in-contract behavior for testing. `execute()` still sends the funded amount to the recipient address, not the return wallet.
               </div>
             ) : null}
@@ -474,7 +474,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </div>
             </div>
 
-            <label className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+            <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
               <input
                 type="checkbox"
                 checked
@@ -495,7 +495,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title="Auto Top-Up"
             description="Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ETH balance gets too low."
           >
-            <label className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+            <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
               <input
                 type="checkbox"
                 checked={form.auto_top_up_enabled}
@@ -590,8 +590,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         key={coin.address}
                         type="button"
                         onClick={() => toggleStablecoin(coin.address, coin.symbol)}
-                        className={`rounded-xl border px-3 py-3 text-left transition ${
-                          active ? "border-accent bg-accent/10" : "border-border bg-background/70 hover:bg-secondary/20"
+                        className={`rounded-2xl px-4 py-4 text-left transition ${
+                          active
+                            ? "bg-accent/85 shadow-[0_18px_36px_-26px_rgba(56,189,248,0.35)] ring-1 ring-sky-200"
+                            : "bg-card ring-1 ring-border/70 hover:bg-secondary/35"
                         }`}
                       >
                         <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
@@ -600,7 +602,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-2 text-[11px] text-muted-foreground">
                           {coin.official_source ? "Verified from official issuer docs" : "Ethereum mainnet stablecoin"}
                         </p>
-                        <p className="mt-1 text-[11px] text-emerald-700">
+                        <p className="mt-1 text-[11px] font-medium text-sky-700">
                           Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
                         </p>
                       </button>
@@ -611,7 +613,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 {(form.stablecoin_distribution_mode === "manual_percent" ||
                   form.stablecoin_distribution_mode === "manual_weth_amount") &&
                 selectedStablecoins.length > 0 ? (
-                  <div className="rounded-xl border border-border/70 bg-background/70 p-4">
+                  <div className="cad-panel-soft p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-foreground">Manual distribution</p>
@@ -636,7 +638,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             <div>
                               <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
                               <p className="text-xs text-muted-foreground">{coin.name}</p>
-                              <p className="mt-1 text-[11px] text-emerald-700">
+                              <p className="mt-1 text-[11px] font-medium text-sky-700">
                                 Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
                               </p>
                             </div>
@@ -683,7 +685,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 ) : null}
 
                 {distributionPreviewRows.length > 0 ? (
-                  <div className="rounded-xl border border-border/70 bg-secondary/10 p-4">
+                  <div className="cad-panel-soft p-4">
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-foreground">
@@ -698,7 +700,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
                     <div className="space-y-3">
                       {distributionPreviewRows.map((allocation) => (
-                        <div key={allocation.token_address} className="grid gap-2 rounded-xl border border-border/70 bg-background/70 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_140px_110px] sm:items-center">
+                        <div key={allocation.token_address} className="cad-panel-muted grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_140px_110px] sm:items-center">
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-foreground">{allocation.token_symbol}</p>
                             <p className="mt-1 font-mono text-[11px] text-muted-foreground">{shortAddress(allocation.token_address)}</p>
@@ -708,7 +710,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             <p className="mt-1 text-sm font-semibold text-foreground">
                               {formatAmount(allocation.weth_amount_per_contract)} WETH
                             </p>
-                            <p className="mt-1 text-[11px] text-emerald-700">
+                            <p className="mt-1 text-[11px] font-medium text-sky-700">
                               {formatUsd(getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd))}
                             </p>
                           </div>
@@ -725,7 +727,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 ) : null}
               </>
             ) : (
-              <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
                 No stablecoin swap is included in this template.
               </div>
             )}
@@ -777,7 +779,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 </div>
               </>
             ) : (
-              <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
                 Swap protection becomes active when this template includes a stablecoin swap route.
               </div>
             )}
@@ -787,7 +789,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title="Direct Funding"
             description="Keep extra ETH in each sub-wallet, or fund ManagedTokenDistributor directly with ETH and WETH."
           >
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-foreground/80">
               Sub-wallet ETH stays local for gas headroom or ETH-side actions. Direct contract ETH and direct contract WETH are sent into ManagedTokenDistributor after deployment.
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -852,85 +854,85 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             description="This summary is per contract. The wallet flow will multiply these numbers by the selected contract count."
           >
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas reserve</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} ETH</p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(ethUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(ethUsdLabel)}</p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap budget</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.swap_budget_eth_per_contract)} ETH</p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(swapBudgetUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Sub-wallet ETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_eth_per_contract)} ETH</p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directEthUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directEthUsdLabel)}</p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract ETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_native_eth_per_contract)} ETH</p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directContractNativeEthUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directContractNativeEthUsdLabel)}</p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract WETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_weth_per_contract)} WETH</p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directWethUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directWethUsdLabel)}</p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Auto top-up</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">
                   {topUpEnabled
                     ? `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ETH`
                     : "Off"}
                 </p>
-                <p className="mt-1 text-[11px] text-emerald-700">
+                <p className="mt-1 text-[11px] font-medium text-sky-700">
                   {topUpEnabled
                     ? `${formatUsd(topUpThresholdUsdLabel)} -> ${formatUsd(topUpTargetUsdLabel)}`
                     : "--"}
                 </p>
               </div>
-              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+              <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Slippage</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.slippage_percent)}%</p>
               </div>
-              <div className="rounded-xl border border-accent/40 bg-accent/10 px-4 py-3">
+              <div className="cad-panel-accent px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Configured spend / contract</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">
                   {formatAmount(configuredEthPerContract)} ETH + {formatAmount(configuredWethPerContract)} WETH
                 </p>
-                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(configuredSpendUsdLabel)}</p>
+                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(configuredSpendUsdLabel)}</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   {formatAmount(totalEthIfNoWeth)} ETH if starting from native only
                 </p>
               </div>
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               {needsWeth
                 ? "This template needs WETH. The run will fund ETH first, leave gas unwrapped, and wrap only the required WETH budget inside each sub-wallet."
                 : "This template does not require WETH unless you add swap budget or direct contract WETH funding."}
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               Fee tier: {options?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? "Auto best route"}
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               Auto top-up: {topUpEnabled
                 ? `Enabled at ${formatAmount(form.auto_top_up_threshold_eth)} ETH, refilling to ${formatAmount(form.auto_top_up_target_eth)} ETH.`
                 : "Disabled"}
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               Testing auto execute: {form.test_auto_execute_after_funding ? "Enabled" : "Disabled"}
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               Recipient: {form.recipient_address || "Not set"}
             </div>
 
-            <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               Return wallet: {form.return_wallet_address || "Not set"}
             </div>
 
@@ -938,12 +940,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             form.recipient_address &&
             form.return_wallet_address &&
             form.recipient_address.toLowerCase() !== form.return_wallet_address.toLowerCase() ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 Testing note: this will execute to the recipient, not the return wallet. Make both addresses the same if you want the full test cycle to land there.
               </div>
             ) : null}
 
-            <div className="rounded-xl border border-border/70 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
+            <div className="cad-panel-accent px-4 py-3 text-sm text-muted-foreground">
               We will later compare these per-template ETH requirements against the selected main wallet before any subwallets are created. WETH is produced locally inside each sub-wallet when the flow needs it.
             </div>
           </SectionCard>
