@@ -53,11 +53,11 @@ const copy = {
   hide: { en: "Hide live check", zn: "隐藏实时检查", vn: "Ẩn kiểm tra trực tiếp" },
   view: { en: "View live check", zn: "查看实时检查", vn: "Xem kiểm tra trực tiếp" },
   loading: { en: "Loading current market pricing...", zn: "正在加载当前市场价格...", vn: "Đang tải giá thị trường hiện tại..." },
-  stablePricing: { en: "Stablecoin route pricing", zn: "稳定币路由定价", vn: "Định giá tuyến stablecoin" },
+  stablePricing: { en: "Swap route pricing", zn: "兑换路由定价", vn: "Định giá tuyến swap" },
   noRoutes: {
-    en: "This template does not include a stablecoin swap route, so the preview focuses on sub-wallet ETH, local WETH wrap requirements, and any direct contract ETH/WETH funding.",
-    zn: "此模板不包含稳定币兑换路由，因此预览重点展示子钱包 ETH、本地 WETH 包装需求以及任何直接的合约 ETH/WETH 资金。",
-    vn: "Mẫu này không bao gồm tuyến hoán đổi stablecoin, nên phần xem trước tập trung vào ETH ví con, nhu cầu wrap WETH cục bộ và mọi khoản cấp vốn ETH/WETH trực tiếp cho hợp đồng.",
+    en: "This template does not include a token swap route, so the preview focuses on sub-wallet native funding, local wrapped-token needs, and any direct contract native / wrapped funding.",
+    zn: "此模板不包含代币兑换路由，因此预览重点展示子钱包原生资产注资、本地包装代币需求以及任何直接的合约原生资产 / 包装资产注资。",
+    vn: "Mẫu này không bao gồm tuyến swap token, nên phần xem trước tập trung vào cấp vốn tài sản gốc cho ví con, nhu cầu token wrap cục bộ và mọi khoản cấp vốn trực tiếp native / wrapped cho hợp đồng.",
   },
 } as const;
 
@@ -82,6 +82,10 @@ export function TemplateMarketCheckPanel({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
   const requestIdRef = useRef(0);
+  const chainMeta =
+    template.chain === "bnb"
+      ? { nativeSymbol: "BNB", wrappedNativeSymbol: "WBNB" }
+      : { nativeSymbol: "ETH", wrappedNativeSymbol: "WETH" };
 
   const normalizedContractCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
 
@@ -246,21 +250,21 @@ export function TemplateMarketCheckPanel({
           {marketCheck ? (
             <>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-                <MetricCard label={locale === "en" ? "Per-contract ETH" : locale === "zn" ? "每合约 ETH" : "ETH mỗi hợp đồng"} value={formatTokenAmount(marketCheck.per_contract.required_eth, "ETH")} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
-                <MetricCard label={locale === "en" ? "Per-contract WETH" : locale === "zn" ? "每合约 WETH" : "WETH mỗi hợp đồng"} value={formatTokenAmount(marketCheck.per_contract.required_weth, "WETH")} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
-                <MetricCard label={locale === "en" ? "Funding total" : locale === "zn" ? "资金总额" : "Tổng cấp vốn"} value={formatTokenAmount(marketCheck.totals.required_eth_total, "ETH")} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
-                <MetricCard label={locale === "en" ? "Network fees" : locale === "zn" ? "网络费用" : "Phí mạng"} value={formatTokenAmount(marketCheck.totals.total_network_fee_eth, "ETH")} hint={formatUsd(marketCheck.totals.total_network_fee_eth_usd)} />
-                <MetricCard label={locale === "en" ? "All-in live total" : locale === "zn" ? "实时总成本" : "Tổng chi phí trực tiếp"} value={formatUsd(marketCheck.totals.total_eth_required_with_fees_usd ?? marketCheck.totals.combined_cost_usd)} hint={`${formatTokenAmount(marketCheck.totals.total_eth_required_with_fees, "ETH")} ${locale === "en" ? "incl. funding, projected top-ups, and fees" : locale === "zn" ? "含资金、预计补充和费用" : "bao gồm cấp vốn, dự phòng nạp thêm và phí"}`} />
-                <MetricCard label={locale === "en" ? "Stable output USD" : locale === "zn" ? "稳定币输出 USD" : "USD đầu ra stablecoin"} value={formatUsd(marketCheck.totals.stablecoin_output_total_usd)} hint={locale === "en" ? "Estimated current value of routed stable outputs" : locale === "zn" ? "路由稳定币输出的当前估算价值" : "Giá trị ước tính hiện tại của đầu ra stablecoin theo tuyến"} />
+                <MetricCard label={locale === "en" ? `Per-contract ${chainMeta.nativeSymbol}` : locale === "zn" ? `每合约 ${chainMeta.nativeSymbol}` : `${chainMeta.nativeSymbol} mỗi hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.required_eth, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
+                <MetricCard label={locale === "en" ? `Per-contract ${chainMeta.wrappedNativeSymbol}` : locale === "zn" ? `每合约 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} mỗi hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.required_weth, chainMeta.wrappedNativeSymbol)} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
+                <MetricCard label={locale === "en" ? "Funding total" : locale === "zn" ? "资金总额" : "Tổng cấp vốn"} value={formatTokenAmount(marketCheck.totals.required_eth_total, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
+                <MetricCard label={locale === "en" ? "Network fees" : locale === "zn" ? "网络费用" : "Phí mạng"} value={formatTokenAmount(marketCheck.totals.total_network_fee_eth, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.total_network_fee_eth_usd)} />
+                <MetricCard label={locale === "en" ? "All-in live total" : locale === "zn" ? "实时总成本" : "Tổng chi phí trực tiếp"} value={formatUsd(marketCheck.totals.total_eth_required_with_fees_usd ?? marketCheck.totals.combined_cost_usd)} hint={`${formatTokenAmount(marketCheck.totals.total_eth_required_with_fees, chainMeta.nativeSymbol)} ${locale === "en" ? "incl. funding, projected top-ups, and fees" : locale === "zn" ? "含资金、预计补充和费用" : "bao gồm cấp vốn, dự phòng nạp thêm và phí"}`} />
+                <MetricCard label={locale === "en" ? "Token output USD" : locale === "zn" ? "代币输出 USD" : "USD đầu ra token"} value={formatUsd(marketCheck.totals.stablecoin_output_total_usd)} hint={locale === "en" ? "Estimated current value of routed token outputs" : locale === "zn" ? "路由代币输出的当前估算价值" : "Giá trị ước tính hiện tại của đầu ra token theo tuyến"} />
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-                <MetricCard label={locale === "en" ? "Sub-wallet ETH" : locale === "zn" ? "子钱包 ETH" : "ETH ví con"} value={formatTokenAmount(marketCheck.per_contract.direct_subwallet_eth ?? marketCheck.per_contract.direct_contract_eth, "ETH")} />
-                <MetricCard label={locale === "en" ? "Contract ETH" : locale === "zn" ? "合约 ETH" : "ETH hợp đồng"} value={formatTokenAmount(marketCheck.per_contract.direct_contract_native_eth ?? "0", "ETH")} />
-                <MetricCard label={locale === "en" ? "Contract WETH" : locale === "zn" ? "合约 WETH" : "WETH hợp đồng"} value={formatTokenAmount(marketCheck.per_contract.direct_contract_weth, "WETH")} />
-                <MetricCard label={locale === "en" ? "Projected top-up reserve" : locale === "zn" ? "预计补充预留" : "Dự phòng nạp thêm"} value={formatTokenAmount(marketCheck.totals.projected_auto_top_up_eth_total ?? "0", "ETH")} hint={formatUsd(marketCheck.totals.projected_auto_top_up_eth_total_usd)} />
-                <MetricCard label="ETH spot" value={formatUsd(marketCheck.price_snapshot.eth_usd)} />
-                <MetricCard label="WETH spot" value={formatUsd(marketCheck.price_snapshot.weth_usd)} />
+                <MetricCard label={locale === "en" ? `Sub-wallet ${chainMeta.nativeSymbol}` : locale === "zn" ? `子钱包 ${chainMeta.nativeSymbol}` : `${chainMeta.nativeSymbol} ví con`} value={formatTokenAmount(marketCheck.per_contract.direct_subwallet_eth ?? marketCheck.per_contract.direct_contract_eth, chainMeta.nativeSymbol)} />
+                <MetricCard label={locale === "en" ? `Contract ${chainMeta.nativeSymbol}` : locale === "zn" ? `合约 ${chainMeta.nativeSymbol}` : `${chainMeta.nativeSymbol} hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.direct_contract_native_eth ?? "0", chainMeta.nativeSymbol)} />
+                <MetricCard label={locale === "en" ? `Contract ${chainMeta.wrappedNativeSymbol}` : locale === "zn" ? `合约 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.direct_contract_weth, chainMeta.wrappedNativeSymbol)} />
+                <MetricCard label={locale === "en" ? "Projected top-up reserve" : locale === "zn" ? "预计补充预留" : "Dự phòng nạp thêm"} value={formatTokenAmount(marketCheck.totals.projected_auto_top_up_eth_total ?? "0", chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.projected_auto_top_up_eth_total_usd)} />
+                <MetricCard label={`${chainMeta.nativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.eth_usd)} />
+                <MetricCard label={`${chainMeta.wrappedNativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.weth_usd)} />
                 <MetricCard label={locale === "en" ? "Slippage" : locale === "zn" ? "滑点" : "Trượt giá"} value={`${formatAmount(marketCheck.slippage_percent)}%`} />
                 <MetricCard label={locale === "en" ? "Fee tier" : locale === "zn" ? "费率层级" : "Mức phí"} value={formatFeeTier(marketCheck.fee_tier)} />
                 <MetricCard label={locale === "en" ? "Checked at" : locale === "zn" ? "检查时间" : "Thời điểm kiểm tra"} value={formatRelativeTimestamp(marketCheck.price_snapshot.fetched_at)} />
@@ -286,8 +290,8 @@ export function TemplateMarketCheckPanel({
                       </div>
 
                       <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-                        <MetricCard label={locale === "en" ? "WETH allocated" : locale === "zn" ? "已分配 WETH" : "WETH phân bổ"} value={`${formatAmount(quote.per_contract_weth_amount)} WETH`} />
-                        <MetricCard label={locale === "en" ? "Stable spot" : locale === "zn" ? "稳定币现价" : "Giá stable hiện tại"} value={formatUsd(quote.token_usd)} />
+                        <MetricCard label={locale === "en" ? `${chainMeta.wrappedNativeSymbol} allocated` : locale === "zn" ? `已分配 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} phân bổ`} value={`${formatAmount(quote.per_contract_weth_amount)} ${chainMeta.wrappedNativeSymbol}`} />
+                        <MetricCard label={locale === "en" ? "Token spot" : locale === "zn" ? "代币现价" : "Giá token hiện tại"} value={formatUsd(quote.token_usd)} />
                         <MetricCard label={locale === "en" ? "Est. output" : locale === "zn" ? "预计输出" : "Đầu ra ước tính"} value={quote.per_contract_output ? `${formatAmount(quote.per_contract_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_output_usd)} />
                         <MetricCard label={locale === "en" ? "Minimum received" : locale === "zn" ? "最低接收量" : "Nhận tối thiểu"} value={quote.per_contract_min_output ? `${formatAmount(quote.per_contract_min_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_min_output_usd)} />
                         <MetricCard label={locale === "en" ? "Route fee" : locale === "zn" ? "路由费用" : "Phí tuyến"} value={formatFeeTier(quote.quote.fee_tier)} />

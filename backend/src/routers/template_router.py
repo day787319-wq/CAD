@@ -26,6 +26,7 @@ class StablecoinAllocationRequest(BaseModel):
 
 class TemplateUpsertRequest(BaseModel):
     name: str
+    chain: str = "ethereum_mainnet"
     template_version: str = "v2"
     recipient_address: str | None = None
     return_wallet_address: str | None = None
@@ -53,17 +54,17 @@ class TemplatePreviewRequest(BaseModel):
 
 
 @router.get("/options")
-async def get_template_options_endpoint():
+async def get_template_options_endpoint(chain: str | None = None):
     try:
-        return get_template_options_service()
+        return get_template_options_service(chain)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/market-snapshot")
-async def get_template_editor_market_snapshot_endpoint():
+async def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
     try:
-        return get_template_editor_market_snapshot_service()
+        return get_template_editor_market_snapshot_service(chain)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

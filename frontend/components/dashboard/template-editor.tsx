@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   TEMPLATE_API_URL,
   Template,
+  TemplateChain,
   TemplateEditorForm,
   TemplateOptions,
   TemplatePriceSnapshot,
@@ -94,12 +95,29 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const { toast } = useToast();
   const { locale } = useI18n();
   const [form, setForm] = useState<TemplateEditorForm>(defaultTemplateForm(options));
+  const [editorOptions, setEditorOptions] = useState<TemplateOptions | null>(options);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<TemplatePriceSnapshot | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
 
-  const stablecoins = options?.stablecoins ?? [];
+  const currentOptions = editorOptions ?? options;
+  const stablecoins = currentOptions?.stablecoins ?? [];
+  const chainOptions = currentOptions?.available_chains ?? options?.available_chains ?? [];
+  const selectedChainValue = currentOptions?.selected_chain ?? options?.selected_chain ?? ("ethereum_mainnet" as TemplateChain);
+  const currentChain =
+    chainOptions.find((option) => option.value === form.chain) ??
+    chainOptions.find((option) => option.value === selectedChainValue) ??
+    options?.available_chains?.[0] ??
+    {
+      value: "ethereum_mainnet" as TemplateChain,
+      label: "Ethereum mainnet",
+      native_symbol: "ETH",
+      wrapped_native_symbol: "WETH",
+      quote_supported: true,
+    };
+  const nativeSymbol = currentOptions?.native_symbol ?? currentChain.native_symbol;
+  const wrappedNativeSymbol = currentOptions?.wrapped_native_symbol ?? currentChain.wrapped_native_symbol;
   const selectedStablecoinAddresses = useMemo(
     () => new Set(form.stablecoin_allocations.map((allocation) => allocation.token_address.toLowerCase())),
     [form.stablecoin_allocations],
@@ -107,19 +125,43 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const hasStablecoinSwap = form.stablecoin_distribution_mode !== "none";
   const topUpEnabled = form.auto_top_up_enabled;
   const needsWeth = Number(form.swap_budget_eth_per_contract || "0") > 0 || Number(form.direct_contract_weth_per_contract || "0") > 0;
-  const configuredEthPerContract =
-    Number(form.gas_reserve_eth_per_contract || "0") +
-    Number(form.direct_contract_eth_per_contract || "0") +
-    Number(form.direct_contract_native_eth_per_contract || "0");
-  const configuredWethPerContract =
-    Number(form.swap_budget_eth_per_contract || "0") +
-    Number(form.direct_contract_weth_per_contract || "0");
-  const totalEthIfNoWeth = configuredEthPerContract + configuredWethPerContract;
+  const topUpThresholdValue = toFiniteNumber(form.auto_top_up_threshold_eth) ?? 0;
+  const topUpTargetValue = toFiniteNumber(form.auto_top_up_target_eth) ?? 0;
+  const topUpHasSingleValue = topUpEnabled && topUpThresholdValue === topUpTargetValue;
+
+  const loadChainOptions = async (chain: TemplateChain) => {
+    const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?chain=${encodeURIComponent(chain)}`, {
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail ?? "Failed to load template options");
+    setEditorOptions(payload);
+    return payload as TemplateOptions;
+  };
 
   useEffect(() => {
     if (!open) return;
+
+    let active = true;
     setSaveError(null);
-    setForm(template ? templateToForm(template) : defaultTemplateForm(options));
+    const nextForm = template ? templateToForm(template) : defaultTemplateForm(options);
+    setForm(nextForm);
+    setEditorOptions(options);
+
+    void (async () => {
+      try {
+        const nextOptions = await loadChainOptions(nextForm.chain);
+        if (!active) return;
+        setEditorOptions(nextOptions);
+      } catch (error) {
+        if (!active) return;
+        setSaveError(error instanceof Error ? error.message : "Failed to load template options");
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   }, [open, template, options]);
 
   const selectedStablecoins = useMemo(
@@ -158,24 +200,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     () => getUsdValue(form.auto_top_up_target_eth, marketSnapshot?.eth_usd),
     [form.auto_top_up_target_eth, marketSnapshot?.eth_usd],
   );
-  const configuredSpendUsdLabel = useMemo(() => {
-    const nativeSpend = toFiniteNumber(ethUsdLabel);
-    const directEthSpend = toFiniteNumber(directEthUsdLabel);
-    const directContractNativeEthSpend = toFiniteNumber(directContractNativeEthUsdLabel);
-    const swapBudgetSpend = toFiniteNumber(swapBudgetUsdLabel);
-    const directWethSpend = toFiniteNumber(directWethUsdLabel);
-    if ([nativeSpend, directEthSpend, directContractNativeEthSpend, swapBudgetSpend, directWethSpend].some((value) => value === null)) return null;
-    return `${nativeSpend! + directEthSpend! + directContractNativeEthSpend! + swapBudgetSpend! + directWethSpend!}`;
-  }, [directContractNativeEthUsdLabel, directEthUsdLabel, directWethUsdLabel, ethUsdLabel, swapBudgetUsdLabel]);
-
   useEffect(() => {
     if (!open) return;
 
     let active = true;
 
-    const loadMarketSnapshot = async () => {
+    const loadChainMarketSnapshot = async () => {
       try {
-        const response = await fetch(`${TEMPLATE_API_URL}/api/templates/market-snapshot`, {
+        const response = await fetch(`${TEMPLATE_API_URL}/api/templates/market-snapshot?chain=${encodeURIComponent(form.chain)}`, {
           cache: "no-store",
         });
         const payload = await response.json();
@@ -189,10 +221,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       }
     };
 
-    void loadMarketSnapshot();
+    void loadChainMarketSnapshot();
     const intervalId = window.setInterval(() => {
       if (!document.hidden) {
-        void loadMarketSnapshot();
+        void loadChainMarketSnapshot();
       }
     }, MARKET_REFRESH_INTERVAL_MS);
 
@@ -200,7 +232,26 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [open]);
+  }, [open, form.chain]);
+
+  const handleChainChange = async (nextChain: TemplateChain) => {
+    if (template || nextChain === form.chain) return;
+
+    try {
+      const nextOptions = await loadChainOptions(nextChain);
+      setSaveError(null);
+      setForm((current) => ({
+        ...current,
+        chain: nextChain,
+        fee_tier: nextOptions.defaults.fee_tier ?? null,
+        auto_wrap_eth_to_weth: nextOptions.defaults.auto_wrap_eth_to_weth ?? true,
+        stablecoin_distribution_mode: nextOptions.defaults.stablecoin_distribution_mode ?? "none",
+        stablecoin_allocations: [],
+      }));
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to load template options");
+    }
+  };
 
   const toggleStablecoin = (tokenAddress: string, tokenSymbol: string) => {
     const normalized = tokenAddress.toLowerCase();
@@ -267,6 +318,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     try {
       const payload = {
         name: form.name,
+        chain: form.chain,
         template_version: "v2",
         recipient_address: form.recipient_address || null,
         return_wallet_address: form.return_wallet_address || null,
@@ -349,7 +401,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   : "Tạo mẫu"}
           </DialogTitle>
           <DialogDescription>
-            {options?.hints.summary ?? (locale === "en" ? "This template defines one contract / one subwallet." : locale === "zn" ? "此模板定义一个合约 / 一个子钱包。" : "Mẫu này định nghĩa một hợp đồng / một ví con.")}
+            {currentOptions?.hints.summary ?? (locale === "en" ? "This template defines one contract / one subwallet." : locale === "zn" ? "此模板定义一个合约 / 一个子钱包。" : "Mẫu này định nghĩa một hợp đồng / một ví con.")}
           </DialogDescription>
         </DialogHeader>
 
@@ -358,17 +410,26 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Live USD labels" : locale === "zn" ? "实时 USD 标签" : "Nhãn USD trực tiếp"}</p>
             <p className="mt-1 text-xs text-muted-foreground">
               {locale === "en"
-                ? "ETH, WETH, and stablecoin spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic."
+                ? `${nativeSymbol}, ${wrappedNativeSymbol}, and selected token spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.`
                 : locale === "zn"
-                  ? "当此编辑器打开时，ETH、WETH 和稳定币现货价格每 60 秒刷新一次。这些仅作参考，不会改变执行逻辑。"
-                  : "Giá spot của ETH, WETH và stablecoin sẽ làm mới mỗi 60 giây khi trình chỉnh sửa đang mở. Đây chỉ là nhãn tham chiếu và không thay đổi logic thực thi."}
+                  ? `当此编辑器打开时，${nativeSymbol}、${wrappedNativeSymbol} 和所选代币现货价格每 60 秒刷新一次。这些仅作参考，不会改变执行逻辑。`
+                  : `Giá spot của ${nativeSymbol}, ${wrappedNativeSymbol} và token đã chọn sẽ làm mới mỗi 60 giây khi trình chỉnh sửa đang mở. Đây chỉ là nhãn tham chiếu và không thay đổi logic thực thi.`}
             </p>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>ETH {formatUsd(marketSnapshot?.eth_usd)}</span>
-              <span>WETH {formatUsd(marketSnapshot?.weth_usd)}</span>
+              <span>{nativeSymbol} {formatUsd(marketSnapshot?.eth_usd)}</span>
+              <span>{wrappedNativeSymbol} {formatUsd(marketSnapshot?.weth_usd)}</span>
               <span>{locale === "en" ? "Updated" : locale === "zn" ? "更新时间" : "Cập nhật"} {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
             </div>
             {marketError ? <p className="mt-2 text-xs text-amber-800">{locale === "en" ? "Market data warning" : locale === "zn" ? "市场数据警告" : "Cảnh báo dữ liệu thị trường"}: {marketError}</p> : null}
+            {!currentChain.quote_supported ? (
+              <p className="mt-2 text-xs text-amber-800">
+                {locale === "en"
+                  ? `${currentChain.label} supports token selection, pricing, and wallet execution for funding, local wrap, auto top-up, and direct contract funding. Live swap quoting and token swap execution are still unavailable.`
+                  : locale === "zn"
+                    ? `${currentChain.label} 当前支持模板编辑器中的代币选择、价格显示，以及注资、本地包装、自动补充和直接合约注资执行；但实时兑换报价和代币兑换执行仍不可用。`
+                    : `${currentChain.label} hỗ trợ chọn token, xem giá và chạy ví cho cấp vốn, wrap cục bộ, auto top-up và cấp vốn hợp đồng trực tiếp. Báo giá swap trực tiếp và thực thi swap token vẫn chưa khả dụng.`}
+              </p>
+            ) : null}
           </div>
 
           <SectionCard
@@ -377,13 +438,52 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2 sm:col-span-2">
+                <label className="text-sm font-medium text-foreground">
+                  {locale === "en" ? "Chain" : locale === "zn" ? "链" : "Chain"}
+                </label>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {chainOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={Boolean(template)}
+                      onClick={() => void handleChainChange(option.value)}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        form.chain === option.value
+                          ? "border-primary/30 bg-accent text-foreground shadow-[0_12px_28px_-24px_rgba(37,99,235,0.55)]"
+                          : "border-border/70 bg-card hover:bg-secondary/35"
+                      } ${template ? "cursor-default opacity-85" : ""}`}
+                    >
+                      <p className="text-sm font-semibold text-foreground">{option.label}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {option.native_symbol} / {option.wrapped_native_symbol}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {template
+                    ? locale === "en"
+                      ? "Chain is fixed for existing templates."
+                      : locale === "zn"
+                        ? "现有模板的链已固定。"
+                        : "Chain của mẫu đã lưu sẽ được giữ cố định."
+                    : locale === "en"
+                      ? "Choose the network first, then select the swap tokens for that chain."
+                      : locale === "zn"
+                        ? "先选择网络，再选择该链上的兑换代币。"
+                        : "Chọn mạng trước, rồi chọn token swap của chain đó."}
+                </p>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="template-name" className="text-sm font-medium text-foreground">
                   {locale === "en" ? "Template name" : locale === "zn" ? "模板名称" : "Tên mẫu"}
                 </label>
                 <Input
                   id="template-name"
                   value={form.name}
-                  placeholder={locale === "en" ? "Example: Stablecoin distribution contract" : locale === "zn" ? "例如：稳定币分发合约" : "Ví dụ: Hợp đồng phân phối stablecoin"}
+                  placeholder={locale === "en" ? "Example: BNB token distribution contract" : locale === "zn" ? "例如：BNB 代币分发合约" : "Ví dụ: Hợp đồng phân phối token BNB"}
                   onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
                   required
                 />
@@ -400,7 +500,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, recipient_address: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {locale === "en" ? "Required when stablecoin swaps or direct contract ETH/WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet." : locale === "zn" ? "当稳定币兑换或直接合约 ETH/WETH 注资需要从每个子钱包自动部署 ManagedTokenDistributor 时，此项为必填。" : "Bắt buộc khi swap stablecoin hoặc cấp ETH/WETH trực tiếp cho hợp đồng cần tự động triển khai ManagedTokenDistributor từ mỗi ví con."}
+                  {locale === "en"
+                    ? `Required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding should auto-deploy ManagedTokenDistributor from each sub-wallet.`
+                    : locale === "zn"
+                      ? `当代币兑换或直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资需要从每个子钱包自动部署 ManagedTokenDistributor 时，此项为必填。`
+                      : `Bắt buộc khi swap token hoặc cấp ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng cần tự động triển khai ManagedTokenDistributor từ mỗi ví con.`}
                 </p>
               </div>
 
@@ -415,7 +519,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, return_wallet_address: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {options?.hints.return_wallet_note ??
+                  {currentOptions?.hints.return_wallet_note ??
                     (locale === "en"
                       ? "Optional. After the run, leftover ETH, WETH, and supported token balances still sitting in a sub-wallet will be swept here."
                       : locale === "zn"
@@ -457,7 +561,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               <span>
                 <span className="block text-sm font-medium text-foreground">{locale === "en" ? "Testing only: execute distributor immediately after funding" : locale === "zn" ? "仅测试：注资后立即执行分发合约" : "Chỉ để thử nghiệm: thực thi hợp đồng phân phối ngay sau khi cấp vốn"}</span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  {options?.hints.test_auto_execute_note ??
+                  {currentOptions?.hints.test_auto_execute_note ??
                     (locale === "en"
                       ? "After each ManagedTokenDistributor is deployed and funded, the sub-wallet will call execute() right away. If you want the contract output to end in the return wallet during testing, set the recipient address to the same address."
                       : locale === "zn"
@@ -475,13 +579,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title={locale === "en" ? "ETH Budget" : locale === "zn" ? "ETH 预算" : "Ngân sách ETH"}
+            title={locale === "en" ? `${nativeSymbol} Budget` : locale === "zn" ? `${nativeSymbol} 预算` : `Ngân sách ${nativeSymbol}`}
             description={locale === "en" ? "These values apply to one contract. The wallet flow multiplies them by the contract count later." : locale === "zn" ? "这些数值适用于单个合约，后续钱包流程会按合约数量进行倍增。" : "Các giá trị này áp dụng cho một hợp đồng. Luồng ví sẽ nhân chúng theo số lượng hợp đồng ở bước sau."}
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="gas-reserve" className="text-sm font-medium text-foreground">
-                  Gas reserve ETH
+                  {locale === "en" ? `Gas reserve ${nativeSymbol}` : locale === "zn" ? `Gas 预留 ${nativeSymbol}` : `Dự phòng gas ${nativeSymbol}`}
                 </label>
                 <Input
                   id="gas-reserve"
@@ -492,14 +596,18 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, gas_reserve_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Optional baseline. Preview will automatically add extra unwrapped ETH when local wrap, swap, deploy, or token-transfer gas needs more headroom.
+                  {locale === "en"
+                    ? `Optional baseline. Preview will automatically add extra unwrapped ${nativeSymbol} when local wrap, swap, deploy, or token-transfer gas needs more headroom.`
+                    : locale === "zn"
+                      ? `可选基础值。当本地包装、兑换、部署或代币转账 gas 需要更多余量时，预览会自动增加未包装的 ${nativeSymbol}。`
+                      : `Mức cơ sở tùy chọn. Bản xem trước sẽ tự động cộng thêm ${nativeSymbol} chưa wrap khi local wrap, swap, triển khai hoặc gas chuyển token cần thêm vùng đệm.`}
                 </p>
                 <LiveValueHint label="Live value" value={ethUsdLabel} />
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="swap-budget" className="text-sm font-medium text-foreground">
-                  Stablecoin swap budget
+                  {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
                 </label>
                 <Input
                   id="swap-budget"
@@ -509,8 +617,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   value={form.swap_budget_eth_per_contract}
                   onChange={(event) => setForm((current) => ({ ...current, swap_budget_eth_per_contract: event.target.value }))}
                 />
-                <p className="text-xs text-muted-foreground">{options?.hints.swap_budget_note}</p>
-                <LiveValueHint label="Live WETH spend" value={swapBudgetUsdLabel} />
+                <p className="text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
+                <LiveValueHint label={`Live ${wrappedNativeSymbol} spend`} value={swapBudgetUsdLabel} />
               </div>
             </div>
 
@@ -523,9 +631,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 className="mt-1 h-4 w-4 rounded border-border"
               />
               <span>
-                <span className="block text-sm font-medium text-foreground">Local sub-wallet wrapping is always used when WETH is needed</span>
+                <span className="block text-sm font-medium text-foreground">
+                  {locale === "en"
+                    ? `Local sub-wallet wrapping is always used when ${wrappedNativeSymbol} is needed`
+                    : locale === "zn"
+                      ? `当需要 ${wrappedNativeSymbol} 时，始终在子钱包内本地包装`
+                      : `Luôn wrap cục bộ trong ví con khi cần ${wrappedNativeSymbol}`}
+                </span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  The current execution engine funds ETH first, keeps gas unwrapped, and wraps the required WETH amount inside each sub-wallet. Direct main-wallet WETH funding is not available in this flow.
+                  {locale === "en"
+                    ? `The current execution engine funds ${nativeSymbol} first, keeps gas unwrapped, and wraps the required ${wrappedNativeSymbol} amount inside each sub-wallet. Direct main-wallet ${wrappedNativeSymbol} funding is not available in this flow.`
+                    : locale === "zn"
+                      ? `当前执行引擎会先注入 ${nativeSymbol}，保留 gas 为未包装状态，并在每个子钱包内包装所需的 ${wrappedNativeSymbol}。此流程不支持主钱包直接注入 ${wrappedNativeSymbol}。`
+                      : `Luồng thực thi hiện tại sẽ cấp ${nativeSymbol} trước, giữ gas ở dạng chưa wrap và chỉ wrap lượng ${wrappedNativeSymbol} cần thiết trong từng ví con. Luồng này chưa hỗ trợ cấp ${wrappedNativeSymbol} trực tiếp từ ví chính.`}
                 </span>
               </span>
             </label>
@@ -533,7 +651,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
           <SectionCard
             title={locale === "en" ? "Auto Top-Up" : locale === "zn" ? "自动补充" : "Nạp thêm tự động"}
-            description={locale === "en" ? "Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ETH balance gets too low." : locale === "zn" ? "当子钱包的原生 ETH 余额过低时，让主钱包在继续授权、兑换或部署之前为其补充余额。" : "Cho phép ví chính nạp lại ví con trước khi tiếp tục phê duyệt, swap hoặc triển khai khi số dư ETH gốc xuống quá thấp."}
+            description={locale === "en" ? `Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ${nativeSymbol} balance gets too low.` : locale === "zn" ? `当子钱包的原生 ${nativeSymbol} 余额过低时，让主钱包在继续授权、兑换或部署之前为其补充余额。` : `Cho phép ví chính nạp lại ví con trước khi tiếp tục phê duyệt, swap hoặc triển khai khi số dư ${nativeSymbol} gốc xuống quá thấp.`}
           >
             <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
               <input
@@ -548,10 +666,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 className="mt-1 h-4 w-4 rounded border-border"
               />
               <span>
-                <span className="block text-sm font-medium text-foreground">Enable auto top-up from the main wallet</span>
+                <span className="block text-sm font-medium text-foreground">
+                  {locale === "en" ? "Enable auto top-up from the main wallet" : locale === "zn" ? "启用主钱包自动补充" : "Bật tự động nạp thêm từ ví chính"}
+                </span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  {options?.hints.auto_top_up_note ??
-                    "When a sub-wallet reaches the trigger threshold after local execution starts, the main wallet can send another ETH transfer to refill it to the target."}
+                  {currentOptions?.hints.auto_top_up_note ??
+                    `When a sub-wallet reaches the trigger threshold after local execution starts, the main wallet can send another ${nativeSymbol} transfer to refill it to the target.`}
                 </span>
               </span>
             </label>
@@ -559,7 +679,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="auto-top-up-threshold" className="text-sm font-medium text-foreground">
-                  Trigger threshold ETH
+                  {locale === "en" ? `Trigger threshold ${nativeSymbol}` : locale === "zn" ? `触发阈值 ${nativeSymbol}` : `Ngưỡng kích hoạt ${nativeSymbol}`}
                 </label>
                 <Input
                   id="auto-top-up-threshold"
@@ -571,14 +691,18 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, auto_top_up_threshold_eth: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  If the sub-wallet balance falls to or below this value during the run, the executor will try to refill it before continuing.
+                  {locale === "en"
+                    ? `If the sub-wallet balance falls to or below this value during the run, the executor will try to refill it before continuing.`
+                    : locale === "zn"
+                      ? "如果子钱包余额在运行中降到该值或更低，执行器会在继续前尝试补充。"
+                      : "Nếu số dư ví con giảm xuống hoặc thấp hơn mức này trong lúc chạy, bộ thực thi sẽ thử nạp lại trước khi tiếp tục."}
                 </p>
                 <LiveValueHint label="Live value" value={topUpThresholdUsdLabel} />
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="auto-top-up-target" className="text-sm font-medium text-foreground">
-                  Refill target ETH
+                  {locale === "en" ? `Refill target ${nativeSymbol}` : locale === "zn" ? `补充目标 ${nativeSymbol}` : `Mục tiêu nạp lại ${nativeSymbol}`}
                 </label>
                 <Input
                   id="auto-top-up-target"
@@ -590,7 +714,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, auto_top_up_target_eth: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  The main wallet will top the sub-wallet back up to this native ETH target. Set it higher than the trigger.
+                  {locale === "en"
+                    ? `The main wallet will top the sub-wallet back up to this native ${nativeSymbol} target. Set it higher than the trigger.`
+                    : locale === "zn"
+                      ? `主钱包会把子钱包补回到这个原生 ${nativeSymbol} 目标值。请将其设为高于触发阈值。`
+                      : `Ví chính sẽ nạp lại ví con về mức ${nativeSymbol} gốc này. Hãy đặt nó cao hơn ngưỡng kích hoạt.`}
                 </p>
                 <LiveValueHint label="Live value" value={topUpTargetUsdLabel} />
               </div>
@@ -598,11 +726,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title={locale === "en" ? "Stablecoin Distribution" : locale === "zn" ? "稳定币分配" : "Phân bổ stablecoin"}
-            description={locale === "en" ? "Pick one or many stablecoins for one contract, then decide how the swap budget is split across them." : locale === "zn" ? "为一个合约选择一个或多个稳定币，然后决定兑换预算如何分配。" : "Chọn một hoặc nhiều stablecoin cho một hợp đồng, rồi quyết định cách chia ngân sách swap giữa chúng."}
+            title={locale === "en" ? "Swap Token Distribution" : locale === "zn" ? "兑换代币分配" : "Phân bổ token swap"}
+            description={locale === "en" ? "Pick one or many tokens for one contract, then decide how the swap budget is split across them." : locale === "zn" ? "为一个合约选择一个或多个代币，然后决定兑换预算如何分配。" : "Chọn một hoặc nhiều token cho một hợp đồng, rồi quyết định cách chia ngân sách swap giữa chúng."}
           >
             <div className="flex flex-wrap gap-2">
-              {options?.distribution_modes.map((mode) => (
+              {currentOptions?.distribution_modes.map((mode) => (
                 <Button
                   key={mode.value}
                   type="button"
@@ -640,7 +768,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-1 text-xs text-muted-foreground">{coin.name}</p>
                         <p className="mt-2 font-mono text-[11px] text-muted-foreground">{shortAddress(coin.address)}</p>
                         <p className="mt-2 text-[11px] text-muted-foreground">
-                          {coin.official_source ? "Verified from official issuer docs" : "Ethereum mainnet stablecoin"}
+                          {coin.official_source ? "Verified from official docs" : `${currentChain.label} token`}
                         </p>
                         <p className="mt-1 text-[11px] font-medium text-sky-700">
                           Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
@@ -660,7 +788,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-1 text-xs text-muted-foreground">
                           {form.stablecoin_distribution_mode === "manual_percent"
                             ? "Percentages must total exactly 100."
-                            : "Exact WETH amounts must total the swap budget for one contract."}
+                            : `Exact ${wrappedNativeSymbol} amounts must total the swap budget for one contract.`}
                         </p>
                       </div>
                       <Button type="button" variant="outline" onClick={distributeEqually}>
@@ -712,7 +840,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                 />
                               ) : (
                                 <LiveValueHint
-                                  label="Live WETH spend"
+                                  label={`Live ${wrappedNativeSymbol} spend`}
                                   value={getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd)}
                                 />
                               )}
@@ -732,10 +860,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                           {form.stablecoin_distribution_mode === "equal" ? "Equal split preview" : "Per-contract distribution preview"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          This is what one future subwallet would have allocated from the stablecoin swap budget before contract creation.
+                          This is what one future subwallet would have allocated from the token swap budget before contract creation.
                         </p>
                       </div>
-                      <p className="text-xs text-muted-foreground">{distributionPreviewRows.length} coin{distributionPreviewRows.length === 1 ? "" : "s"}</p>
+                      <p className="text-xs text-muted-foreground">{distributionPreviewRows.length} token{distributionPreviewRows.length === 1 ? "" : "s"}</p>
                     </div>
 
                     <div className="space-y-3">
@@ -746,9 +874,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             <p className="mt-1 font-mono text-[11px] text-muted-foreground">{shortAddress(allocation.token_address)}</p>
                           </div>
                           <div>
-                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">WETH per contract</p>
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{wrappedNativeSymbol} per contract</p>
                             <p className="mt-1 text-sm font-semibold text-foreground">
-                              {formatAmount(allocation.weth_amount_per_contract)} WETH
+                              {formatAmount(allocation.weth_amount_per_contract)} {wrappedNativeSymbol}
                             </p>
                             <p className="mt-1 text-[11px] font-medium text-sky-700">
                               {formatUsd(getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd))}
@@ -768,14 +896,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </>
             ) : (
               <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-                No stablecoin swap is included in this template.
+                {locale === "en" ? "No token swap is included in this template." : locale === "zn" ? "此模板未包含代币兑换。" : "Mẫu này chưa bao gồm swap token."}
               </div>
             )}
           </SectionCard>
 
           <SectionCard
             title="Swap Protection"
-            description={options?.hints.swap_settings_note ?? "Set the slippage guardrail and optional Uniswap fee tier for this template."}
+            description={currentOptions?.hints.swap_settings_note ?? "Set the slippage guardrail and optional swap fee tier for this template."}
           >
             {hasStablecoinSwap ? (
               <>
@@ -794,14 +922,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                       onChange={(event) => setForm((current) => ({ ...current, slippage_percent: event.target.value }))}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Used to calculate the minimum received amount for each stablecoin route.
+                      Used to calculate the minimum received amount for each swap route.
                     </p>
                   </div>
 
                   <div className="space-y-2">
-                    <p className="text-sm font-medium text-foreground">Uniswap fee tier</p>
+                    <p className="text-sm font-medium text-foreground">Swap fee tier</p>
                     <div className="flex flex-wrap gap-2">
-                      {options?.fee_tiers.map((option) => (
+                      {currentOptions?.fee_tiers.map((option) => (
                         <Button
                           key={option.label}
                           type="button"
@@ -813,29 +941,31 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                       ))}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Leave this on auto unless you know you want to force a specific V3 pool fee.
+                      {form.chain === "bnb"
+                        ? "BNB Chain uses PancakeSwap auto routing. Fee tier stays on auto."
+                        : "Leave this on auto unless you know you want to force a specific V3 pool fee."}
                     </p>
                   </div>
                 </div>
               </>
             ) : (
               <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-                Swap protection becomes active when this template includes a stablecoin swap route.
+                Swap protection becomes active when this template includes a token swap route.
               </div>
             )}
           </SectionCard>
 
           <SectionCard
             title="Direct Funding"
-            description="Keep extra ETH in each sub-wallet, or fund ManagedTokenDistributor directly with ETH and WETH."
+            description={`Keep extra ${nativeSymbol} in each sub-wallet, or fund ManagedTokenDistributor directly with ${nativeSymbol} and ${wrappedNativeSymbol}.`}
           >
             <div className="cad-panel-soft px-4 py-3 text-sm text-foreground/80">
-              Sub-wallet ETH stays local for gas headroom or ETH-side actions. Direct contract ETH and direct contract WETH are sent into ManagedTokenDistributor after deployment.
+              {`Sub-wallet ${nativeSymbol} stays local for gas headroom or native-side actions. Direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} are sent into ManagedTokenDistributor after deployment.`}
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <div className="space-y-2">
                 <label htmlFor="direct-eth" className="text-sm font-medium text-foreground">
-                  Direct ETH to sub-wallet
+                  {`Direct ${nativeSymbol} to sub-wallet`}
                 </label>
                 <Input
                   id="direct-eth"
@@ -846,14 +976,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  This ETH stays unwrapped in the sub-wallet after funding. Use it for extra gas headroom or any ETH-side action in the run.
+                  {`This ${nativeSymbol} stays unwrapped in the sub-wallet after funding. Use it for extra gas headroom or any native-side action in the run.`}
                 </p>
                 <LiveValueHint label="Live value" value={directEthUsdLabel} />
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="direct-contract-eth" className="text-sm font-medium text-foreground">
-                  Direct ETH distributor funding
+                  {`Direct ${nativeSymbol} distributor funding`}
                 </label>
                 <Input
                   id="direct-contract-eth"
@@ -864,14 +994,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_native_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Optional. After deployment, the sub-wallet sends this ETH directly into ManagedTokenDistributor for a native ETH execute path.
+                  {`Optional. After deployment, the sub-wallet sends this ${nativeSymbol} directly into ManagedTokenDistributor for a native-token execute path.`}
                 </p>
                 <LiveValueHint label="Live value" value={directContractNativeEthUsdLabel} />
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="direct-weth" className="text-sm font-medium text-foreground">
-                  Direct WETH distributor funding
+                  {`Direct ${wrappedNativeSymbol} distributor funding`}
                 </label>
                 <Input
                   id="direct-weth"
@@ -882,7 +1012,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_weth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Optional. The sub-wallet wraps this amount locally after funding, then transfers it into a deployed ManagedTokenDistributor.
+                  {`Optional. The sub-wallet wraps this amount locally after funding, then transfers it into a deployed ManagedTokenDistributor.`}
                 </p>
                 <LiveValueHint label="Live value" value={directWethUsdLabel} />
               </div>
@@ -890,45 +1020,49 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title={locale === "en" ? "Review" : locale === "zn" ? "复核" : "Xem lại"}
-            description={locale === "en" ? "This summary is per contract. The wallet flow will multiply these numbers by the selected contract count." : locale === "zn" ? "此汇总按单个合约计算，钱包流程会根据所选合约数量乘算这些数值。" : "Phần tổng hợp này tính theo từng hợp đồng. Luồng ví sẽ nhân các số này theo số lượng hợp đồng đã chọn."}
+            title={locale === "en" ? "Summary" : locale === "zn" ? "摘要" : "Tóm tắt"}
+            description={locale === "en" ? "Per contract." : locale === "zn" ? "按单个合约计算。" : "Theo từng hợp đồng."}
           >
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas reserve</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} {nativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(ethUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap budget</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.swap_budget_eth_per_contract)} ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.swap_budget_eth_per_contract)} {wrappedNativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Sub-wallet ETH</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_eth_per_contract)} ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Wallet ${nativeSymbol}`}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_eth_per_contract)} {nativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directEthUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract ETH</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_native_eth_per_contract)} ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Contract ${nativeSymbol}`}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_native_eth_per_contract)} {nativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directContractNativeEthUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract WETH</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_weth_per_contract)} WETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Contract ${wrappedNativeSymbol}`}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_weth_per_contract)} {wrappedNativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directWethUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Auto top-up</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Top-up</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">
                   {topUpEnabled
-                    ? `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ETH`
+                    ? topUpHasSingleValue
+                      ? `${formatAmount(form.auto_top_up_target_eth)} ${nativeSymbol}`
+                      : `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ${nativeSymbol}`
                     : "Off"}
                 </p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">
                   {topUpEnabled
-                    ? `${formatUsd(topUpThresholdUsdLabel)} -> ${formatUsd(topUpTargetUsdLabel)}`
+                    ? topUpHasSingleValue
+                      ? `${formatUsd(topUpTargetUsdLabel)}`
+                      : `${formatUsd(topUpThresholdUsdLabel)} -> ${formatUsd(topUpTargetUsdLabel)}`
                     : "--"}
                 </p>
               </div>
@@ -936,36 +1070,28 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Slippage</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.slippage_percent)}%</p>
               </div>
-              <div className="cad-panel-accent px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Configured spend / contract</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">
-                  {formatAmount(configuredEthPerContract)} ETH + {formatAmount(configuredWethPerContract)} WETH
-                </p>
-                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(configuredSpendUsdLabel)}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {formatAmount(totalEthIfNoWeth)} ETH if starting from native only
-                </p>
-              </div>
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
               {needsWeth
-                ? "This template needs WETH. The run will fund ETH first, leave gas unwrapped, and wrap only the required WETH budget inside each sub-wallet."
-                : "This template does not require WETH unless you add swap budget or direct contract WETH funding."}
+                ? `${wrappedNativeSymbol} will be wrapped inside each sub-wallet.`
+                : `No ${wrappedNativeSymbol} is required.`}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Fee tier: {options?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? "Auto best route"}
+              Fee tier: {currentOptions?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? (form.chain === "bnb" ? "Auto route" : "Auto best route")}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Auto top-up: {topUpEnabled
-                ? `Enabled at ${formatAmount(form.auto_top_up_threshold_eth)} ETH, refilling to ${formatAmount(form.auto_top_up_target_eth)} ETH.`
-                : "Disabled"}
+              Top-up: {topUpEnabled
+                ? topUpHasSingleValue
+                  ? `${formatAmount(form.auto_top_up_target_eth)} ${nativeSymbol}`
+                  : `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ${nativeSymbol}`
+                : "Off"}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Testing auto execute: {form.test_auto_execute_after_funding ? "Enabled" : "Disabled"}
+              Test execute: {form.test_auto_execute_after_funding ? "On" : "Off"}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
@@ -981,12 +1107,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             form.return_wallet_address &&
             form.recipient_address.toLowerCase() !== form.return_wallet_address.toLowerCase() ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Testing note: this will execute to the recipient, not the return wallet. Make both addresses the same if you want the full test cycle to land there.
+                Test execute sends funds to the recipient. Use the same address if funds should return there.
               </div>
             ) : null}
 
             <div className="cad-panel-accent px-4 py-3 text-sm text-muted-foreground">
-              We will later compare these per-template ETH requirements against the selected main wallet before any subwallets are created. WETH is produced locally inside each sub-wallet when the flow needs it.
+              Wallet balance is checked before any sub-wallet is created.
             </div>
           </SectionCard>
 
@@ -996,7 +1122,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {locale === "en" ? "Cancel" : locale === "zn" ? "取消" : "Hủy"}
             </Button>
-            <Button type="submit" disabled={saving || !options}>
+            <Button type="submit" disabled={saving || !currentOptions}>
               {saving ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />

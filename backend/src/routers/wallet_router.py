@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -229,9 +229,9 @@ async def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{wallet_id}/details")
-async def get_wallet_details_endpoint(wallet_id: str):
+async def get_wallet_details_endpoint(wallet_id: str, chain: str | None = Query(default=None)):
     try:
-        wallet = get_wallet_details_service(wallet_id)
+        wallet = get_wallet_details_service(wallet_id, chain=chain)
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
         return wallet

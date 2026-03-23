@@ -23,6 +23,7 @@ FastAPI backend for importing main wallets via seed phrase and batch-creating mu
    - `MASTER_PASSPHRASE`: Strong password (20+ chars).
    - `WALLET_ACCESS_PASSPHRASE`: Separate strong password (20+ chars) used only when exporting encrypted subwallet keystores.
    - `ETHEREUM_RPC_URL`: Ethereum RPC (e.g., Infura: https://mainnet.infura.io/v3/YOUR_PROJECT_ID).
+   - `BNB_RPC_URL`: BNB Chain RPC if you want to execute BNB templates.
 
 4. **Start ScyllaDB** (Local):
    - Docker: `docker run --name scylla -d -p 9042:9042 scylladb/scylla --developer-mode=1`

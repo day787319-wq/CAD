@@ -218,6 +218,7 @@ class ScyllaDB:
             CREATE TABLE IF NOT EXISTS templates (
                 id text PRIMARY KEY,
                 name text,
+                chain text,
                 target_token_symbol text,
                 target_token_address text,
                 weth_per_subwallet text,
@@ -310,6 +311,7 @@ class ScyllaDB:
         if self.mode == "scylla":
             template_alter_statements = [
                 "ALTER TABLE templates ADD template_version text",
+                "ALTER TABLE templates ADD chain text",
                 "ALTER TABLE templates ADD gas_reserve_eth_per_contract text",
                 "ALTER TABLE templates ADD swap_budget_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_eth_per_contract text",
@@ -485,6 +487,7 @@ class ScyllaDB:
         payload = {
             "id": template["id"],
             "name": template["name"],
+            "chain": template.get("chain"),
             "target_token_symbol": template["target_token_symbol"],
             "target_token_address": template["target_token_address"],
             "weth_per_subwallet": template["weth_per_subwallet"],
@@ -519,6 +522,7 @@ class ScyllaDB:
                 INSERT INTO templates (
                     id,
                     name,
+                    chain,
                     target_token_symbol,
                     target_token_address,
                     weth_per_subwallet,
@@ -547,13 +551,14 @@ class ScyllaDB:
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
                 (
                     payload["id"],
                     payload["name"],
+                    payload["chain"],
                     payload["target_token_symbol"],
                     payload["target_token_address"],
                     payload["weth_per_subwallet"],

@@ -34,9 +34,12 @@ export type StablecoinAllocation = {
   weth_amount_per_contract?: string | null;
 };
 
+export type TemplateChain = "ethereum_mainnet" | "bnb";
+
 export type Template = {
   id: string;
   name: string;
+  chain: TemplateChain;
   template_version: "v2";
   recipient_address?: string | null;
   return_wallet_address?: string | null;
@@ -61,6 +64,17 @@ export type Template = {
 };
 
 export type TemplateOptions = {
+  available_chains: Array<{
+    value: TemplateChain;
+    label: string;
+    native_symbol: string;
+    wrapped_native_symbol: string;
+    quote_supported: boolean;
+  }>;
+  selected_chain: TemplateChain;
+  native_symbol: string;
+  wrapped_native_symbol: string;
+  quote_supported: boolean;
   stablecoins: StablecoinOption[];
   distribution_modes: Array<{
     value: Template["stablecoin_distribution_mode"];
@@ -73,6 +87,7 @@ export type TemplateOptions = {
     description: string;
   }>;
   defaults: {
+    chain: TemplateChain;
     template_version: "v2";
     recipient_address?: string | null;
     return_wallet_address?: string | null;
@@ -109,6 +124,7 @@ export type TemplateOptions = {
 
 export type TemplateEditorForm = {
   name: string;
+  chain: TemplateChain;
   recipient_address: string;
   return_wallet_address: string;
   test_auto_execute_after_funding: boolean;
@@ -510,6 +526,7 @@ export function getStablecoinDistributionRows(input: {
 export function defaultTemplateForm(options: TemplateOptions | null): TemplateEditorForm {
   return {
     name: "",
+    chain: options?.defaults.chain ?? "ethereum_mainnet",
     recipient_address: options?.defaults.recipient_address ?? "",
     return_wallet_address: options?.defaults.return_wallet_address ?? "",
     test_auto_execute_after_funding: options?.defaults.test_auto_execute_after_funding ?? false,
@@ -533,6 +550,7 @@ export function defaultTemplateForm(options: TemplateOptions | null): TemplateEd
 export function templateToForm(template: Template): TemplateEditorForm {
   return {
     name: template.name,
+    chain: template.chain,
     recipient_address: template.recipient_address ?? "",
     return_wallet_address: template.return_wallet_address ?? "",
     test_auto_execute_after_funding: template.test_auto_execute_after_funding,
@@ -564,6 +582,8 @@ export function buildTemplateWalletSupportPreview(input: {
   contractCount: number;
 }): TemplateWalletSupportPreview {
   const { template, wallet, contractCount } = input;
+  const nativeSymbol = template.chain === "bnb" ? "BNB" : "ETH";
+  const wrappedNativeSymbol = template.chain === "bnb" ? "WBNB" : "WETH";
 
   const gasReserve = toFiniteNumber(template.gas_reserve_eth_per_contract) ?? 0;
   const swapBudget = toFiniteNumber(template.swap_budget_eth_per_contract) ?? 0;
@@ -659,14 +679,14 @@ export function buildTemplateWalletSupportPreview(input: {
 
   let shortfallReason: string | null = null;
   if (requiresRecipient && !template.recipient_address) {
-    shortfallReason = "recipient_address is required when stablecoin swaps or direct contract ETH/WETH are enabled.";
+    shortfallReason = `recipient_address is required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} are enabled.`;
   } else if (availableEth < requiredEthTotal) {
     shortfallReason =
-      `Not enough ETH in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ETH ` +
-      "to fund the sub-wallet gas reserve, sub-wallet ETH, direct contract ETH, automatic local execution gas headroom, and the local WETH wrap budget.";
+      `Not enough ${nativeSymbol} in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ${nativeSymbol} ` +
+      `to fund the sub-wallet gas reserve, sub-wallet ${nativeSymbol}, direct contract ${nativeSymbol}, automatic local execution gas headroom, and the local ${wrappedNativeSymbol} wrap budget.`;
   } else if (availableEth < totalEthRequiredWithFees) {
     shortfallReason =
-      `Not enough ETH in the main wallet. Need ${toAmountString(totalEthRequiredWithFees - availableEth)} more ETH ` +
+      `Not enough ${nativeSymbol} in the main wallet. Need ${toAmountString(totalEthRequiredWithFees - availableEth)} more ${nativeSymbol} ` +
       "to fund the new sub-wallets, reserve projected auto top-ups, and cover the main-wallet funding transaction fees.";
   }
 
