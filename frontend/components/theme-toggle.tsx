@@ -35,7 +35,7 @@ export function ThemeToggle({
       type="button"
       onClick={() => setTheme(isLight ? "dark" : "light")}
       className={cn(
-        "inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm text-muted-foreground transition-colors hover:text-foreground",
+        "inline-flex h-10 items-center gap-2 rounded-md border border-border/80 bg-card px-3 text-[13px] text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground",
         className
       )}
       aria-label={isLight ? toggleToDarkLabel : toggleToLightLabel}

@@ -11,8 +11,12 @@ import {
 import {
   defaultLocale,
   htmlLangByLocale,
+  interpolateTemplate,
+  localeStorageKey,
   localeLabels,
   localeTagByLocale,
+  normalizeLocale,
+  translateText,
   type SupportedLocale,
 } from "@/lib/i18n";
 
@@ -22,6 +26,7 @@ interface I18nContextValue {
   locale: SupportedLocale;
   setLocale: (locale: SupportedLocale) => void;
   localeLabels: Record<SupportedLocale, string>;
+  t: (key: string, values?: Record<string, string | number>) => string;
   interpolate: (template: string, values?: Record<string, string | number>) => string;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
   formatCurrency: (value: number, options?: Intl.NumberFormatOptions) => string;
@@ -33,34 +38,15 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
-const STORAGE_KEY = "treasury-locale";
-
-function isSupportedLocale(value: string): value is SupportedLocale {
-  return value === "en" || value === "zn" || value === "vn";
-}
-
-function interpolate(
-  template: string,
-  values: Record<string, string | number> = {}
-) {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
-    key in values ? String(values[key]) : match
-  );
-}
-
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocale] = useState<SupportedLocale>(defaultLocale);
 
   useEffect(() => {
-    const storedLocale = window.localStorage.getItem(STORAGE_KEY);
-
-    if (storedLocale && isSupportedLocale(storedLocale)) {
-      setLocale(storedLocale);
-    }
+    setLocale(normalizeLocale(window.localStorage.getItem(localeStorageKey)));
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, locale);
+    window.localStorage.setItem(localeStorageKey, locale);
     document.documentElement.lang = htmlLangByLocale[locale];
   }, [locale]);
 
@@ -74,7 +60,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       locale,
       setLocale,
       localeLabels,
-      interpolate,
+      t: (key, values) => translateText(locale, key, values),
+      interpolate: interpolateTemplate,
       formatNumber: (value, options) =>
         new Intl.NumberFormat(localeTag, options).format(value),
       formatCurrency: (value, options) =>

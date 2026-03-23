@@ -21,81 +21,89 @@ import { useToast } from "@/hooks/use-toast";
 import { API_URL } from "@/lib/api";
 
 const copy = {
-  title: { en: "Wallet Vault", zn: "Wallet Vault", vn: "Wallet Vault" },
+  title: { en: "Wallet Vault", zn: "钱包库", vn: "Kho ví" },
   subtitle: {
-    en: "Import and secure wallets from the backend",
-    zn: "Import and secure wallets from the backend",
-    vn: "Import and secure wallets from the backend",
+    en: "Import and manage source wallets from the backend",
+    zn: "从后端导入并管理源钱包",
+    vn: "Nhập và quản lý ví nguồn từ backend",
   },
-  button: { en: "Import wallet", zn: "Import wallet", vn: "Import wallet" },
-  mainMode: { en: "Main wallet", zn: "Main wallet", vn: "Main wallet" },
-  privateKeyMode: { en: "Private key", zn: "Private key", vn: "Private key" },
+  button: { en: "Import wallet", zn: "导入钱包", vn: "Nhập ví" },
+  mainMode: { en: "Main wallet", zn: "主钱包", vn: "Ví chính" },
+  privateKeyMode: { en: "Private key", zn: "私钥", vn: "Khóa riêng" },
   sheetTitle: {
     en: "Import wallet",
-    zn: "Import wallet",
-    vn: "Import wallet",
+    zn: "导入钱包",
+    vn: "Nhập ví",
   },
   mainDescription: {
     en: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
-    zn: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
-    vn: "Paste the 12 or 24 word seed phrase to import the real main wallet and derive its subwallets.",
+    zn: "粘贴 12 或 24 个助记词以导入主钱包，并派生其子钱包。",
+    vn: "Dán cụm từ khôi phục 12 hoặc 24 từ để nhập ví chính và tạo các ví con.",
   },
   privateKeyDescription: {
     en: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
-    zn: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
-    vn: "Paste one EVM private key. The backend validates it, encrypts it, stores it, and returns only safe wallet details.",
+    zn: "粘贴一个 EVM 私钥。后端会验证、加密并保存它，只返回安全的钱包信息。",
+    vn: "Dán một khóa riêng EVM. Backend sẽ xác thực, mã hóa, lưu trữ và chỉ trả về thông tin ví an toàn.",
   },
-  mainInputLabel: { en: "Seed phrase", zn: "Seed phrase", vn: "Seed phrase" },
-  privateKeyInputLabel: { en: "Private key", zn: "Private key", vn: "Private key" },
+  mainInputLabel: { en: "Seed phrase", zn: "助记词", vn: "Cụm từ khôi phục" },
+  privateKeyInputLabel: { en: "Private key", zn: "私钥", vn: "Khóa riêng" },
   mainInputPlaceholder: {
     en: "word1 word2 word3 ...",
     zn: "word1 word2 word3 ...",
     vn: "word1 word2 word3 ...",
   },
   privateKeyInputPlaceholder: { en: "0x...", zn: "0x...", vn: "0x..." },
-  submit: { en: "Import wallet", zn: "Import wallet", vn: "Import wallet" },
-  submitting: { en: "Importing...", zn: "Importing...", vn: "Importing..." },
-  importedTitle: { en: "Imported wallet", zn: "Imported wallet", vn: "Imported wallet" },
-  copyAddress: { en: "Copy address", zn: "Copy address", vn: "Copy address" },
-  openWallet: { en: "Open wallet page", zn: "Open wallet page", vn: "Open wallet page" },
-  successTitle: { en: "Wallet imported", zn: "Wallet imported", vn: "Wallet imported" },
+  submit: { en: "Import wallet", zn: "导入钱包", vn: "Nhập ví" },
+  submitting: { en: "Importing...", zn: "导入中...", vn: "Đang nhập..." },
+  importedTitle: { en: "Imported wallet", zn: "已导入钱包", vn: "Ví đã nhập" },
+  copyAddress: { en: "Copy address", zn: "复制地址", vn: "Sao chép địa chỉ" },
+  openWallet: { en: "Open wallet page", zn: "打开钱包页面", vn: "Mở trang ví" },
+  successTitle: { en: "Wallet imported", zn: "钱包已导入", vn: "Đã nhập ví" },
   successDescription: {
     en: "The wallet was imported and stored securely by the backend.",
-    zn: "The wallet was imported and stored securely by the backend.",
-    vn: "The wallet was imported and stored securely by the backend.",
+    zn: "钱包已导入，并由后端安全存储。",
+    vn: "Ví đã được nhập và lưu trữ an toàn bởi backend.",
   },
   emptyState: {
     en: "No wallet imported yet. Use the button above to import a main wallet or private key.",
-    zn: "No wallet imported yet. Use the button above to import a main wallet or private key.",
-    vn: "No wallet imported yet. Use the button above to import a main wallet or private key.",
+    zn: "尚未导入钱包。使用上方按钮导入主钱包或私钥。",
+    vn: "Chưa có ví nào được nhập. Dùng nút phía trên để nhập ví chính hoặc khóa riêng.",
   },
-  savedTab: { en: "Saved wallets", zn: "Saved wallets", vn: "Saved wallets" },
-  latestTab: { en: "Latest import", zn: "Latest import", vn: "Latest import" },
-  runsTab: { en: "Run history", zn: "Run history", vn: "Run history" },
+  savedTab: { en: "Saved wallets", zn: "已保存的钱包", vn: "Ví đã lưu" },
+  latestTab: { en: "Latest import", zn: "最近导入", vn: "Lần nhập gần nhất" },
+  runsTab: { en: "Run history", zn: "运行记录", vn: "Lịch sử chạy" },
   savedEmptyState: {
     en: "No saved wallets yet. Import one once and it will stay here for reuse.",
-    zn: "No saved wallets yet. Import one once and it will stay here for reuse.",
-    vn: "No saved wallets yet. Import one once and it will stay here for reuse.",
+    zn: "还没有已保存的钱包。导入后会保留在这里供后续复用。",
+    vn: "Chưa có ví nào được lưu. Sau khi nhập, ví sẽ ở lại đây để tái sử dụng.",
   },
   savedLoading: {
     en: "Loading saved wallets...",
-    zn: "Loading saved wallets...",
-    vn: "Loading saved wallets...",
+    zn: "正在加载已保存的钱包...",
+    vn: "Đang tải ví đã lưu...",
   },
   savedError: {
     en: "Failed to load saved wallets.",
-    zn: "Failed to load saved wallets.",
-    vn: "Failed to load saved wallets.",
+    zn: "加载已保存的钱包失败。",
+    vn: "Tải ví đã lưu thất bại.",
   },
-  openSavedWallet: { en: "Open saved wallet", zn: "Open saved wallet", vn: "Open saved wallet" },
-  privateKeyType: { en: "Private key", zn: "Private key", vn: "Private key" },
-  mainType: { en: "Seed wallet", zn: "Seed wallet", vn: "Seed wallet" },
-  deleteWallet: { en: "Delete wallet", zn: "Delete wallet", vn: "Delete wallet" },
-  deleteSuccessTitle: { en: "Wallet deleted", zn: "Wallet deleted", vn: "Wallet deleted" },
+  openSavedWallet: { en: "Open saved wallet", zn: "打开已保存钱包", vn: "Mở ví đã lưu" },
+  privateKeyType: { en: "Private key", zn: "私钥钱包", vn: "Ví khóa riêng" },
+  mainType: { en: "Seed wallet", zn: "助记词钱包", vn: "Ví cụm từ khôi phục" },
+  deleteWallet: { en: "Delete wallet", zn: "删除钱包", vn: "Xóa ví" },
+  deleteSuccessTitle: { en: "Wallet deleted", zn: "钱包已删除", vn: "Đã xóa ví" },
   deleteSuccessDescription: {
     en: "The saved wallet was removed.",
-    zn: "The saved wallet was removed.",
-    vn: "The saved wallet was removed.",
+    zn: "已保存的钱包已被移除。",
+    vn: "Ví đã lưu đã được xóa.",
+  },
+  loadFailed: { en: "Failed to load saved wallets", zn: "加载已保存的钱包失败", vn: "Tải ví đã lưu thất bại" },
+  importFailed: { en: "Failed to import wallet", zn: "导入钱包失败", vn: "Nhập ví thất bại" },
+  deleteFailed: { en: "Failed to delete wallet", zn: "删除钱包失败", vn: "Xóa ví thất bại" },
+  deleteConfirm: {
+    en: "Delete wallet {address}?",
+    zn: "删除钱包 {address}？",
+    vn: "Xóa ví {address}?",
   },
 } as const;
 
@@ -123,7 +131,7 @@ function formatBalance(value: number | null | undefined, symbol: string) {
 
 export function RecentDeals() {
   const router = useRouter();
-  const { locale } = useI18n();
+  const { locale, interpolate } = useI18n();
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(false);
   const [importMode, setImportMode] = useState<ImportMode>("main");
@@ -143,12 +151,12 @@ export function RecentDeals() {
       const response = await fetch(`${API_URL}/api/wallets`);
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to load saved wallets");
+        throw new Error(payload.detail ?? copy.loadFailed[locale]);
       }
       setSavedWallets(Array.isArray(payload.wallets) ? payload.wallets : []);
       setWalletsError(null);
     } catch (loadError) {
-      setWalletsError(loadError instanceof Error ? loadError.message : "Failed to load saved wallets");
+      setWalletsError(loadError instanceof Error ? loadError.message : copy.loadFailed[locale]);
     } finally {
       setLoadingWallets(false);
     }
@@ -180,7 +188,7 @@ export function RecentDeals() {
       const payload = await response.json();
 
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to import wallet");
+        throw new Error(payload.detail ?? copy.importFailed[locale]);
       }
 
       setWallet(payload);
@@ -193,7 +201,7 @@ export function RecentDeals() {
         description: copy.successDescription[locale],
       });
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Failed to import wallet");
+      setError(submitError instanceof Error ? submitError.message : copy.importFailed[locale]);
     } finally {
       setIsSubmitting(false);
     }
@@ -223,7 +231,7 @@ export function RecentDeals() {
 
   const handleDeleteWallet = async (event: MouseEvent<HTMLButtonElement>, walletToDelete: ImportedWallet) => {
     event.stopPropagation();
-    if (!window.confirm(`Delete wallet ${walletToDelete.address}?`)) {
+    if (!window.confirm(interpolate(copy.deleteConfirm[locale], { address: walletToDelete.address }))) {
       return;
     }
 
@@ -234,7 +242,7 @@ export function RecentDeals() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to delete wallet");
+        throw new Error(payload.detail ?? copy.deleteFailed[locale]);
       }
 
       if (wallet?.id === walletToDelete.id) {
@@ -248,7 +256,7 @@ export function RecentDeals() {
     } catch (deleteError) {
       toast({
         title: copy.deleteWallet[locale],
-        description: deleteError instanceof Error ? deleteError.message : "Failed to delete wallet",
+        description: deleteError instanceof Error ? deleteError.message : copy.deleteFailed[locale],
         variant: "destructive",
       });
     } finally {
@@ -257,7 +265,7 @@ export function RecentDeals() {
   };
 
   return (
-    <div className="w-full animate-in slide-in-from-bottom-4 fade-in rounded-xl border border-border bg-card p-5 duration-500 delay-200">
+    <div className="cad-panel w-full animate-in slide-in-from-bottom-4 fade-in p-5 duration-500 delay-200">
       <div className="mb-5 flex items-center justify-between">
         <div>
           <h3 className="text-base font-semibold text-foreground">{copy.title[locale]}</h3>
@@ -268,7 +276,7 @@ export function RecentDeals() {
           <SheetTrigger asChild>
             <button
               type="button"
-              className="group flex items-center gap-1 text-sm font-medium text-accent transition-colors hover:text-accent/80"
+              className="group flex items-center gap-1 text-[13px] font-medium text-primary transition-colors hover:text-primary/80"
             >
               {copy.button[locale]}
               <PlusCircle className="h-4 w-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
@@ -350,10 +358,10 @@ export function RecentDeals() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="saved">{copy.savedTab[locale]}</TabsTrigger>
-          <TabsTrigger value="latest">{copy.latestTab[locale]}</TabsTrigger>
-          <TabsTrigger value="runs">{copy.runsTab[locale]}</TabsTrigger>
+        <TabsList className="grid h-10 w-full grid-cols-3 rounded-xl">
+          <TabsTrigger value="saved" className="w-full rounded-lg">{copy.savedTab[locale]}</TabsTrigger>
+          <TabsTrigger value="latest" className="w-full rounded-lg">{copy.latestTab[locale]}</TabsTrigger>
+          <TabsTrigger value="runs" className="w-full rounded-lg">{copy.runsTab[locale]}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="saved">
@@ -383,7 +391,7 @@ export function RecentDeals() {
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-sky-500 to-cyan-500 text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.65)]">
                         <WalletCards className="h-5 w-5" />
                       </div>
 
@@ -451,7 +459,7 @@ export function RecentDeals() {
             >
               <div className="flex items-center justify-between gap-4">
                 <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-sky-500 to-cyan-500 text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.65)]">
                     <WalletCards className="h-5 w-5" />
                   </div>
 
@@ -489,9 +497,21 @@ export function RecentDeals() {
 
         <TabsContent value="runs">
           <WalletRunHistory
-            title="Run history"
-            description="Each run records the batch, funding submission details, and the generated subwallets."
-            emptyMessage="No runs yet. Execute one from a main wallet and it will appear here."
+            title={copy.runsTab[locale]}
+            description={
+              locale === "en"
+                ? "Each run records the batch, funding submission details, and the generated subwallets."
+                : locale === "zn"
+                  ? "每次运行都会记录批次、资金提交详情以及生成的子钱包。"
+                  : "Mỗi lần chạy đều ghi lại lô xử lý, chi tiết cấp vốn và các ví con đã tạo."
+            }
+            emptyMessage={
+              locale === "en"
+                ? "No runs yet. Execute one from a main wallet and it will appear here."
+                : locale === "zn"
+                  ? "还没有运行记录。从主钱包执行一次后会显示在这里。"
+                  : "Chưa có lần chạy nào. Thực hiện một lần từ ví chính và nó sẽ xuất hiện ở đây."
+            }
           />
         </TabsContent>
       </Tabs>

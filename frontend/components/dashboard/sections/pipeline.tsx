@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronUp, RefreshCw, WifiOff } from "lucide-react";
 import { ChainIcon } from "@/components/dashboard/chain-icon";
+import { useI18n } from "@/components/i18n-provider";
 import { buildApiUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -66,9 +67,9 @@ function formatNumber(value: number | null | undefined, suffix = "") {
   return `${value.toLocaleString()}${suffix}`;
 }
 
-function formatBoolean(value: boolean | null | undefined) {
+function formatBoolean(value: boolean | null | undefined, locale: "en" | "zn" | "vn") {
   if (value === null || value === undefined) return EMPTY_VALUE;
-  return value ? "Yes" : "No";
+  return value ? (locale === "en" ? "Yes" : locale === "zn" ? "是" : "Có") : (locale === "en" ? "No" : locale === "zn" ? "否" : "Không");
 }
 
 function getLagTone(lag: number | null, type: string) {
@@ -102,7 +103,7 @@ function Detail({ label, value, mono }: { label: string; value?: string | number
   );
 }
 
-function Row({ node }: { node: ChainStatus }) {
+function Row({ node, locale }: { node: ChainStatus; locale: "en" | "zn" | "vn" }) {
   const [open, setOpen] = useState(false);
   const meta = CHAIN_META[node.chain] ?? {
     label: node.chain,
@@ -141,7 +142,7 @@ function Row({ node }: { node: ChainStatus }) {
           <div className="flex items-center gap-1.5">
             <span className={cn("h-2 w-2 rounded-full", online ? "bg-green-400 animate-pulse" : "bg-red-400")} />
             <span className={cn("text-xs font-medium", online ? "text-green-400" : "text-red-400")}>
-              {online ? "Online" : "Offline"}
+              {online ? (locale === "en" ? "Online" : locale === "zn" ? "在线" : "Trực tuyến") : locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến"}
             </span>
           </div>
         </td>
@@ -162,22 +163,22 @@ function Row({ node }: { node: ChainStatus }) {
         <tr className="border-b border-border bg-secondary/20">
           <td colSpan={8} className="px-6 py-4">
             <div className="grid grid-cols-2 gap-x-10 gap-y-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
-              <Detail label="Block Hash" value={node.block_hash} mono />
+              <Detail label={locale === "en" ? "Block Hash" : locale === "zn" ? "区块哈希" : "Hash khối"} value={node.block_hash} mono />
 
               {node.type === "EVM" && (
                 <>
-                  <Detail label="Chain ID" value={formatNumber(node.chain_id)} mono />
-                  <Detail label="Tx in Block" value={formatNumber(node.tx_count)} />
+                  <Detail label={locale === "en" ? "Chain ID" : locale === "zn" ? "链 ID" : "ID chuỗi"} value={formatNumber(node.chain_id)} mono />
+                  <Detail label={locale === "en" ? "Tx in Block" : locale === "zn" ? "区块交易数" : "Giao dịch trong khối"} value={formatNumber(node.tx_count)} />
                   <Detail
-                    label="Gas Used"
+                    label={locale === "en" ? "Gas Used" : locale === "zn" ? "Gas 使用率" : "Gas đã dùng"}
                     value={node.gas_used_pct !== null && node.gas_used_pct !== undefined ? `${node.gas_used_pct}%` : EMPTY_VALUE}
                   />
                   <Detail
-                    label="Gas Price"
+                    label={locale === "en" ? "Gas Price" : locale === "zn" ? "Gas 价格" : "Giá gas"}
                     value={node.gas_price_gwei !== null && node.gas_price_gwei !== undefined ? `${node.gas_price_gwei} Gwei` : EMPTY_VALUE}
                   />
                   <Detail
-                    label="Base Fee"
+                    label={locale === "en" ? "Base Fee" : locale === "zn" ? "基础费用" : "Phí cơ bản"}
                     value={node.base_fee_gwei !== null && node.base_fee_gwei !== undefined ? `${node.base_fee_gwei} Gwei` : EMPTY_VALUE}
                   />
                 </>
@@ -185,40 +186,40 @@ function Row({ node }: { node: ChainStatus }) {
 
               {node.type === "BTC" && (
                 <>
-                  <Detail label="Network" value={node.chain_name} />
-                  <Detail label="Headers" value={formatNumber(node.headers)} mono />
+                  <Detail label={locale === "en" ? "Network" : locale === "zn" ? "网络" : "Mạng"} value={node.chain_name} />
+                  <Detail label={locale === "en" ? "Headers" : locale === "zn" ? "区块头" : "Header"} value={formatNumber(node.headers)} mono />
                   <Detail
-                    label="Difficulty"
+                    label={locale === "en" ? "Difficulty" : locale === "zn" ? "难度" : "Độ khó"}
                     value={node.difficulty !== null && node.difficulty !== undefined ? node.difficulty.toExponential(3) : EMPTY_VALUE}
                     mono
                   />
-                  <Detail label="Mempool Txs" value={formatNumber(node.mempool_tx)} />
+                  <Detail label={locale === "en" ? "Mempool Txs" : locale === "zn" ? "内存池交易" : "Giao dịch mempool"} value={formatNumber(node.mempool_tx)} />
                   <Detail
-                    label="Mempool Size"
+                    label={locale === "en" ? "Mempool Size" : locale === "zn" ? "内存池大小" : "Kích thước mempool"}
                     value={node.mempool_mb !== null && node.mempool_mb !== undefined ? `${node.mempool_mb} MB` : EMPTY_VALUE}
                   />
-                  <Detail label="Pruned" value={formatBoolean(node.pruned)} />
-                  <Detail label="Client" value={node.version} mono />
+                  <Detail label={locale === "en" ? "Pruned" : locale === "zn" ? "裁剪" : "Đã cắt gọn"} value={formatBoolean(node.pruned, locale)} />
+                  <Detail label={locale === "en" ? "Client" : locale === "zn" ? "客户端" : "Client"} value={node.version} mono />
                 </>
               )}
 
               {node.type === "SOLANA" && (
                 <>
-                  <Detail label="Block Height" value={formatNumber(node.block_height)} mono />
-                  <Detail label="Epoch" value={formatNumber(node.epoch)} />
-                  <Detail label="Slot Index" value={formatNumber(node.slot_index)} mono />
-                  <Detail label="Slots in Epoch" value={formatNumber(node.slots_in_epoch)} />
-                  <Detail label="Total Txs" value={formatNumber(node.transaction_count)} />
+                  <Detail label={locale === "en" ? "Block Height" : locale === "zn" ? "区块高度" : "Chiều cao khối"} value={formatNumber(node.block_height)} mono />
+                  <Detail label={locale === "en" ? "Epoch" : locale === "zn" ? "Epoch" : "Epoch"} value={formatNumber(node.epoch)} />
+                  <Detail label={locale === "en" ? "Slot Index" : locale === "zn" ? "槽位索引" : "Chỉ số slot"} value={formatNumber(node.slot_index)} mono />
+                  <Detail label={locale === "en" ? "Slots in Epoch" : locale === "zn" ? "Epoch 槽位数" : "Số slot trong epoch"} value={formatNumber(node.slots_in_epoch)} />
+                  <Detail label={locale === "en" ? "Total Txs" : locale === "zn" ? "总交易数" : "Tổng giao dịch"} value={formatNumber(node.transaction_count)} />
                   <Detail label="TPS" value={node.tps !== null && node.tps !== undefined ? `${node.tps}/s` : EMPTY_VALUE} />
-                  <Detail label="Core Version" value={node.solana_core} mono />
-                  <Detail label="Health" value={node.health} />
+                  <Detail label={locale === "en" ? "Core Version" : locale === "zn" ? "核心版本" : "Phiên bản core"} value={node.solana_core} mono />
+                  <Detail label={locale === "en" ? "Health" : locale === "zn" ? "健康状态" : "Tình trạng"} value={node.health} />
                 </>
               )}
 
               {node.type === "TRON" && (
                 <>
-                  <Detail label="Tx in Block" value={formatNumber(node.tx_count)} />
-                  <Detail label="Witness" value={node.witness} mono />
+                  <Detail label={locale === "en" ? "Tx in Block" : locale === "zn" ? "区块交易数" : "Giao dịch trong khối"} value={formatNumber(node.tx_count)} />
+                  <Detail label={locale === "en" ? "Witness" : locale === "zn" ? "见证人" : "Witness"} value={node.witness} mono />
                 </>
               )}
 
@@ -236,6 +237,7 @@ function Row({ node }: { node: ChainStatus }) {
 }
 
 export function PipelineSection() {
+  const { t, locale } = useI18n();
   const [data, setData] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -258,7 +260,7 @@ export function PipelineSection() {
       setLastUpdated(new Date());
       setError(null);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : "Failed to fetch status");
+      setError(fetchError instanceof Error ? fetchError.message : locale === "en" ? "Failed to fetch status" : locale === "zn" ? "获取状态失败" : "Không thể tải trạng thái");
     } finally {
       setLoading(false);
       if (spinResetRef.current) {
@@ -291,16 +293,34 @@ export function PipelineSection() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Activity className="h-5 w-5 text-accent" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border/70 bg-card text-primary">
+            <Activity className="h-4 w-4" />
+          </div>
           <div>
-            <p className="text-sm text-muted-foreground">
-              {loading ? "Connecting to nodes..." : error ? `Connection error: ${error}` : `${online} / ${total} nodes online`}
+            <p className="text-sm font-medium text-foreground">
+              {loading
+                ? locale === "en"
+                  ? "Connecting to nodes..."
+                  : locale === "zn"
+                    ? "正在连接节点..."
+                    : "Đang kết nối tới các nút..."
+                : error
+                  ? `${locale === "en" ? "Connection error" : locale === "zn" ? "连接错误" : "Lỗi kết nối"}: ${error}`
+                  : locale === "en"
+                    ? `${online} / ${total} nodes online`
+                    : locale === "zn"
+                      ? `${online} / ${total} 个节点在线`
+                      : `${online} / ${total} nút đang trực tuyến`}
             </p>
-            {lastUpdated && (
-              <p className="text-xs text-muted-foreground/50">
-                Last updated {lastUpdated.toLocaleTimeString()} | auto-refresh {POLL_INTERVAL_MS / 1000}s
+            {lastUpdated ? (
+              <p className="text-xs text-muted-foreground">
+                {locale === "en"
+                  ? `Last updated ${lastUpdated.toLocaleTimeString()} | auto-refresh ${POLL_INTERVAL_MS / 1000}s`
+                  : locale === "zn"
+                    ? `上次更新时间 ${lastUpdated.toLocaleTimeString()} | 每 ${POLL_INTERVAL_MS / 1000} 秒自动刷新`
+                    : `Cập nhật lúc ${lastUpdated.toLocaleTimeString()} | tự làm mới mỗi ${POLL_INTERVAL_MS / 1000} giây`}
               </p>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -309,10 +329,10 @@ export function PipelineSection() {
           onClick={() => {
             void fetchStatus();
           }}
-          className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          className="flex items-center gap-2 rounded-md border border-border/80 bg-card px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
         >
           <RefreshCw className={cn("h-3.5 w-3.5 transition-transform", spinning && "animate-spin")} />
-          Refresh
+          {t("Refresh")}
         </button>
       </div>
 
@@ -320,11 +340,11 @@ export function PipelineSection() {
         <div className="flex flex-wrap gap-2 text-xs">
           <span className="flex items-center gap-1.5 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 font-medium text-green-400">
             <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
-            {online} Online
+            {online} {locale === "en" ? "Online" : locale === "zn" ? "在线" : "Trực tuyến"}
           </span>
           <span className="flex items-center gap-1.5 rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1 font-medium text-red-400">
             <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-            {total - online} Offline
+            {total - online} {locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến"}
           </span>
           {data.status
             .filter((node) => node.type === "EVM" && node.status === "online")
@@ -351,29 +371,33 @@ export function PipelineSection() {
       )}
 
       {!loading && data && (
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="overflow-hidden rounded-xl border border-border/80 bg-card shadow-[0_8px_22px_-18px_rgba(15,23,42,0.12)]">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b border-border bg-secondary/40">
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Chain</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Token</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Block</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Lag</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Last Block</th>
-                <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">Peers</th>
+              <tr className="border-b border-border/80 bg-secondary/45">
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Chain" : locale === "zn" ? "链" : "Chuỗi"}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Token" : locale === "zn" ? "代币" : "Token"}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Status" : locale === "zn" ? "状态" : "Trạng thái"}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Block" : locale === "zn" ? "区块" : "Khối"}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Lag" : locale === "zn" ? "延迟" : "Độ trễ"}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Last Block" : locale === "zn" ? "最新区块" : "Khối gần nhất"}</th>
+                <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Peers" : locale === "zn" ? "节点数" : "Peer"}</th>
                 <th className="w-8 px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {data.status.map((node) => (
-                <Row key={node.chain} node={node} />
+                <Row key={node.chain} node={node} locale={locale} />
               ))}
             </tbody>
           </table>
 
-          <div className="border-t border-border px-4 py-2.5 text-xs text-muted-foreground/50">
-            Click any row to expand full details | Checked at {data.checked_at}
+          <div className="border-t border-border/80 px-4 py-2.5 text-xs text-muted-foreground">
+            {locale === "en"
+              ? `Click any row to expand full details | Checked at ${data.checked_at}`
+              : locale === "zn"
+                ? `点击任意一行展开完整详情 | 检查时间 ${data.checked_at}`
+                : `Nhấn vào bất kỳ hàng nào để mở rộng chi tiết | Kiểm tra lúc ${data.checked_at}`}
           </div>
         </div>
       )}
@@ -381,7 +405,9 @@ export function PipelineSection() {
       {!loading && error && (
         <div className="flex flex-col items-center justify-center rounded-xl border border-red-500/20 bg-red-500/5 py-16 text-center">
           <WifiOff className="mb-3 h-10 w-10 text-red-400/60" />
-          <p className="text-sm font-medium text-red-400">Cannot reach backend</p>
+          <p className="text-sm font-medium text-red-400">
+            {locale === "en" ? "Cannot reach backend" : locale === "zn" ? "无法连接后端" : "Không thể kết nối backend"}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">{error}</p>
           <button
             type="button"
@@ -390,7 +416,7 @@ export function PipelineSection() {
             }}
             className="mt-4 rounded-lg bg-red-500/10 px-4 py-2 text-xs font-medium text-red-400 hover:bg-red-500/20"
           >
-            Retry
+            {locale === "en" ? "Retry" : locale === "zn" ? "重试" : "Thử lại"}
           </button>
         </div>
       )}

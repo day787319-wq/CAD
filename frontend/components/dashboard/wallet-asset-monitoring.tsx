@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Activity, AlertTriangle, Blocks, Coins, Loader2, RefreshCw, WalletCards } from "lucide-react";
 
+import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { buildApiUrl } from "@/lib/api";
 import { formatRelativeTimestamp } from "@/lib/template";
@@ -127,14 +128,14 @@ function statusTone(status: string | null | undefined) {
   }
 }
 
-function eventTypeLabel(eventType: string | null | undefined) {
+function eventTypeLabel(eventType: string | null | undefined, locale: "en" | "zn" | "vn") {
   switch ((eventType || "").toLowerCase()) {
     case "first_observed":
-      return "First observed";
+      return locale === "en" ? "First observed" : locale === "zn" ? "首次发现" : "Lần đầu ghi nhận";
     case "balance_change":
-      return "Balance change";
+      return locale === "en" ? "Balance change" : locale === "zn" ? "余额变化" : "Thay đổi số dư";
     default:
-      return "Activity";
+      return locale === "en" ? "Activity" : locale === "zn" ? "活动" : "Hoạt động";
   }
 }
 
@@ -163,6 +164,7 @@ function SummaryCard({
 }
 
 export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: string; enabled?: boolean }) {
+  const { locale, t } = useI18n();
   const [monitoring, setMonitoring] = useState<WalletAssetMonitoring | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -183,12 +185,12 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to load asset monitoring");
+        throw new Error(payload.detail ?? (locale === "en" ? "Failed to load asset monitoring" : locale === "zn" ? "加载资产监控失败" : "Tải giám sát tài sản thất bại"));
       }
       setMonitoring(payload);
       setError(null);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : "Failed to load asset monitoring");
+      setError(fetchError instanceof Error ? fetchError.message : (locale === "en" ? "Failed to load asset monitoring" : locale === "zn" ? "加载资产监控失败" : "Tải giám sát tài sản thất bại"));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -226,18 +228,24 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
         <div className="max-w-2xl">
           <div className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-white">
             <Activity className="h-3.5 w-3.5" />
-            Asset Monitoring
+            {locale === "en" ? "Asset Monitoring" : locale === "zn" ? "资产监控" : "Giám sát tài sản"}
           </div>
-          <p className="mt-4 text-base font-semibold text-foreground">Near-real-time address tracking for wallets and deployed contracts</p>
+          <p className="mt-4 text-base font-semibold text-foreground">
+            {locale === "en" ? "Near-real-time address tracking for wallets and deployed contracts" : locale === "zn" ? "钱包与已部署合约的准实时地址跟踪" : "Theo dõi địa chỉ gần thời gian thực cho ví và hợp đồng đã triển khai"}
+          </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            The backend watches wallet, return, recipient, and ManagedTokenDistributor addresses block-by-block, stores balance snapshots, and records asset deltas in the database.
+            {locale === "en"
+              ? "The backend watches wallet, return, recipient, and ManagedTokenDistributor addresses block-by-block, stores balance snapshots, and records asset deltas in the database."
+              : locale === "zn"
+                ? "后端会逐区块监控钱包、返还地址、接收地址以及 ManagedTokenDistributor 地址，保存余额快照并在数据库中记录资产变化。"
+                : "Backend theo dõi từng block cho ví, địa chỉ hoàn trả, địa chỉ nhận và ManagedTokenDistributor, lưu snapshot số dư và ghi nhận biến động tài sản vào cơ sở dữ liệu."}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" onClick={() => void fetchMonitoring(true)} disabled={loading || refreshing}>
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-            Refresh
+            {t("Refresh")}
           </Button>
         </div>
       </div>
@@ -246,7 +254,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
         <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
           <div className="flex items-center gap-3">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading asset monitoring...
+            {locale === "en" ? "Loading asset monitoring..." : locale === "zn" ? "正在加载资产监控..." : "Đang tải giám sát tài sản..."}
           </div>
         </div>
       ) : error ? (
@@ -255,17 +263,17 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <SummaryCard
-              label="Monitor status"
+              label={locale === "en" ? "Monitor status" : locale === "zn" ? "监控状态" : "Trạng thái giám sát"}
               value={workerStatus}
-              hint={monitoring.synced_at ? `Last sync ${formatRelativeTimestamp(monitoring.synced_at)}` : "Awaiting first sync"}
+              hint={monitoring.synced_at ? `${locale === "en" ? "Last sync" : locale === "zn" ? "上次同步" : "Đồng bộ lần cuối"} ${formatRelativeTimestamp(monitoring.synced_at)}` : locale === "en" ? "Awaiting first sync" : locale === "zn" ? "等待首次同步" : "Đang chờ lần đồng bộ đầu tiên"}
             />
             <SummaryCard
-              label="Latest block"
-              value={monitoring.latest_block ? monitoring.latest_block.toLocaleString() : "Unavailable"}
-              hint={monitoring.chain_id ? `Chain ID ${monitoring.chain_id}` : "Ethereum mainnet"}
+              label={locale === "en" ? "Latest block" : locale === "zn" ? "最新区块" : "Khối gần nhất"}
+              value={monitoring.latest_block ? monitoring.latest_block.toLocaleString() : t("Unavailable")}
+              hint={monitoring.chain_id ? `Chain ID ${monitoring.chain_id}` : locale === "en" ? "Ethereum mainnet" : locale === "zn" ? "以太坊主网" : "Ethereum mainnet"}
             />
-            <SummaryCard label="Watched addresses" value={`${monitoring.target_count}`} hint="Main, sub, contract, return, and recipient scope" />
-            <SummaryCard label="Tracked assets" value={`${monitoring.tracked_token_count + 1}`} hint={trackedAssetList} />
+            <SummaryCard label={locale === "en" ? "Watched addresses" : locale === "zn" ? "监控地址" : "Địa chỉ theo dõi"} value={`${monitoring.target_count}`} hint={locale === "en" ? "Main, sub, contract, return, and recipient scope" : locale === "zn" ? "主钱包、子钱包、合约、返还地址和接收地址范围" : "Phạm vi ví chính, ví con, hợp đồng, địa chỉ hoàn trả và nhận"} />
+            <SummaryCard label={locale === "en" ? "Tracked assets" : locale === "zn" ? "跟踪资产" : "Tài sản theo dõi"} value={`${monitoring.tracked_token_count + 1}`} hint={trackedAssetList} />
           </div>
 
           <div className={`rounded-2xl border px-4 py-4 text-sm ${statusTone(monitoring.status)}`}>
@@ -274,15 +282,19 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
               <div>
                 <p className="font-semibold">
                   {monitoring.status === "online"
-                    ? "Monitoring is active."
+                    ? locale === "en" ? "Monitoring is active." : locale === "zn" ? "监控已启用。" : "Giám sát đang hoạt động."
                     : monitoring.status === "degraded"
-                      ? "Monitoring is active with partial RPC coverage."
-                      : "Monitoring is currently degraded or offline."}
+                      ? locale === "en" ? "Monitoring is active with partial RPC coverage." : locale === "zn" ? "监控已启用，但 RPC 覆盖不完整。" : "Giám sát đang hoạt động với phạm vi RPC một phần."
+                      : locale === "en" ? "Monitoring is currently degraded or offline." : locale === "zn" ? "监控当前降级或离线。" : "Giám sát hiện đang suy giảm hoặc ngoại tuyến."}
                 </p>
                 <p className="mt-1">
                   {monitoring.error ??
                     monitoring.worker?.last_error ??
-                    "Snapshots and balance-change events are persisted in the backend store as new blocks arrive."}
+                    (locale === "en"
+                      ? "Snapshots and balance-change events are persisted in the backend store as new blocks arrive."
+                      : locale === "zn"
+                        ? "当新区块到达时，快照和余额变更事件会持续保存到后端存储。"
+                        : "Snapshot và sự kiện thay đổi số dư sẽ được lưu vào backend khi có block mới.")}
                 </p>
               </div>
             </div>
@@ -294,8 +306,8 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                 <WalletCards className="h-5 w-5" />
               </div>
               <div>
-                <p className="text-base font-semibold text-foreground">Watched addresses</p>
-                <p className="text-sm text-muted-foreground">Stored balance snapshots for every address in this wallet scope.</p>
+                <p className="text-base font-semibold text-foreground">{locale === "en" ? "Watched addresses" : locale === "zn" ? "监控地址" : "Địa chỉ theo dõi"}</p>
+                <p className="text-sm text-muted-foreground">{locale === "en" ? "Stored balance snapshots for every address in this wallet scope." : locale === "zn" ? "保存该钱包范围内每个地址的余额快照。" : "Lưu snapshot số dư cho từng địa chỉ trong phạm vi ví này."}</p>
               </div>
             </div>
 
@@ -328,13 +340,13 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
 
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-3">
-                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Native</p>
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Native" : locale === "zn" ? "原生资产" : "Tài sản gốc"}</p>
                           <p className="mt-1 text-sm font-semibold text-foreground">
                             {formatBalance(snapshot.native_balance?.balance, snapshot.native_balance?.symbol ?? "ETH")}
                           </p>
                         </div>
                         <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-3">
-                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Tracked tokens</p>
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Tracked tokens" : locale === "zn" ? "跟踪代币" : "Token theo dõi"}</p>
                           {visibleTokens.length > 0 ? (
                             <div className="mt-1 space-y-1 text-sm font-semibold text-foreground">
                               {visibleTokens.slice(0, 4).map((token) => (
@@ -342,14 +354,14 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                               ))}
                             </div>
                           ) : (
-                            <p className="mt-1 text-sm text-muted-foreground">No tracked token balance</p>
+                            <p className="mt-1 text-sm text-muted-foreground">{locale === "en" ? "No tracked token balance" : locale === "zn" ? "暂无跟踪代币余额" : "Không có số dư token được theo dõi"}</p>
                           )}
                         </div>
                       </div>
 
                       <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>{snapshot.updated_at ? `Updated ${formatRelativeTimestamp(snapshot.updated_at)}` : "Awaiting first snapshot"}</span>
-                        {snapshot.block_number ? <span>Block {snapshot.block_number.toLocaleString()}</span> : null}
+                        <span>{snapshot.updated_at ? `${locale === "en" ? "Updated" : locale === "zn" ? "更新时间" : "Cập nhật"} ${formatRelativeTimestamp(snapshot.updated_at)}` : locale === "en" ? "Awaiting first snapshot" : locale === "zn" ? "等待首个快照" : "Đang chờ snapshot đầu tiên"}</span>
+                        {snapshot.block_number ? <span>{locale === "en" ? "Block" : locale === "zn" ? "区块" : "Khối"} {snapshot.block_number.toLocaleString()}</span> : null}
                         {snapshot.error ? <span className="text-destructive">{snapshot.error}</span> : null}
                       </div>
                     </div>
@@ -357,7 +369,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                 })
               ) : (
                 <div className="rounded-2xl border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
-                  No watched addresses have been discovered for this wallet yet.
+                  {locale === "en" ? "No watched addresses have been discovered for this wallet yet." : locale === "zn" ? "此钱包尚未发现可监控地址。" : "Chưa phát hiện địa chỉ nào để theo dõi cho ví này."}
                 </div>
               )}
             </div>
@@ -369,8 +381,8 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                 <Coins className="h-5 w-5" />
               </div>
               <div>
-                <p className="text-base font-semibold text-foreground">Recent balance changes</p>
-                <p className="text-sm text-muted-foreground">Every recorded asset delta for this wallet scope, newest first.</p>
+                <p className="text-base font-semibold text-foreground">{locale === "en" ? "Recent balance changes" : locale === "zn" ? "最近余额变化" : "Biến động số dư gần đây"}</p>
+                <p className="text-sm text-muted-foreground">{locale === "en" ? "Every recorded asset delta for this wallet scope, newest first." : locale === "zn" ? "该钱包范围内记录的所有资产变化，按最新优先显示。" : "Mọi thay đổi tài sản được ghi nhận trong phạm vi ví này, mới nhất trước."}</p>
               </div>
             </div>
 
@@ -382,17 +394,17 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-foreground">{event.label}</p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {eventTypeLabel(event.event_type)} · {shortAddress(event.address)}
+                          {eventTypeLabel(event.event_type, locale)} · {shortAddress(event.address)}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         {event.block_number ? (
                           <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-secondary/20 px-2.5 py-1">
                             <Blocks className="h-3.5 w-3.5" />
-                            Block {event.block_number.toLocaleString()}
+                            {locale === "en" ? "Block" : locale === "zn" ? "区块" : "Khối"} {event.block_number.toLocaleString()}
                           </span>
                         ) : null}
-                        <span>{event.observed_at ? formatRelativeTimestamp(event.observed_at) : "Unknown time"}</span>
+                        <span>{event.observed_at ? formatRelativeTimestamp(event.observed_at) : locale === "en" ? "Unknown time" : locale === "zn" ? "未知时间" : "Thời gian không xác định"}</span>
                       </div>
                     </div>
 
@@ -407,7 +419,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                 ))
               ) : (
                 <div className="rounded-2xl border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
-                  No balance changes have been recorded for this wallet scope yet.
+                  {locale === "en" ? "No balance changes have been recorded for this wallet scope yet." : locale === "zn" ? "此钱包范围尚未记录余额变化。" : "Chưa có thay đổi số dư nào được ghi nhận cho phạm vi ví này."}
                 </div>
               )}
             </div>

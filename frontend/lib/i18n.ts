@@ -1,13 +1,15 @@
 export type SupportedLocale = "en" | "zn" | "vn";
+export type LocaleText = Record<SupportedLocale, string>;
 
 export const defaultLocale: SupportedLocale = "en";
+export const localeStorageKey = "treasury-locale";
 
 export const supportedLocales: SupportedLocale[] = ["en", "zn", "vn"];
 
 export const localeLabels: Record<SupportedLocale, string> = {
   en: "EN",
-  zn: "ZN",
-  vn: "VN",
+  zn: "中文",
+  vn: "VI",
 };
 
 export const localeTagByLocale: Record<SupportedLocale, string> = {
@@ -22,9 +24,112 @@ export const htmlLangByLocale: Record<SupportedLocale, string> = {
   vn: "vi",
 };
 
+export function normalizeLocale(value: string | null | undefined): SupportedLocale {
+  switch ((value ?? "").toLowerCase()) {
+    case "en":
+    case "en-us":
+      return "en";
+    case "zn":
+    case "zh":
+    case "zh-cn":
+      return "zn";
+    case "vn":
+    case "vi":
+    case "vi-vn":
+      return "vn";
+    default:
+      return defaultLocale;
+  }
+}
+
+export function isSupportedLocale(value: string | null | undefined): value is SupportedLocale {
+  return value === "en" || value === "zn" || value === "vn";
+}
+
+export function interpolateTemplate(
+  template: string,
+  values: Record<string, string | number> = {},
+) {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+    key in values ? String(values[key]) : match
+  );
+}
+
+const uiText: Record<string, LocaleText> = {
+  "Language": { en: "Language", zn: "语言", vn: "Ngôn ngữ" },
+  "Search workspace": { en: "Search workspace", zn: "搜索工作区", vn: "Tìm kiếm không gian làm việc" },
+  "Treasury Console": { en: "Contract Management System", zn: "智能合约管理系统", vn: "Hệ thống quản lý hợp đồng thông minh" },
+  "Automation Workspace": { en: "Contract Management System", zn: "智能合约管理系统", vn: "Hệ thống quản lý hợp đồng thông minh" },
+  "Contract Management System": { en: "Contract Management System", zn: "智能合约管理系统", vn: "Hệ thống quản lý hợp đồng thông minh" },
+  "Wallet Vault": { en: "Wallet Vault", zn: "钱包库", vn: "Kho ví" },
+  "Template Library": { en: "Template Library", zn: "模板库", vn: "Thư viện mẫu" },
+  "Run history": { en: "Run history", zn: "运行记录", vn: "Lịch sử chạy" },
+  "Monitoring": { en: "Monitoring", zn: "监控", vn: "Giám sát" },
+  "Plan run": { en: "Plan run", zn: "运行规划", vn: "Lập kế hoạch chạy" },
+  "Create": { en: "Create", zn: "创建", vn: "Tạo mới" },
+  "Delete": { en: "Delete", zn: "删除", vn: "Xóa" },
+  "Delete wallet": { en: "Delete wallet", zn: "删除钱包", vn: "Xóa ví" },
+  "Copy address": { en: "Copy address", zn: "复制地址", vn: "Sao chép địa chỉ" },
+  "Refresh": { en: "Refresh", zn: "刷新", vn: "Làm mới" },
+  "Refresh balances": { en: "Refresh balances", zn: "刷新余额", vn: "Làm mới số dư" },
+  "Open wallet": { en: "Open wallet", zn: "打开钱包", vn: "Mở ví" },
+  "Open wallet page": { en: "Open wallet page", zn: "打开钱包页面", vn: "Mở trang ví" },
+  "Open parent wallet": { en: "Open parent wallet", zn: "打开上级钱包", vn: "Mở ví cha" },
+  "Back": { en: "Back", zn: "返回", vn: "Quay lại" },
+  "Cancel": { en: "Cancel", zn: "取消", vn: "Hủy" },
+  "Run Automation": { en: "Run Automation", zn: "运行自动化", vn: "Chạy tự động hóa" },
+  "Running...": { en: "Running...", zn: "运行中...", vn: "Đang chạy..." },
+  "Checking...": { en: "Checking...", zn: "检查中...", vn: "Đang kiểm tra..." },
+  "Loading...": { en: "Loading...", zn: "加载中...", vn: "Đang tải..." },
+  "Loading templates...": { en: "Loading templates...", zn: "正在加载模板...", vn: "Đang tải mẫu..." },
+  "Loading wallet details...": { en: "Loading wallet details...", zn: "正在加载钱包详情...", vn: "Đang tải chi tiết ví..." },
+  "Wallet not found.": { en: "Wallet not found.", zn: "未找到钱包。", vn: "Không tìm thấy ví." },
+  "Create template": { en: "Create template", zn: "创建模板", vn: "Tạo mẫu" },
+  "Edit template": { en: "Edit template", zn: "编辑模板", vn: "Chỉnh sửa mẫu" },
+  "Save template": { en: "Save template", zn: "保存模板", vn: "Lưu mẫu" },
+  "Save changes": { en: "Save changes", zn: "保存更改", vn: "Lưu thay đổi" },
+  "Saving...": { en: "Saving...", zn: "保存中...", vn: "Đang lưu..." },
+  "Template deleted": { en: "Template deleted", zn: "模板已删除", vn: "Đã xóa mẫu" },
+  "Delete failed": { en: "Delete failed", zn: "删除失败", vn: "Xóa thất bại" },
+  "Template updated": { en: "Template updated", zn: "模板已更新", vn: "Đã cập nhật mẫu" },
+  "Template saved": { en: "Template saved", zn: "模板已保存", vn: "Đã lưu mẫu" },
+  "Wallet deleted": { en: "Wallet deleted", zn: "钱包已删除", vn: "Đã xóa ví" },
+  "Wallet imported": { en: "Wallet imported", zn: "钱包已导入", vn: "Đã nhập ví" },
+  "Import wallet": { en: "Import wallet", zn: "导入钱包", vn: "Nhập ví" },
+  "Main wallet": { en: "Main wallet", zn: "主钱包", vn: "Ví chính" },
+  "Private key": { en: "Private key", zn: "私钥", vn: "Khóa riêng" },
+  "Saved wallets": { en: "Saved wallets", zn: "已保存的钱包", vn: "Ví đã lưu" },
+  "Latest import": { en: "Latest import", zn: "最近导入", vn: "Lần nhập gần nhất" },
+  "Importing...": { en: "Importing...", zn: "导入中...", vn: "Đang nhập..." },
+  "Seed phrase": { en: "Seed phrase", zn: "助记词", vn: "Cụm từ khôi phục" },
+  "Today": { en: "Today", zn: "今天", vn: "Hôm nay" },
+  "Light": { en: "Light", zn: "浅色", vn: "Sáng" },
+  "Dark": { en: "Dark", zn: "深色", vn: "Tối" },
+  "Notifications": { en: "Notifications", zn: "通知", vn: "Thông báo" },
+  "Collapse": { en: "Collapse", zn: "收起", vn: "Thu gọn" },
+  "Yes": { en: "Yes", zn: "是", vn: "Có" },
+  "No": { en: "No", zn: "否", vn: "Không" },
+  "Unavailable": { en: "Unavailable", zn: "不可用", vn: "Không khả dụng" },
+  "Off": { en: "Off", zn: "关闭", vn: "Tắt" },
+  "Not set": { en: "Not set", zn: "未设置", vn: "Chưa thiết lập" },
+  "Auto best route": { en: "Auto best route", zn: "自动最优路由", vn: "Tuyến tối ưu tự động" },
+  "Close": { en: "Close", zn: "关闭", vn: "Đóng" },
+  "Switch to light mode": { en: "Switch to light mode", zn: "切换到浅色模式", vn: "Chuyển sang chế độ sáng" },
+  "Switch to dark mode": { en: "Switch to dark mode", zn: "切换到深色模式", vn: "Chuyển sang chế độ tối" },
+};
+
+export function translateText(
+  locale: SupportedLocale,
+  key: string,
+  values?: Record<string, string | number>,
+) {
+  return interpolateTemplate(uiText[key]?.[locale] ?? key, values);
+}
+
 export const sectionLabels = {
-  overview: { en: "Overview", zn: "概览", vn: "Tong quan" },
-  pipeline: { en: "RPC Node Monitoring", zn: "RPC节点监控", vn: "Giam sat RPC Node" },
+  overview: { en: "Overview", zn: "总览", vn: "Tổng quan" },
+  templates: { en: "Template Library", zn: "模板库", vn: "Thư viện mẫu" },
+  pipeline: { en: "RPC Node Monitoring", zn: "RPC 节点监控", vn: "Giám sát nút RPC" },
   deals: { en: "Deals", zn: "交易", vn: "Giao dich" },
   customers: { en: "Customers", zn: "客户", vn: "Khach hang" },
   team: { en: "Team", zn: "团队", vn: "Doi ngu" },
@@ -36,13 +141,18 @@ export const sectionLabels = {
 export const sectionDescriptions = {
   overview: {
     en: "Track revenue, pipeline, and team performance at a glance.",
-    zn: "快速查看营收、管道和团队表现。",
-    vn: "Theo doi doanh thu, pipeline va hieu suat doi ngu trong mot man hinh.",
+    zn: "快速查看关键指标和自动化状态。",
+    vn: "Theo dõi nhanh các chỉ số chính và trạng thái tự động hóa.",
+  },
+  templates: {
+    en: "Create, review, and manage reusable funding templates.",
+    zn: "创建、查看并管理可复用的资金模板。",
+    vn: "Tạo, xem và quản lý các mẫu cấp vốn có thể tái sử dụng.",
   },
   pipeline: {
-    en: "Manage deal flow across every stage.",
-    zn: "管理每个阶段的交易流转。",
-    vn: "Quan ly luong giao dich o tung giai doan.",
+    en: "Watch live chain node status and RPC health.",
+    zn: "查看链节点状态和 RPC 健康度。",
+    vn: "Theo dõi trạng thái nút và sức khỏe RPC theo thời gian thực.",
   },
   deals: {
     en: "View and manage all your deals in one place.",

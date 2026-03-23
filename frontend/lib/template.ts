@@ -1,6 +1,14 @@
 "use client";
 
 import { API_URL } from "@/lib/api";
+import {
+  defaultLocale,
+  localeStorageKey,
+  localeTagByLocale,
+  normalizeLocale,
+  translateText,
+  type SupportedLocale,
+} from "@/lib/i18n";
 
 export const TEMPLATE_API_URL = API_URL;
 const ETH_TRANSFER_GAS_UNITS = 21_000;
@@ -374,13 +382,13 @@ export type TemplateMarketCheck = {
 export function formatAmount(value: string | number | null | undefined) {
   const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
   if (!Number.isFinite(numeric)) return "0";
-  return numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  return numeric.toLocaleString(getRuntimeLocaleTag(), { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
 export function formatUsd(value: string | null | undefined) {
   const numeric = Number.parseFloat(value ?? "");
   if (!Number.isFinite(numeric)) return "--";
-  return numeric.toLocaleString(undefined, {
+  return numeric.toLocaleString(getRuntimeLocaleTag(), {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
@@ -391,6 +399,15 @@ export function formatUsd(value: string | null | undefined) {
 const DASHBOARD_TIME_ZONE = "Asia/Phnom_Penh";
 const DASHBOARD_TIME_ZONE_LABEL = "UTC+7";
 
+function getRuntimeLocale(): SupportedLocale {
+  if (typeof window === "undefined") return defaultLocale;
+  return normalizeLocale(window.localStorage.getItem(localeStorageKey));
+}
+
+function getRuntimeLocaleTag() {
+  return localeTagByLocale[getRuntimeLocale()];
+}
+
 function parseDashboardTimestamp(value: string) {
   const normalized = value.trim();
   const hasTimeZone = /(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(normalized);
@@ -398,10 +415,11 @@ function parseDashboardTimestamp(value: string) {
 }
 
 export function formatRelativeTimestamp(value: string | null | undefined) {
-  if (!value) return "Unavailable";
+  const locale = getRuntimeLocale();
+  if (!value) return translateText(locale, "Unavailable");
   const date = parseDashboardTimestamp(value);
-  if (Number.isNaN(date.getTime())) return "Unavailable";
-  const formatted = new Intl.DateTimeFormat("en-US", {
+  if (Number.isNaN(date.getTime())) return translateText(locale, "Unavailable");
+  const formatted = new Intl.DateTimeFormat(getRuntimeLocaleTag(), {
     timeZone: DASHBOARD_TIME_ZONE,
     year: "numeric",
     month: "numeric",
@@ -415,7 +433,9 @@ export function formatRelativeTimestamp(value: string | null | undefined) {
 }
 
 export function formatFeeTier(value: number | null | undefined) {
-  if (value === null || value === undefined) return "Auto best route";
+  if (value === null || value === undefined) {
+    return translateText(getRuntimeLocale(), "Auto best route");
+  }
   if (value === 500) return "0.05%";
   if (value === 3000) return "0.30%";
   if (value === 10000) return "1.00%";

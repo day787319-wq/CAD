@@ -3,6 +3,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/components/i18n-provider";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -91,6 +92,7 @@ function LiveValueHint({
 
 export function TemplateEditor({ open, onOpenChange, options, template, onSaved }: TemplateEditorProps) {
   const { toast } = useToast();
+  const { locale } = useI18n();
   const [form, setForm] = useState<TemplateEditorForm>(defaultTemplateForm(options));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -299,8 +301,22 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       onSaved(result);
       onOpenChange(false);
       toast({
-        title: template ? "Template updated" : "Template saved",
-        description: "This template now defines one contract / one subwallet.",
+        title: template
+          ? locale === "en"
+            ? "Template updated"
+            : locale === "zn"
+              ? "模板已更新"
+              : "Mẫu đã được cập nhật"
+          : locale === "en"
+            ? "Template saved"
+            : locale === "zn"
+              ? "模板已保存"
+              : "Mẫu đã được lưu",
+        description: locale === "en"
+          ? "This template now defines one contract / one subwallet."
+          : locale === "zn"
+            ? "此模板现在定义一个合约 / 一个子钱包。"
+            : "Mẫu này hiện xác định một hợp đồng / một ví con.",
       });
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Failed to save template");
@@ -319,39 +335,55 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     >
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>{template ? "Edit template" : "Create template"}</DialogTitle>
+          <DialogTitle>
+            {template
+              ? locale === "en"
+                ? "Edit template"
+                : locale === "zn"
+                  ? "编辑模板"
+                  : "Chỉnh sửa mẫu"
+              : locale === "en"
+                ? "Create template"
+                : locale === "zn"
+                  ? "创建模板"
+                  : "Tạo mẫu"}
+          </DialogTitle>
           <DialogDescription>
-            {options?.hints.summary ?? "This template defines one contract / one subwallet."}
+            {options?.hints.summary ?? (locale === "en" ? "This template defines one contract / one subwallet." : locale === "zn" ? "此模板定义一个合约 / 一个子钱包。" : "Mẫu này định nghĩa một hợp đồng / một ví con.")}
           </DialogDescription>
         </DialogHeader>
 
         <form className="space-y-5" onSubmit={handleSubmit}>
           <div className="cad-panel-accent px-4 py-4">
-            <p className="text-sm font-semibold text-foreground">Live USD labels</p>
+            <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Live USD labels" : locale === "zn" ? "实时 USD 标签" : "Nhãn USD trực tiếp"}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              ETH, WETH, and stablecoin spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.
+              {locale === "en"
+                ? "ETH, WETH, and stablecoin spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic."
+                : locale === "zn"
+                  ? "当此编辑器打开时，ETH、WETH 和稳定币现货价格每 60 秒刷新一次。这些仅作参考，不会改变执行逻辑。"
+                  : "Giá spot của ETH, WETH và stablecoin sẽ làm mới mỗi 60 giây khi trình chỉnh sửa đang mở. Đây chỉ là nhãn tham chiếu và không thay đổi logic thực thi."}
             </p>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>ETH {formatUsd(marketSnapshot?.eth_usd)}</span>
               <span>WETH {formatUsd(marketSnapshot?.weth_usd)}</span>
-              <span>Updated {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
+              <span>{locale === "en" ? "Updated" : locale === "zn" ? "更新时间" : "Cập nhật"} {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
             </div>
-            {marketError ? <p className="mt-2 text-xs text-amber-800">Market data warning: {marketError}</p> : null}
+            {marketError ? <p className="mt-2 text-xs text-amber-800">{locale === "en" ? "Market data warning" : locale === "zn" ? "市场数据警告" : "Cảnh báo dữ liệu thị trường"}: {marketError}</p> : null}
           </div>
 
           <SectionCard
-            title="Basics"
-            description="Set the identity and overall intent for one contract / one subwallet."
+            title={locale === "en" ? "Basics" : locale === "zn" ? "基础信息" : "Cơ bản"}
+            description={locale === "en" ? "Set the identity and overall intent for one contract / one subwallet." : locale === "zn" ? "设置一个合约 / 一个子钱包的标识和整体用途。" : "Thiết lập định danh và mục đích tổng thể cho một hợp đồng / một ví con."}
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="template-name" className="text-sm font-medium text-foreground">
-                  Template name
+                  {locale === "en" ? "Template name" : locale === "zn" ? "模板名称" : "Tên mẫu"}
                 </label>
                 <Input
                   id="template-name"
                   value={form.name}
-                  placeholder="Example: Stablecoin distribution contract"
+                  placeholder={locale === "en" ? "Example: Stablecoin distribution contract" : locale === "zn" ? "例如：稳定币分发合约" : "Ví dụ: Hợp đồng phân phối stablecoin"}
                   onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
                   required
                 />
@@ -359,7 +391,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="recipient-address" className="text-sm font-medium text-foreground">
-                  Recipient address
+                  {locale === "en" ? "Recipient address" : locale === "zn" ? "接收地址" : "Địa chỉ nhận"}
                 </label>
                 <Input
                   id="recipient-address"
@@ -368,13 +400,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, recipient_address: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Required when stablecoin swaps or direct contract ETH/WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet.
+                  {locale === "en" ? "Required when stablecoin swaps or direct contract ETH/WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet." : locale === "zn" ? "当稳定币兑换或直接合约 ETH/WETH 注资需要从每个子钱包自动部署 ManagedTokenDistributor 时，此项为必填。" : "Bắt buộc khi swap stablecoin hoặc cấp ETH/WETH trực tiếp cho hợp đồng cần tự động triển khai ManagedTokenDistributor từ mỗi ví con."}
                 </p>
               </div>
 
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="return-wallet-address" className="text-sm font-medium text-foreground">
-                  Return wallet address
+                  {locale === "en" ? "Return wallet address" : locale === "zn" ? "回收钱包地址" : "Địa chỉ ví nhận lại"}
                 </label>
                 <Input
                   id="return-wallet-address"
@@ -384,18 +416,22 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 />
                 <p className="text-xs text-muted-foreground">
                   {options?.hints.return_wallet_note ??
-                    "Optional. After the run, leftover ETH, WETH, and supported token balances still sitting in a sub-wallet will be swept here."}
+                    (locale === "en"
+                      ? "Optional. After the run, leftover ETH, WETH, and supported token balances still sitting in a sub-wallet will be swept here."
+                      : locale === "zn"
+                        ? "可选。运行结束后，子钱包中剩余的 ETH、WETH 和受支持代币余额会被归集到这里。"
+                        : "Tùy chọn. Sau khi chạy xong, ETH, WETH và số dư token được hỗ trợ còn lại trong ví con sẽ được gom về đây.")}
                 </p>
               </div>
 
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="template-notes" className="text-sm font-medium text-foreground">
-                  Notes
+                  {locale === "en" ? "Notes" : locale === "zn" ? "备注" : "Ghi chú"}
                 </label>
                 <Textarea
                   id="template-notes"
                   value={form.notes}
-                  placeholder="Optional notes about funding intent or distribution strategy."
+                  placeholder={locale === "en" ? "Optional notes about funding intent or distribution strategy." : locale === "zn" ? "关于注资目的或分发策略的可选备注。" : "Ghi chú tùy chọn về mục đích cấp vốn hoặc chiến lược phân phối."}
                   onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
                 />
               </div>
@@ -403,8 +439,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title="Testing Execute"
-            description="Optional testing mode to prove the full deploy-and-send path on-chain."
+            title={locale === "en" ? "Testing Execute" : locale === "zn" ? "测试执行" : "Chạy thử"}
+            description={locale === "en" ? "Optional testing mode to prove the full deploy-and-send path on-chain." : locale === "zn" ? "可选测试模式，用于验证完整的链上部署与发送流程。" : "Chế độ thử nghiệm tùy chọn để xác minh toàn bộ luồng triển khai và gửi trên chain."}
           >
             <label className="cad-panel-soft flex items-start gap-3 px-4 py-3">
               <input
@@ -419,24 +455,28 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 className="mt-1 h-4 w-4 rounded border-border"
               />
               <span>
-                <span className="block text-sm font-medium text-foreground">Testing only: execute distributor immediately after funding</span>
+                <span className="block text-sm font-medium text-foreground">{locale === "en" ? "Testing only: execute distributor immediately after funding" : locale === "zn" ? "仅测试：注资后立即执行分发合约" : "Chỉ để thử nghiệm: thực thi hợp đồng phân phối ngay sau khi cấp vốn"}</span>
                 <span className="mt-1 block text-xs text-muted-foreground">
                   {options?.hints.test_auto_execute_note ??
-                    "After each ManagedTokenDistributor is deployed and funded, the sub-wallet will call execute() right away. If you want the contract output to end in the return wallet during testing, set the recipient address to the same address."}
+                    (locale === "en"
+                      ? "After each ManagedTokenDistributor is deployed and funded, the sub-wallet will call execute() right away. If you want the contract output to end in the return wallet during testing, set the recipient address to the same address."
+                      : locale === "zn"
+                        ? "每个 ManagedTokenDistributor 部署并注资后，子钱包会立即调用 execute()。如果你希望测试时合约输出回到回收钱包，请把接收地址设置成相同地址。"
+                        : "Sau khi mỗi ManagedTokenDistributor được triển khai và cấp vốn, ví con sẽ gọi execute() ngay. Nếu muốn đầu ra của hợp đồng kết thúc ở ví nhận lại trong lúc thử nghiệm, hãy đặt địa chỉ người nhận giống địa chỉ đó.")}
                 </span>
               </span>
             </label>
 
             {form.test_auto_execute_after_funding ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                This bypasses the normal hold-in-contract behavior for testing. `execute()` still sends the funded amount to the recipient address, not the return wallet.
+                {locale === "en" ? "This bypasses the normal hold-in-contract behavior for testing. `execute()` still sends the funded amount to the recipient address, not the return wallet." : locale === "zn" ? "这会在测试中绕过常规的合约内持有行为。`execute()` 仍会把注资金额发送到接收地址，而不是回收钱包。" : "Điều này bỏ qua cơ chế giữ tiền trong hợp đồng thông thường để thử nghiệm. `execute()` vẫn gửi số tiền đã cấp vốn đến địa chỉ người nhận, không phải ví nhận lại."}
               </div>
             ) : null}
           </SectionCard>
 
           <SectionCard
-            title="ETH Budget"
-            description="These values apply to one contract. The wallet flow multiplies them by the contract count later."
+            title={locale === "en" ? "ETH Budget" : locale === "zn" ? "ETH 预算" : "Ngân sách ETH"}
+            description={locale === "en" ? "These values apply to one contract. The wallet flow multiplies them by the contract count later." : locale === "zn" ? "这些数值适用于单个合约，后续钱包流程会按合约数量进行倍增。" : "Các giá trị này áp dụng cho một hợp đồng. Luồng ví sẽ nhân chúng theo số lượng hợp đồng ở bước sau."}
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -492,8 +532,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title="Auto Top-Up"
-            description="Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ETH balance gets too low."
+            title={locale === "en" ? "Auto Top-Up" : locale === "zn" ? "自动补充" : "Nạp thêm tự động"}
+            description={locale === "en" ? "Let the main wallet refill a sub-wallet before approvals, swaps, or deployments continue when its native ETH balance gets too low." : locale === "zn" ? "当子钱包的原生 ETH 余额过低时，让主钱包在继续授权、兑换或部署之前为其补充余额。" : "Cho phép ví chính nạp lại ví con trước khi tiếp tục phê duyệt, swap hoặc triển khai khi số dư ETH gốc xuống quá thấp."}
           >
             <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
               <input
@@ -558,8 +598,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title="Stablecoin Distribution"
-            description="Pick one or many stablecoins for one contract, then decide how the swap budget is split across them."
+            title={locale === "en" ? "Stablecoin Distribution" : locale === "zn" ? "稳定币分配" : "Phân bổ stablecoin"}
+            description={locale === "en" ? "Pick one or many stablecoins for one contract, then decide how the swap budget is split across them." : locale === "zn" ? "为一个合约选择一个或多个稳定币，然后决定兑换预算如何分配。" : "Chọn một hoặc nhiều stablecoin cho một hợp đồng, rồi quyết định cách chia ngân sách swap giữa chúng."}
           >
             <div className="flex flex-wrap gap-2">
               {options?.distribution_modes.map((mode) => (
@@ -850,8 +890,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title="Review"
-            description="This summary is per contract. The wallet flow will multiply these numbers by the selected contract count."
+            title={locale === "en" ? "Review" : locale === "zn" ? "复核" : "Xem lại"}
+            description={locale === "en" ? "This summary is per contract. The wallet flow will multiply these numbers by the selected contract count." : locale === "zn" ? "此汇总按单个合约计算，钱包流程会根据所选合约数量乘算这些数值。" : "Phần tổng hợp này tính theo từng hợp đồng. Luồng ví sẽ nhân các số này theo số lượng hợp đồng đã chọn."}
           >
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
               <div className="cad-panel-muted px-4 py-3">
@@ -954,18 +994,18 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {locale === "en" ? "Cancel" : locale === "zn" ? "取消" : "Hủy"}
             </Button>
             <Button type="submit" disabled={saving || !options}>
               {saving ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Saving...
+                  {locale === "en" ? "Saving..." : locale === "zn" ? "保存中..." : "Đang lưu..."}
                 </>
               ) : template ? (
-                "Save changes"
+                locale === "en" ? "Save changes" : locale === "zn" ? "保存更改" : "Lưu thay đổi"
               ) : (
-                "Save template"
+                locale === "en" ? "Save template" : locale === "zn" ? "保存模板" : "Lưu mẫu"
               )}
             </Button>
           </div>
