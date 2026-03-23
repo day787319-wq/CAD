@@ -20,6 +20,7 @@ if str(BACKEND_DIR) not in sys.path:
 ENV_PATH = BACKEND_DIR / ".env"
 
 from src.routers.wallet_router import router as wallet_router
+from src.routers.balance_rule_router import router as balance_rule_router
 from src.routers.template_router import router as template_router
 from src.routers.monitor_router import router as monitor_router
 from src.services.monitor_service import start_asset_monitoring_worker, stop_asset_monitoring_worker
@@ -277,6 +278,7 @@ def stop_background_services():
 
 
 app.include_router(wallet_router)
+app.include_router(balance_rule_router)
 app.include_router(template_router)
 app.include_router(monitor_router)
 

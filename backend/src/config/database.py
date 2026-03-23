@@ -157,7 +157,13 @@ class ScyllaDB:
             Path(__file__).resolve().parents[2] / "runtime" / "asset_monitor_store.json",
             Path(__file__).resolve().parents[2] / "data" / "asset_monitor_store.json",
         )
+        self.balance_rule_storage_path = resolve_local_store_path(
+            "LOCAL_BALANCE_RULE_STORE",
+            Path(__file__).resolve().parents[2] / "runtime" / "balance_rule_store.json",
+            Path(__file__).resolve().parents[2] / "data" / "balance_rule_store.json",
+        )
         self._asset_monitor_lock = threading.RLock()
+        self._balance_rule_lock = threading.RLock()
 
     def _ensure_session(self):
         if self.session is not None:
@@ -187,6 +193,7 @@ class ScyllaDB:
         ensure_private_file(self.template_storage_path)
         ensure_private_file(self.run_storage_path)
         ensure_private_file(self.asset_monitor_storage_path, default_contents='{"snapshots": {}, "events": []}')
+        ensure_private_file(self.balance_rule_storage_path, default_contents='{"rules": {}, "events": []}')
         self.session.execute(
             f"""
             CREATE KEYSPACE IF NOT EXISTS {self.keyspace}
@@ -275,6 +282,31 @@ class ScyllaDB:
             )
         """
         )
+        self.session.execute(
+            """
+            CREATE TABLE IF NOT EXISTS balance_rules (
+                id text PRIMARY KEY,
+                enabled boolean,
+                target_address text,
+                target_wallet_id text,
+                address_role text,
+                mode text,
+                payload_json text,
+                created_at timestamp,
+                updated_at timestamp
+            )
+        """
+        )
+        self.session.execute(
+            """
+            CREATE TABLE IF NOT EXISTS balance_rule_events (
+                id text PRIMARY KEY,
+                rule_id text,
+                observed_at timestamp,
+                payload_json text
+            )
+        """
+        )
         if self.mode == "scylla":
             template_alter_statements = [
                 "ALTER TABLE templates ADD template_version text",
@@ -334,6 +366,22 @@ class ScyllaDB:
         }
         self.asset_monitor_storage_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
 
+    def _read_local_balance_rule_payload(self) -> dict:
+        ensure_private_file(self.balance_rule_storage_path, default_contents='{"rules": {}, "events": []}')
+        payload = json.loads(self.balance_rule_storage_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("rules", {})
+        payload.setdefault("events", [])
+        return payload
+
+    def _write_local_balance_rule_payload(self, payload: dict):
+        normalized = {
+            "rules": payload.get("rules") or {},
+            "events": payload.get("events") or [],
+        }
+        self.balance_rule_storage_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+
     def _serialize_template_record(self, record: dict | None):
         if record is None:
             return None
@@ -373,6 +421,47 @@ class ScyllaDB:
             value = payload.get(field)
             if isinstance(value, datetime):
                 payload[field] = value.isoformat()
+
+        payload_json = payload.get("payload_json")
+        if isinstance(payload_json, str):
+            try:
+                parsed = json.loads(payload_json)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                payload.update(parsed)
+        payload.pop("payload_json", None)
+        return payload
+
+    def _serialize_balance_rule_record(self, record: dict | None):
+        if record is None:
+            return None
+
+        payload = dict(record)
+        for field in ("created_at", "updated_at", "last_evaluated_at", "last_triggered_at", "last_action_at"):
+            value = payload.get(field)
+            if isinstance(value, datetime):
+                payload[field] = value.isoformat()
+
+        payload_json = payload.get("payload_json")
+        if isinstance(payload_json, str):
+            try:
+                parsed = json.loads(payload_json)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                payload.update(parsed)
+        payload.pop("payload_json", None)
+        return payload
+
+    def _serialize_balance_rule_event(self, record: dict | None):
+        if record is None:
+            return None
+
+        payload = dict(record)
+        observed_at = payload.get("observed_at")
+        if isinstance(observed_at, datetime):
+            payload["observed_at"] = observed_at.isoformat()
 
         payload_json = payload.get("payload_json")
         if isinstance(payload_json, str):
@@ -723,6 +812,176 @@ class ScyllaDB:
 
         if normalized_addresses:
             events = [event for event in events if (event.get("address") or "").lower() in normalized_addresses]
+        events.sort(key=lambda item: item.get("observed_at") or "", reverse=True)
+        return events[: max(int(limit), 0)]
+
+    def upsert_balance_rule(self, rule: dict):
+        self.connect_keyspace()
+        created_at = rule.get("created_at")
+        updated_at = rule.get("updated_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at)
+        if created_at is None:
+            created_at = datetime.utcnow()
+        if updated_at is None:
+            updated_at = datetime.utcnow()
+
+        payload = {
+            **rule,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
+        if self.mode == "scylla":
+            self.session.execute(
+                """
+                    INSERT INTO balance_rules (
+                        id,
+                        enabled,
+                        target_address,
+                        target_wallet_id,
+                        address_role,
+                        mode,
+                        payload_json,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    payload["id"],
+                    bool(payload.get("enabled", True)),
+                    payload.get("target_address"),
+                    payload.get("target_wallet_id"),
+                    payload.get("address_role"),
+                    payload.get("mode"),
+                    json.dumps(
+                        {
+                            **payload,
+                            "created_at": created_at.isoformat(),
+                            "updated_at": updated_at.isoformat(),
+                        }
+                    ),
+                    created_at,
+                    updated_at,
+                ),
+            )
+            return self._serialize_balance_rule_record(payload)
+
+        with self._balance_rule_lock:
+            local_payload = self._read_local_balance_rule_payload()
+            local_payload["rules"][payload["id"]] = {
+                **payload,
+                "created_at": created_at.isoformat(),
+                "updated_at": updated_at.isoformat(),
+            }
+            self._write_local_balance_rule_payload(local_payload)
+            return self._serialize_balance_rule_record(local_payload["rules"][payload["id"]])
+
+    def get_balance_rule(self, rule_id: str):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            rows = self.session.execute("SELECT * FROM balance_rules WHERE id = %s", (rule_id,))
+            row = rows.one()
+            return self._serialize_balance_rule_record(dict(row._asdict())) if row else None
+
+        with self._balance_rule_lock:
+            payload = self._read_local_balance_rule_payload()
+        return self._serialize_balance_rule_record(payload["rules"].get(rule_id))
+
+    def list_balance_rules(self):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            rows = self.session.execute("SELECT * FROM balance_rules")
+            rules = [self._serialize_balance_rule_record(dict(row._asdict())) for row in rows.all()]
+        else:
+            with self._balance_rule_lock:
+                payload = self._read_local_balance_rule_payload()
+            rules = [self._serialize_balance_rule_record(record) for record in payload.get("rules", {}).values()]
+
+        rules.sort(
+            key=lambda item: (
+                item.get("updated_at") or item.get("created_at") or "",
+                item.get("id") or "",
+            ),
+            reverse=True,
+        )
+        return rules
+
+    def delete_balance_rule(self, rule_id: str):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            existing = self.get_balance_rule(rule_id)
+            if not existing:
+                return None
+            self.session.execute("DELETE FROM balance_rules WHERE id = %s", (rule_id,))
+            return existing
+
+        with self._balance_rule_lock:
+            payload = self._read_local_balance_rule_payload()
+            removed = payload["rules"].pop(rule_id, None)
+            self._write_local_balance_rule_payload(payload)
+        return self._serialize_balance_rule_record(removed)
+
+    def append_balance_rule_event(self, event: dict):
+        self.connect_keyspace()
+        payload = dict(event)
+        observed_at = payload.get("observed_at")
+        if isinstance(observed_at, str):
+            observed_at = datetime.fromisoformat(observed_at)
+        if observed_at is None:
+            observed_at = datetime.utcnow()
+        payload["observed_at"] = observed_at
+
+        if self.mode == "scylla":
+            self.session.execute(
+                """
+                    INSERT INTO balance_rule_events (id, rule_id, observed_at, payload_json)
+                    VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    payload["id"],
+                    payload["rule_id"],
+                    observed_at,
+                    json.dumps({**payload, "observed_at": observed_at.isoformat()}),
+                ),
+            )
+            return self._serialize_balance_rule_event(payload)
+
+        with self._balance_rule_lock:
+            local_payload = self._read_local_balance_rule_payload()
+            local_payload.setdefault("events", []).append(
+                {
+                    **payload,
+                    "observed_at": observed_at.isoformat(),
+                }
+            )
+            local_payload["events"] = sorted(
+                local_payload["events"],
+                key=lambda item: item.get("observed_at") or "",
+                reverse=True,
+            )[:5000]
+            self._write_local_balance_rule_payload(local_payload)
+            return self._serialize_balance_rule_event(local_payload["events"][0])
+
+    def list_balance_rule_events(self, rule_id: str | None = None, limit: int = 100):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            rows = self.session.execute("SELECT * FROM balance_rule_events")
+            events = [self._serialize_balance_rule_event(dict(row._asdict())) for row in rows.all()]
+        else:
+            with self._balance_rule_lock:
+                payload = self._read_local_balance_rule_payload()
+            events = [self._serialize_balance_rule_event(record) for record in payload.get("events", [])]
+
+        if rule_id:
+            events = [event for event in events if event.get("rule_id") == rule_id]
         events.sort(key=lambda item: item.get("observed_at") or "", reverse=True)
         return events[: max(int(limit), 0)]
 

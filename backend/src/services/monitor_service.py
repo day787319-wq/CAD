@@ -308,6 +308,20 @@ def _discover_scope(wallet_id: str | None = None, address: str | None = None) ->
                 index=next_index,
             )
         relevant_runs = all_runs
+        try:
+            from src.services.balance_rule_service import list_enabled_balance_rule_targets
+
+            for rule_target in list_enabled_balance_rule_targets():
+                target_address_type = "contract" if rule_target.get("address_role") == "contract" else "wallet"
+                _register_target(
+                    targets,
+                    rule_target.get("address"),
+                    role="custom_address",
+                    address_type=target_address_type,
+                    wallet_id=rule_target.get("target_wallet_id"),
+                )
+        except Exception:
+            pass
 
     for run in relevant_runs:
         run_id = run.get("id")
@@ -859,6 +873,16 @@ def _asset_monitor_worker_loop():
                 if latest_block != previous_state.get("latest_block") or previous_state.get("status") != "online":
                     with _asset_monitor_sync_lock:
                         _run_monitor_sync(limit=0)
+                    try:
+                        from src.services.balance_rule_service import evaluate_balance_rules
+
+                        evaluate_balance_rules(sync_monitoring=False)
+                    except Exception as exc:
+                        _set_worker_state(
+                            status="error",
+                            latest_block=latest_block,
+                            error=f"Balance-rule automation failed: {exc}",
+                        )
         except Exception as exc:
             _set_worker_state(status="error", latest_block=_get_worker_state().get("latest_block"), error=str(exc))
 

@@ -695,8 +695,9 @@ def build_transaction_envelope(
     gas: int,
     value: int = 0,
     gas_price_wei: int | None = None,
+    to: str | None = None,
 ) -> dict:
-    return {
+    payload = {
         "chainId": web3_client.eth.chain_id,
         "from": sender,
         "nonce": nonce,
@@ -704,6 +705,9 @@ def build_transaction_envelope(
         "gasPrice": gas_price_wei or web3_client.eth.gas_price,
         "value": value,
     }
+    if to:
+        payload["to"] = Web3.to_checksum_address(to)
+    return payload
 
 
 def send_signed_transaction(web3_client: Web3, tx: dict, private_key: str) -> str:
