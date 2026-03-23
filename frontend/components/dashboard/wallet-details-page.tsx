@@ -153,19 +153,20 @@ function estimateGasFeeDisplay(gasUnits: number, gasPriceGwei: string | number |
 
 function getDistributorAutomationSummary(template: Template) {
   const recipientConfigured = Boolean(template.recipient_address);
+  const distributorNativeEthAmount = toNumericValue(template.direct_contract_native_eth_per_contract) ?? 0;
   const distributorAmount = toNumericValue(template.direct_contract_weth_per_contract) ?? 0;
   const hasSwapRoutes = getStablecoinDistributionRows(template).some((route) => (toNumericValue(route.weth_amount_per_contract) ?? 0) > 0);
-  const hasDistributorFlow = hasSwapRoutes || distributorAmount > 0;
+  const hasDistributorFlow = hasSwapRoutes || distributorNativeEthAmount > 0 || distributorAmount > 0;
 
   if (recipientConfigured && hasDistributorFlow) {
     return {
       enabled: true,
       title: "Auto deploy ready",
-      description: hasSwapRoutes && distributorAmount > 0
-        ? "Deploy ManagedTokenDistributor after each successful swap output and for the direct WETH allocation."
+      description: hasSwapRoutes && (distributorAmount > 0 || distributorNativeEthAmount > 0)
+        ? "Deploy ManagedTokenDistributor after each successful swap output and for any direct ETH/WETH distributor allocations."
         : hasSwapRoutes
           ? "Deploy one ManagedTokenDistributor per successful swap output after local wrap and swaps."
-          : `Deploy ManagedTokenDistributor for the direct ${formatCryptoMetric(template.direct_contract_weth_per_contract, "WETH")} allocation after local wrap.`,
+          : `${formatCryptoMetric(template.direct_contract_native_eth_per_contract, "ETH")} ETH and ${formatCryptoMetric(template.direct_contract_weth_per_contract, "WETH")} WETH are configured for direct distributor funding.`,
     };
   }
 
@@ -180,7 +181,7 @@ function getDistributorAutomationSummary(template: Template) {
   return {
     enabled: false,
     title: "Auto deploy disabled",
-    description: "This template only funds ETH right now. Add a positive stablecoin swap budget with allocations or direct WETH funding to enable ManagedTokenDistributor deployment.",
+    description: "This template only funds the sub-wallet right now. Add a positive stablecoin swap budget with allocations or direct contract ETH/WETH funding to enable ManagedTokenDistributor deployment.",
   };
 }
 
@@ -274,14 +275,14 @@ function buildGasEstimateRows(preview: TemplateWalletSupportPreview, template: T
       hint: preview.execution.deployment_transaction_count > 0 ? "Deploy ManagedTokenDistributor from each sub-wallet target" : distributorAutomation.description,
     },
     {
-      label: "contract transfer gas",
-      value: estimateGasFeeDisplay(preview.execution.contract_funding_transaction_count * TOKEN_TRANSFER_GAS_UNITS, gasPrice),
-      hint: preview.execution.contract_funding_transaction_count > 0 ? "Transfer swapped tokens or direct WETH into each deployed distributor" : "No post-deploy token transfers are required",
+      label: "distributor funding gas",
+      value: estimateGasFeeDisplay((preview.execution.contract_funding_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice),
+      hint: preview.execution.contract_funding_transaction_count > 0 ? "Transfer swapped tokens, direct ETH, or direct WETH into each deployed distributor" : "No post-deploy distributor funding transfers are required",
     },
     {
       label: "total gas",
       value: estimateGasFeeDisplay(totalGasUnits, gasPrice),
-      hint: "Funding, projected top-up, local wrap, approval, swap, deployment, testing execute, distributor transfer, and return sweep estimate",
+      hint: "Funding, projected top-up, local wrap, approval, swap, deployment, distributor funding, testing execute, and return sweep estimate",
     },
   ];
 }
@@ -294,6 +295,7 @@ function buildAutomationSteps(
   const distributorAutomation = getDistributorAutomationSummary(template);
   const autoAddedGasBuffer = toNumericValue(preview.per_contract.auto_added_gas_buffer_eth);
   const minimumUnwrappedEth = preview.per_contract.minimum_unwrapped_eth ?? preview.per_contract.gas_reserve_eth;
+  const directContractNativeEth = toNumericValue(preview.per_contract.direct_contract_native_eth ?? "0") ?? 0;
   const autoTopUp = preview.auto_top_up;
   const projectedTopUpReserve = toNumericValue(preview.funding.auto_top_up_eth_reserved);
 
@@ -319,13 +321,15 @@ function buildAutomationSteps(
     },
     {
       title: "ETH funding",
-      description: `Send ${formatCryptoMetric(preview.funding.eth_sent_to_subwallets, "ETH")} from the main wallet so each sub-wallet keeps gas in ETH and funds its own wrap budget.`,
+      description: `Send ${formatCryptoMetric(preview.funding.eth_sent_to_subwallets, "ETH")} from the main wallet so each sub-wallet keeps gas in ETH, funds its own wrap budget, and carries any direct contract ETH allocation.`,
       tone: "planned",
     },
     {
       title: "Local WETH wrap",
       description: preview.execution.wrap_transaction_count > 0
-        ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, "WETH")} locally and keeps ${formatCryptoMetric(minimumUnwrappedEth, "ETH")} unwrapped for gas and any direct ETH-side actions.`
+        ? directContractNativeEth > 0
+          ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, "WETH")} locally, keeps ${formatCryptoMetric(minimumUnwrappedEth, "ETH")} unwrapped for gas, and reserves ${formatCryptoMetric(preview.per_contract.direct_contract_native_eth, "ETH")} for direct distributor funding.`
+          : `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, "WETH")} locally and keeps ${formatCryptoMetric(minimumUnwrappedEth, "ETH")} unwrapped for gas and any direct ETH-side actions.`
         : "This template does not require any local WETH wrapping.",
       tone: preview.execution.wrap_transaction_count > 0 ? "planned" : "optional",
     },
@@ -364,7 +368,7 @@ function buildAutomationSteps(
     {
       title: distributorAutomation.enabled ? "Deploy distributors" : distributorAutomation.title,
       description: distributorAutomation.enabled
-        ? `Deploy up to ${preview.execution.deployment_transaction_count} ManagedTokenDistributor contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"}, transfer the resulting token balances in, and record every tx hash.`
+        ? `Deploy up to ${preview.execution.deployment_transaction_count} ManagedTokenDistributor contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"}, transfer the resulting ETH/WETH/token balances in, and record every tx hash.`
         : distributorAutomation.description,
       tone: distributorAutomation.enabled ? "planned" : "optional",
     },
@@ -424,7 +428,7 @@ function buildTemplateSummary(template: Template) {
   const autoTopUpSuffix = template.auto_top_up_enabled ? " · auto top-up" : "";
   const testingExecuteSuffix = template.test_auto_execute_after_funding ? " · test auto-exec" : "";
   if (template.stablecoin_distribution_mode === "none") {
-    return `Gas and direct funding only${autoTopUpSuffix}${testingExecuteSuffix}`;
+    return `Gas, sub-wallet ETH, and direct contract funding only${autoTopUpSuffix}${testingExecuteSuffix}`;
   }
 
   const routeCount = template.stablecoin_allocations.length;
@@ -991,8 +995,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                                 <TemplateMetric label="Gas" value={`${formatAmount(template.gas_reserve_eth_per_contract)} ETH`} />
                                 <TemplateMetric label="Swap" value={`${formatAmount(template.swap_budget_eth_per_contract)} ETH`} />
-                                <TemplateMetric label="Direct ETH" value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
-                                <TemplateMetric label="Direct WETH" value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
+                                <TemplateMetric label="Sub-wallet ETH" value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
+                                <TemplateMetric label="Contract ETH" value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ETH`} />
+                                <TemplateMetric label="Contract WETH" value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
                                 <TemplateMetric label="Auto Top-Up" value={buildAutoTopUpSummary(template)} />
                                 <TemplateMetric label="Test Execute" value={buildTestingExecuteSummary(template)} />
                                 <TemplateMetric label="Return Wallet" value={buildReturnWalletSummary(template)} />
@@ -1103,7 +1108,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                           ) : (
                                             <tr>
                                               <td colSpan={4} className="px-4 py-6 text-center text-sm text-slate-500">
-                                                No stablecoin swap routes are configured. The run will keep the funding flow ETH-first and only deploy distributors if direct WETH funding is configured.
+                                                No stablecoin swap routes are configured. The run will keep the funding flow ETH-first and only deploy distributors if direct contract ETH/WETH funding is configured.
                                               </td>
                                             </tr>
                                           )}
@@ -1120,7 +1125,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </div>
                                     <div>
                                       <p className="text-lg font-semibold text-slate-950">Gas Estimates</p>
-                                      <p className="text-sm text-slate-500">Funding, local wrap, swap, deploy, and distributor transfer costs for the selected wallet count.</p>
+                                      <p className="text-sm text-slate-500">Funding, local wrap, swap, deploy, and distributor funding costs for the selected wallet count.</p>
                                     </div>
                                   </div>
 
@@ -1207,10 +1212,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         </p>
                                       </div>
                                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Direct funding</p>
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Sub-wallet ETH / contract funding</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
-                                          {formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, "ETH")} ETH • {formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, "WETH")} WETH
+                                          {formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, "ETH")} kept local • {formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, "ETH")} ETH + {formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, "WETH")} WETH to distributor
                                         </p>
+                                        <p className="mt-1 text-xs text-slate-500">Sub-wallet ETH remains local. Direct contract ETH and direct contract WETH are transferred into ManagedTokenDistributor.</p>
                                       </div>
                                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Auto top-up</p>
@@ -1300,7 +1306,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         </div>
                       </SectionBlock>
 
-                      <TemplateMarketCheckPanel template={selectedTemplate} />
+                      <TemplateMarketCheckPanel
+                        template={selectedTemplate}
+                        contractCount={contractCountError ? 1 : contractCountValue}
+                      />
                     </div>
                   ) : (
                     <SectionBlock
@@ -1437,6 +1446,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 </div>
               ) : null}
 
+              <TemplateMarketCheckPanel
+                template={selectedTemplate}
+                contractCount={activeRunPreview.contract_count}
+                defaultOpen
+                showToggle={false}
+              />
+
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_320px]">
                 <div className="space-y-5">
                   <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
@@ -1479,7 +1495,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         ))}
                       </div>
                     ) : (
-                      <p className="mt-4 text-sm text-slate-500">No stablecoin routing is attached to this template. This run will stay ETH-first and only deploy a distributor if direct WETH funding is configured.</p>
+                      <p className="mt-4 text-sm text-slate-500">No stablecoin routing is attached to this template. This run will stay ETH-first and only deploy a distributor if direct contract ETH/WETH funding is configured.</p>
                     )}
                   </div>
                 </div>

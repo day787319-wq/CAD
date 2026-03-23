@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from src.services.template_service import (
     create_template as create_template_service,
+    get_template_editor_market_snapshot as get_template_editor_market_snapshot_service,
     get_template as get_template_service,
     get_template_options as get_template_options_service,
     list_templates as list_templates_service,
@@ -32,6 +33,7 @@ class TemplateUpsertRequest(BaseModel):
     gas_reserve_eth_per_contract: str = "0"
     swap_budget_eth_per_contract: str = "0"
     direct_contract_eth_per_contract: str = "0"
+    direct_contract_native_eth_per_contract: str = "0"
     direct_contract_weth_per_contract: str = "0"
     auto_top_up_enabled: bool = False
     auto_top_up_threshold_eth: str = "0"
@@ -54,6 +56,14 @@ class TemplatePreviewRequest(BaseModel):
 async def get_template_options_endpoint():
     try:
         return get_template_options_service()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/market-snapshot")
+async def get_template_editor_market_snapshot_endpoint():
+    try:
+        return get_template_editor_market_snapshot_service()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

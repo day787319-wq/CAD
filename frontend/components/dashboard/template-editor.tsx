@@ -12,8 +12,11 @@ import {
   Template,
   TemplateEditorForm,
   TemplateOptions,
+  TemplatePriceSnapshot,
   defaultTemplateForm,
   formatAmount,
+  formatRelativeTimestamp,
+  formatUsd,
   getStablecoinDistributionRows,
   shortAddress,
   templateToForm,
@@ -61,11 +64,38 @@ function SectionCard({
   );
 }
 
+const MARKET_REFRESH_INTERVAL_MS = 60_000;
+
+function toFiniteNumber(value: string | number | null | undefined) {
+  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function getUsdValue(amount: string | number | null | undefined, priceValue: string | null | undefined) {
+  const numericAmount = toFiniteNumber(amount);
+  const numericPrice = toFiniteNumber(priceValue);
+  if (numericAmount === null || numericPrice === null) return null;
+  return `${numericAmount * numericPrice}`;
+}
+
+function LiveValueHint({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null;
+}) {
+  if (value === null) return null;
+  return <p className="text-xs text-emerald-700">{label}: {formatUsd(value)}</p>;
+}
+
 export function TemplateEditor({ open, onOpenChange, options, template, onSaved }: TemplateEditorProps) {
   const { toast } = useToast();
   const [form, setForm] = useState<TemplateEditorForm>(defaultTemplateForm(options));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [marketSnapshot, setMarketSnapshot] = useState<TemplatePriceSnapshot | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
 
   const stablecoins = options?.stablecoins ?? [];
   const selectedStablecoinAddresses = useMemo(
@@ -75,11 +105,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const hasStablecoinSwap = form.stablecoin_distribution_mode !== "none";
   const topUpEnabled = form.auto_top_up_enabled;
   const needsWeth = Number(form.swap_budget_eth_per_contract || "0") > 0 || Number(form.direct_contract_weth_per_contract || "0") > 0;
-  const totalEthIfNoWeth =
+  const configuredEthPerContract =
     Number(form.gas_reserve_eth_per_contract || "0") +
-    Number(form.swap_budget_eth_per_contract || "0") +
     Number(form.direct_contract_eth_per_contract || "0") +
+    Number(form.direct_contract_native_eth_per_contract || "0");
+  const configuredWethPerContract =
+    Number(form.swap_budget_eth_per_contract || "0") +
     Number(form.direct_contract_weth_per_contract || "0");
+  const totalEthIfNoWeth = configuredEthPerContract + configuredWethPerContract;
 
   useEffect(() => {
     if (!open) return;
@@ -95,6 +128,77 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     () => getStablecoinDistributionRows(form),
     [form],
   );
+  const ethUsdLabel = useMemo(
+    () => getUsdValue(form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd),
+    [form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd],
+  );
+  const swapBudgetUsdLabel = useMemo(
+    () => getUsdValue(form.swap_budget_eth_per_contract, marketSnapshot?.weth_usd),
+    [form.swap_budget_eth_per_contract, marketSnapshot?.weth_usd],
+  );
+  const directEthUsdLabel = useMemo(
+    () => getUsdValue(form.direct_contract_eth_per_contract, marketSnapshot?.eth_usd),
+    [form.direct_contract_eth_per_contract, marketSnapshot?.eth_usd],
+  );
+  const directContractNativeEthUsdLabel = useMemo(
+    () => getUsdValue(form.direct_contract_native_eth_per_contract, marketSnapshot?.eth_usd),
+    [form.direct_contract_native_eth_per_contract, marketSnapshot?.eth_usd],
+  );
+  const directWethUsdLabel = useMemo(
+    () => getUsdValue(form.direct_contract_weth_per_contract, marketSnapshot?.weth_usd),
+    [form.direct_contract_weth_per_contract, marketSnapshot?.weth_usd],
+  );
+  const topUpThresholdUsdLabel = useMemo(
+    () => getUsdValue(form.auto_top_up_threshold_eth, marketSnapshot?.eth_usd),
+    [form.auto_top_up_threshold_eth, marketSnapshot?.eth_usd],
+  );
+  const topUpTargetUsdLabel = useMemo(
+    () => getUsdValue(form.auto_top_up_target_eth, marketSnapshot?.eth_usd),
+    [form.auto_top_up_target_eth, marketSnapshot?.eth_usd],
+  );
+  const configuredSpendUsdLabel = useMemo(() => {
+    const nativeSpend = toFiniteNumber(ethUsdLabel);
+    const directEthSpend = toFiniteNumber(directEthUsdLabel);
+    const directContractNativeEthSpend = toFiniteNumber(directContractNativeEthUsdLabel);
+    const swapBudgetSpend = toFiniteNumber(swapBudgetUsdLabel);
+    const directWethSpend = toFiniteNumber(directWethUsdLabel);
+    if ([nativeSpend, directEthSpend, directContractNativeEthSpend, swapBudgetSpend, directWethSpend].some((value) => value === null)) return null;
+    return `${nativeSpend! + directEthSpend! + directContractNativeEthSpend! + swapBudgetSpend! + directWethSpend!}`;
+  }, [directContractNativeEthUsdLabel, directEthUsdLabel, directWethUsdLabel, ethUsdLabel, swapBudgetUsdLabel]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    let active = true;
+
+    const loadMarketSnapshot = async () => {
+      try {
+        const response = await fetch(`${TEMPLATE_API_URL}/api/templates/market-snapshot`, {
+          cache: "no-store",
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail ?? "Failed to load live market snapshot");
+        if (!active) return;
+        setMarketSnapshot(payload);
+        setMarketError(payload.error ?? null);
+      } catch (loadError) {
+        if (!active) return;
+        setMarketError(loadError instanceof Error ? loadError.message : "Failed to load live market snapshot");
+      }
+    };
+
+    void loadMarketSnapshot();
+    const intervalId = window.setInterval(() => {
+      if (!document.hidden) {
+        void loadMarketSnapshot();
+      }
+    }, MARKET_REFRESH_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [open]);
 
   const toggleStablecoin = (tokenAddress: string, tokenSymbol: string) => {
     const normalized = tokenAddress.toLowerCase();
@@ -168,6 +272,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         gas_reserve_eth_per_contract: form.gas_reserve_eth_per_contract,
         swap_budget_eth_per_contract: form.swap_budget_eth_per_contract,
         direct_contract_eth_per_contract: form.direct_contract_eth_per_contract,
+        direct_contract_native_eth_per_contract: form.direct_contract_native_eth_per_contract,
         direct_contract_weth_per_contract: form.direct_contract_weth_per_contract,
         auto_top_up_enabled: form.auto_top_up_enabled,
         auto_top_up_threshold_eth: form.auto_top_up_threshold_eth,
@@ -221,6 +326,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         </DialogHeader>
 
         <form className="space-y-5" onSubmit={handleSubmit}>
+          <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-4 py-3">
+            <p className="text-sm font-semibold text-foreground">Live USD labels</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              ETH, WETH, and stablecoin spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>ETH {formatUsd(marketSnapshot?.eth_usd)}</span>
+              <span>WETH {formatUsd(marketSnapshot?.weth_usd)}</span>
+              <span>Updated {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
+            </div>
+            {marketError ? <p className="mt-2 text-xs text-amber-800">Market data warning: {marketError}</p> : null}
+          </div>
+
           <SectionCard
             title="Basics"
             description="Set the identity and overall intent for one contract / one subwallet."
@@ -250,7 +368,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, recipient_address: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Required when stablecoin swaps or direct WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet.
+                  Required when stablecoin swaps or direct contract ETH/WETH funding should auto-deploy ManagedTokenDistributor from each sub-wallet.
                 </p>
               </div>
 
@@ -336,6 +454,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-xs text-muted-foreground">
                   Optional baseline. Preview will automatically add extra unwrapped ETH when local wrap, swap, deploy, or token-transfer gas needs more headroom.
                 </p>
+                <LiveValueHint label="Live value" value={ethUsdLabel} />
               </div>
 
               <div className="space-y-2">
@@ -351,6 +470,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, swap_budget_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">{options?.hints.swap_budget_note}</p>
+                <LiveValueHint label="Live WETH spend" value={swapBudgetUsdLabel} />
               </div>
             </div>
 
@@ -413,6 +533,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-xs text-muted-foreground">
                   If the sub-wallet balance falls to or below this value during the run, the executor will try to refill it before continuing.
                 </p>
+                <LiveValueHint label="Live value" value={topUpThresholdUsdLabel} />
               </div>
 
               <div className="space-y-2">
@@ -431,6 +552,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-xs text-muted-foreground">
                   The main wallet will top the sub-wallet back up to this native ETH target. Set it higher than the trigger.
                 </p>
+                <LiveValueHint label="Live value" value={topUpTargetUsdLabel} />
               </div>
             </div>
           </SectionCard>
@@ -478,6 +600,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-2 text-[11px] text-muted-foreground">
                           {coin.official_source ? "Verified from official issuer docs" : "Ethereum mainnet stablecoin"}
                         </p>
+                        <p className="mt-1 text-[11px] text-emerald-700">
+                          Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
+                        </p>
                       </button>
                     );
                   })}
@@ -511,26 +636,45 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             <div>
                               <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
                               <p className="text-xs text-muted-foreground">{coin.name}</p>
+                              <p className="mt-1 text-[11px] text-emerald-700">
+                                Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
+                              </p>
                             </div>
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.000001"
-                              value={
-                                form.stablecoin_distribution_mode === "manual_percent"
-                                  ? allocation.percent ?? ""
-                                  : allocation.weth_amount_per_contract ?? ""
-                              }
-                              onChange={(event) =>
-                                updateAllocation(
-                                  coin.address,
+                            <div className="space-y-2">
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.000001"
+                                value={
                                   form.stablecoin_distribution_mode === "manual_percent"
-                                    ? "percent"
-                                    : "weth_amount_per_contract",
-                                  event.target.value,
-                                )
-                              }
-                            />
+                                    ? allocation.percent ?? ""
+                                    : allocation.weth_amount_per_contract ?? ""
+                                }
+                                onChange={(event) =>
+                                  updateAllocation(
+                                    coin.address,
+                                    form.stablecoin_distribution_mode === "manual_percent"
+                                      ? "percent"
+                                      : "weth_amount_per_contract",
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                              {form.stablecoin_distribution_mode === "manual_percent" ? (
+                                <LiveValueHint
+                                  label="Live budget slice"
+                                  value={getUsdValue(
+                                    ((toFiniteNumber(form.swap_budget_eth_per_contract) ?? 0) * (toFiniteNumber(allocation.percent) ?? 0)) / 100,
+                                    marketSnapshot?.weth_usd,
+                                  )}
+                                />
+                              ) : (
+                                <LiveValueHint
+                                  label="Live WETH spend"
+                                  value={getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd)}
+                                />
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -563,6 +707,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             <p className="text-[11px] uppercase tracking-wide text-muted-foreground">WETH per contract</p>
                             <p className="mt-1 text-sm font-semibold text-foreground">
                               {formatAmount(allocation.weth_amount_per_contract)} WETH
+                            </p>
+                            <p className="mt-1 text-[11px] text-emerald-700">
+                              {formatUsd(getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd))}
                             </p>
                           </div>
                           <div>
@@ -637,13 +784,16 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           </SectionCard>
 
           <SectionCard
-            title="Direct Contract Funding"
-            description="Set the exact ETH and optional WETH that each future subwallet should place into the contract."
+            title="Direct Funding"
+            description="Keep extra ETH in each sub-wallet, or fund ManagedTokenDistributor directly with ETH and WETH."
           >
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Sub-wallet ETH stays local for gas headroom or ETH-side actions. Direct contract ETH and direct contract WETH are sent into ManagedTokenDistributor after deployment.
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <div className="space-y-2">
                 <label htmlFor="direct-eth" className="text-sm font-medium text-foreground">
-                  Direct ETH kept in sub-wallet
+                  Direct ETH to sub-wallet
                 </label>
                 <Input
                   id="direct-eth"
@@ -654,8 +804,27 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  This ETH stays unwrapped in the sub-wallet after funding. Use it for gas headroom or any ETH-side action in the run.
+                  This ETH stays unwrapped in the sub-wallet after funding. Use it for extra gas headroom or any ETH-side action in the run.
                 </p>
+                <LiveValueHint label="Live value" value={directEthUsdLabel} />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="direct-contract-eth" className="text-sm font-medium text-foreground">
+                  Direct ETH distributor funding
+                </label>
+                <Input
+                  id="direct-contract-eth"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={form.direct_contract_native_eth_per_contract}
+                  onChange={(event) => setForm((current) => ({ ...current, direct_contract_native_eth_per_contract: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional. After deployment, the sub-wallet sends this ETH directly into ManagedTokenDistributor for a native ETH execute path.
+                </p>
+                <LiveValueHint label="Live value" value={directContractNativeEthUsdLabel} />
               </div>
 
               <div className="space-y-2">
@@ -673,6 +842,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-xs text-muted-foreground">
                   Optional. The sub-wallet wraps this amount locally after funding, then transfers it into a deployed ManagedTokenDistributor.
                 </p>
+                <LiveValueHint label="Live value" value={directWethUsdLabel} />
               </div>
             </div>
           </SectionCard>
@@ -681,22 +851,31 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title="Review"
             description="This summary is per contract. The wallet flow will multiply these numbers by the selected contract count."
           >
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas reserve</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} ETH</p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(ethUsdLabel)}</p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap budget</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.swap_budget_eth_per_contract)} ETH</p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(swapBudgetUsdLabel)}</p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Direct ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Sub-wallet ETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_eth_per_contract)} ETH</p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directEthUsdLabel)}</p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Direct WETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract ETH</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_native_eth_per_contract)} ETH</p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directContractNativeEthUsdLabel)}</p>
+              </div>
+              <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contract WETH</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_weth_per_contract)} WETH</p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(directWethUsdLabel)}</p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Auto top-up</p>
@@ -705,21 +884,32 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     ? `${formatAmount(form.auto_top_up_threshold_eth)} -> ${formatAmount(form.auto_top_up_target_eth)} ETH`
                     : "Off"}
                 </p>
+                <p className="mt-1 text-[11px] text-emerald-700">
+                  {topUpEnabled
+                    ? `${formatUsd(topUpThresholdUsdLabel)} -> ${formatUsd(topUpTargetUsdLabel)}`
+                    : "--"}
+                </p>
               </div>
               <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Slippage</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.slippage_percent)}%</p>
               </div>
               <div className="rounded-xl border border-accent/40 bg-accent/10 px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">If starting with only ETH</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(totalEthIfNoWeth)} ETH</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Configured spend / contract</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">
+                  {formatAmount(configuredEthPerContract)} ETH + {formatAmount(configuredWethPerContract)} WETH
+                </p>
+                <p className="mt-1 text-[11px] text-emerald-700">{formatUsd(configuredSpendUsdLabel)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {formatAmount(totalEthIfNoWeth)} ETH if starting from native only
+                </p>
               </div>
             </div>
 
             <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
               {needsWeth
                 ? "This template needs WETH. The run will fund ETH first, leave gas unwrapped, and wrap only the required WETH budget inside each sub-wallet."
-                : "This template does not require WETH unless you add swap budget or direct WETH funding."}
+                : "This template does not require WETH unless you add swap budget or direct contract WETH funding."}
             </div>
 
             <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">

@@ -21,6 +21,7 @@ contract ManagedTokenDistributor {
     error OnlyOwner();
     error AlreadyExecuted();
     error TransferFailed();
+    error NativeTransferFailed();
     error InsufficientBalance(uint256 available, uint256 required);
 
     constructor(
@@ -30,7 +31,6 @@ contract ManagedTokenDistributor {
         address _owner,
         address _returnWallet
     ) {
-        require(_tokenOut != address(0), "Invalid token address");
         require(_amount > 0, "Amount must be greater than 0");
         require(_recipient != address(0), "Invalid recipient address");
         require(_owner != address(0), "Invalid owner address");
@@ -43,6 +43,8 @@ contract ManagedTokenDistributor {
         returnWallet = _returnWallet;
     }
 
+    receive() external payable {}
+
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
         _;
@@ -51,10 +53,27 @@ contract ManagedTokenDistributor {
     function execute() external onlyOwner {
         if (executed) revert AlreadyExecuted();
 
+        executed = true;
+        if (tokenOut == address(0)) {
+            uint256 balance = address(this).balance;
+            if (balance < amount) revert InsufficientBalance(balance, amount);
+
+            (bool sentToRecipient,) = payable(recipient).call{value: amount}("");
+            if (!sentToRecipient) revert NativeTransferFailed();
+
+            emit Executed(tokenOut, amount, recipient);
+
+            uint256 remainingNativeBalance = address(this).balance;
+            if (remainingNativeBalance > 0) {
+                (bool sentToReturnWallet,) = payable(returnWallet).call{value: remainingNativeBalance}("");
+                if (!sentToReturnWallet) revert NativeTransferFailed();
+                emit ExcessReturned(tokenOut, remainingNativeBalance, returnWallet);
+            }
+            return;
+        }
+
         uint256 balance = IERC20Minimal(tokenOut).balanceOf(address(this));
         if (balance < amount) revert InsufficientBalance(balance, amount);
-
-        executed = true;
         if (!IERC20Minimal(tokenOut).transfer(recipient, amount)) revert TransferFailed();
 
         emit Executed(tokenOut, amount, recipient);
@@ -73,6 +92,16 @@ contract ManagedTokenDistributor {
         if (!IERC20Minimal(token).transfer(returnWallet, balance)) revert TransferFailed();
 
         emit TokensRescued(token, balance, returnWallet);
+    }
+
+    function rescueNative() external onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No native balance to rescue");
+
+        (bool sentToReturnWallet,) = payable(returnWallet).call{value: balance}("");
+        if (!sentToReturnWallet) revert NativeTransferFailed();
+
+        emit TokensRescued(address(0), balance, returnWallet);
     }
 
     function getConfig()

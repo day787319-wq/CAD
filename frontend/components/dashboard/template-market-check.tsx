@@ -1,6 +1,6 @@
 "use client";
 
-import { MouseEvent, useState } from "react";
+import { MouseEvent, useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,28 +27,89 @@ function MetricCard({ label, value, hint }: { label: string; value: string; hint
 
 type TemplateMarketCheckProps = {
   template: Template;
+  contractCount?: number;
+  defaultOpen?: boolean;
+  showToggle?: boolean;
   stopPropagation?: boolean;
 };
 
-export function TemplateMarketCheckPanel({ template, stopPropagation = false }: TemplateMarketCheckProps) {
-  const [open, setOpen] = useState(false);
+const AUTO_REFRESH_INTERVAL_SECONDS = 60;
+const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_INTERVAL_SECONDS * 1000;
+
+function formatTokenAmount(value: string | null | undefined, symbol: string) {
+  if (value === null || value === undefined) return "--";
+  return `${formatAmount(value)} ${symbol}`;
+}
+
+export function TemplateMarketCheckPanel({
+  template,
+  contractCount = 1,
+  defaultOpen = false,
+  showToggle = true,
+  stopPropagation = false,
+}: TemplateMarketCheckProps) {
+  const [open, setOpen] = useState(defaultOpen);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [marketCheck, setMarketCheck] = useState<TemplateMarketCheck | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
+  const requestIdRef = useRef(0);
+
+  const normalizedContractCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setIsPageVisible(visible);
+      setNowMs(Date.now());
+    };
+
+    handleVisibilityChange();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    setOpen(defaultOpen);
+    setLoading(false);
+    setError(null);
+    setMarketCheck(null);
+    setNextRefreshAt(null);
+    requestIdRef.current += 1;
+  }, [template.id, defaultOpen]);
 
   const loadMarketCheck = async () => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(`${TEMPLATE_API_URL}/api/templates/${template.id}/market-check`);
+      const params = new URLSearchParams({
+        contract_count: `${normalizedContractCount}`,
+      });
+      const response = await fetch(`${TEMPLATE_API_URL}/api/templates/${template.id}/market-check?${params.toString()}`, {
+        cache: "no-store",
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail ?? "Failed to load live market check");
-      setMarketCheck(payload);
+      if (requestId === requestIdRef.current) {
+        setMarketCheck(payload);
+      }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load live market check");
+      if (requestId === requestIdRef.current) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load live market check");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setNowMs(Date.now());
+        setNextRefreshAt(Date.now() + AUTO_REFRESH_INTERVAL_MS);
+      }
     }
   };
 
@@ -66,14 +127,61 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
     void loadMarketCheck();
   };
 
+  useEffect(() => {
+    if (!open) {
+      setNextRefreshAt(null);
+      return;
+    }
+
+    if (!marketCheck || marketCheck.contract_count !== normalizedContractCount) {
+      void loadMarketCheck();
+      return;
+    }
+
+    if (nextRefreshAt === null) {
+      setNowMs(Date.now());
+      setNextRefreshAt(Date.now() + AUTO_REFRESH_INTERVAL_MS);
+    }
+  }, [open, normalizedContractCount]);
+
+  useEffect(() => {
+    if (!open || !isPageVisible) return;
+
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [open, isPageVisible]);
+
+  useEffect(() => {
+    if (!open || !isPageVisible || loading || nextRefreshAt === null) return;
+    if (nowMs >= nextRefreshAt) {
+      void loadMarketCheck();
+    }
+  }, [open, isPageVisible, loading, nextRefreshAt, nowMs]);
+
+  const secondsUntilRefresh = nextRefreshAt === null ? null : Math.max(0, Math.ceil((nextRefreshAt - nowMs) / 1000));
+  const autoRefreshStatus = loading
+    ? "Refreshing live market pricing..."
+    : !isPageVisible
+      ? "Auto-refresh paused while this tab is hidden."
+      : secondsUntilRefresh === null
+        ? `Auto-refresh every ${AUTO_REFRESH_INTERVAL_SECONDS}s while this panel is open.`
+        : `Auto-refresh in ${secondsUntilRefresh}s`;
+
   return (
     <div className="mt-4 rounded-2xl border border-border/70 bg-secondary/10 p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-sm font-semibold text-foreground">Optional live market check</p>
+          <p className="text-sm font-semibold text-foreground">{showToggle ? "Optional live market check" : "Live market check"}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Uses live CoinGecko pricing and route quotes. This is slower than the wallet support preview above.
+            Uses live CoinGecko pricing and route quotes for {normalizedContractCount} contract{normalizedContractCount === 1 ? "" : "s"}. This is slower than the wallet support preview above.
           </p>
+          <p className="mt-1 text-xs text-muted-foreground">{autoRefreshStatus}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -83,9 +191,11 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
               Refresh prices
             </Button>
           ) : null}
-          <Button type="button" variant={open ? "outline" : "default"} size="sm" onClick={handleToggle}>
-            {open ? "Hide live check" : "View live check"}
-          </Button>
+          {showToggle ? (
+            <Button type="button" variant={open ? "outline" : "default"} size="sm" onClick={handleToggle}>
+              {open ? "Hide live check" : "View live check"}
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -107,17 +217,23 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
           {marketCheck ? (
             <>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-                <MetricCard label="Per-contract ETH" value={`${formatAmount(marketCheck.per_contract.required_eth)} ETH`} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
-                <MetricCard label="Per-contract WETH" value={`${formatAmount(marketCheck.per_contract.required_weth)} WETH`} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
-                <MetricCard label="Live total cost" value={formatUsd(marketCheck.totals.combined_cost_usd)} hint="Current ETH funding cost for one contract" />
+                <MetricCard label="Per-contract ETH" value={formatTokenAmount(marketCheck.per_contract.required_eth, "ETH")} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
+                <MetricCard label="Per-contract WETH" value={formatTokenAmount(marketCheck.per_contract.required_weth, "WETH")} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
+                <MetricCard label="Funding total" value={formatTokenAmount(marketCheck.totals.required_eth_total, "ETH")} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
+                <MetricCard label="Network fees" value={formatTokenAmount(marketCheck.totals.total_network_fee_eth, "ETH")} hint={formatUsd(marketCheck.totals.total_network_fee_eth_usd)} />
+                <MetricCard label="All-in live total" value={formatUsd(marketCheck.totals.total_eth_required_with_fees_usd ?? marketCheck.totals.combined_cost_usd)} hint={`${formatTokenAmount(marketCheck.totals.total_eth_required_with_fees, "ETH")} incl. funding, projected top-ups, and fees`} />
                 <MetricCard label="Stable output USD" value={formatUsd(marketCheck.totals.stablecoin_output_total_usd)} hint="Estimated current value of routed stable outputs" />
-                <MetricCard label="Slippage" value={`${formatAmount(marketCheck.slippage_percent)}%`} />
-                <MetricCard label="Fee tier" value={formatFeeTier(marketCheck.fee_tier)} />
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+                <MetricCard label="Sub-wallet ETH" value={formatTokenAmount(marketCheck.per_contract.direct_subwallet_eth ?? marketCheck.per_contract.direct_contract_eth, "ETH")} />
+                <MetricCard label="Contract ETH" value={formatTokenAmount(marketCheck.per_contract.direct_contract_native_eth ?? "0", "ETH")} />
+                <MetricCard label="Contract WETH" value={formatTokenAmount(marketCheck.per_contract.direct_contract_weth, "WETH")} />
+                <MetricCard label="Projected top-up reserve" value={formatTokenAmount(marketCheck.totals.projected_auto_top_up_eth_total ?? "0", "ETH")} hint={formatUsd(marketCheck.totals.projected_auto_top_up_eth_total_usd)} />
                 <MetricCard label="ETH spot" value={formatUsd(marketCheck.price_snapshot.eth_usd)} />
                 <MetricCard label="WETH spot" value={formatUsd(marketCheck.price_snapshot.weth_usd)} />
+                <MetricCard label="Slippage" value={`${formatAmount(marketCheck.slippage_percent)}%`} />
+                <MetricCard label="Fee tier" value={formatFeeTier(marketCheck.fee_tier)} />
                 <MetricCard label="Checked at" value={formatRelativeTimestamp(marketCheck.price_snapshot.fetched_at)} />
               </div>
 
@@ -157,7 +273,7 @@ export function TemplateMarketCheckPanel({ template, stopPropagation = false }: 
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
-                  This template does not include a stablecoin swap route, so the preview focuses on ETH funding, local WETH wrap requirements, and any direct distributor funding.
+                  This template does not include a stablecoin swap route, so the preview focuses on sub-wallet ETH, local WETH wrap requirements, and any direct contract ETH/WETH funding.
                 </div>
               )}
             </>

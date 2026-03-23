@@ -197,8 +197,9 @@ export function TemplateLibraryStarter() {
                 <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <SummaryPill label="Gas reserve" value={`${formatAmount(template.gas_reserve_eth_per_contract)} ETH`} />
                   <SummaryPill label="Swap budget" value={`${formatAmount(template.swap_budget_eth_per_contract)} ETH`} />
-                  <SummaryPill label="Direct ETH" value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
-                  <SummaryPill label="Direct WETH" value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
+                  <SummaryPill label="Sub-wallet ETH" value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
+                  <SummaryPill label="Contract ETH" value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ETH`} />
+                  <SummaryPill label="Contract WETH" value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
                 </div>
 
                 <p className="mt-3 text-xs text-muted-foreground">

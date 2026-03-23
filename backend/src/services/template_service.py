@@ -307,6 +307,10 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         payload.get("direct_contract_eth_per_contract", "0"),
         "direct_contract_eth_per_contract",
     )
+    direct_contract_native_eth = _parse_decimal(
+        payload.get("direct_contract_native_eth_per_contract", "0"),
+        "direct_contract_native_eth_per_contract",
+    )
     direct_weth = _parse_decimal(
         payload.get("direct_contract_weth_per_contract", "0"),
         "direct_contract_weth_per_contract",
@@ -314,9 +318,9 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
     recipient_address = _parse_optional_address(payload.get("recipient_address"), "recipient_address")
     return_wallet_address = _parse_optional_address(payload.get("return_wallet_address"), "return_wallet_address")
     test_auto_execute_after_funding = bool(payload.get("test_auto_execute_after_funding", False))
-    requires_recipient = direct_weth > 0 or distribution_mode != "none"
+    requires_recipient = direct_contract_native_eth > 0 or direct_weth > 0 or distribution_mode != "none"
     if requires_recipient and recipient_address is None:
-        raise ValueError("recipient_address is required when stablecoin swaps or direct contract WETH are enabled")
+        raise ValueError("recipient_address is required when stablecoin swaps or direct contract ETH/WETH are enabled")
     if test_auto_execute_after_funding and recipient_address is None:
         raise ValueError("recipient_address is required when test_auto_execute_after_funding is enabled")
     slippage_percent = _parse_slippage_percent(payload.get("slippage_percent", "0.5"))
@@ -336,6 +340,7 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         "gas_reserve_eth_per_contract": _format_decimal(gas_reserve),
         "swap_budget_eth_per_contract": _format_decimal(swap_budget),
         "direct_contract_eth_per_contract": _format_decimal(direct_eth),
+        "direct_contract_native_eth_per_contract": _format_decimal(direct_contract_native_eth),
         "direct_contract_weth_per_contract": _format_decimal(direct_weth),
         "recipient_address": recipient_address,
         "return_wallet_address": return_wallet_address,
@@ -383,6 +388,7 @@ def _serialize_template_for_storage(template: dict):
         "gas_reserve_eth_per_contract": template["gas_reserve_eth_per_contract"],
         "swap_budget_eth_per_contract": template["swap_budget_eth_per_contract"],
         "direct_contract_eth_per_contract": template["direct_contract_eth_per_contract"],
+        "direct_contract_native_eth_per_contract": template.get("direct_contract_native_eth_per_contract", "0"),
         "direct_contract_weth_per_contract": template["direct_contract_weth_per_contract"],
         "auto_top_up_enabled": template["auto_top_up_enabled"],
         "auto_top_up_threshold_eth": template["auto_top_up_threshold_eth"],
@@ -415,6 +421,7 @@ def _deserialize_template_record(record: dict | None):
         "gas_reserve_eth_per_contract": record.get("gas_reserve_eth_per_contract") or "0",
         "swap_budget_eth_per_contract": record.get("swap_budget_eth_per_contract") or "0",
         "direct_contract_eth_per_contract": record.get("direct_contract_eth_per_contract") or "0",
+        "direct_contract_native_eth_per_contract": record.get("direct_contract_native_eth_per_contract") or "0",
         "direct_contract_weth_per_contract": record.get("direct_contract_weth_per_contract") or "0",
         "auto_top_up_enabled": bool(record.get("auto_top_up_enabled", False)),
         "auto_top_up_threshold_eth": record.get("auto_top_up_threshold_eth") or "0",
@@ -556,6 +563,7 @@ def _get_estimated_gas_price_wei() -> Decimal:
 
 def _build_template_execution_estimate(template: dict, contract_count: int, *, gas_price_wei: Decimal | None = None):
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
+    direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
     direct_weth = Decimal(str(template["direct_contract_weth_per_contract"]))
     recipient_address = template.get("recipient_address")
     return_wallet_address = template.get("return_wallet_address")
@@ -566,7 +574,9 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
     ]
     route_count = len(stablecoin_routes)
-    deployment_targets_per_wallet = route_count + (1 if direct_weth > 0 else 0)
+    erc20_funding_targets_per_wallet = route_count + (1 if direct_weth > 0 else 0)
+    native_eth_funding_targets_per_wallet = 1 if direct_contract_native_eth > 0 else 0
+    deployment_targets_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
     required_weth_per_contract = swap_budget + direct_weth
     wrap_transaction_count = contract_count if required_weth_per_contract > 0 else 0
     approval_transaction_count = contract_count if route_count > 0 else 0
@@ -590,7 +600,15 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     approval_gas_units_per_wallet = ERC20_APPROVE_GAS_LIMIT if route_count > 0 else 0
     swap_gas_units_per_wallet = UNISWAP_V3_SWAP_GAS_LIMIT * route_count
     deployment_gas_units_per_wallet = (
-        (MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT + ERC20_TRANSFER_GAS_LIMIT) * deployment_targets_per_wallet
+        (MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT * deployment_targets_per_wallet)
+        + (ERC20_TRANSFER_GAS_LIMIT * erc20_funding_targets_per_wallet)
+        + (ETH_TRANSFER_GAS_LIMIT * native_eth_funding_targets_per_wallet)
+        if recipient_address
+        else 0
+    )
+    contract_funding_gas_units_per_wallet = (
+        (ERC20_TRANSFER_GAS_LIMIT * erc20_funding_targets_per_wallet)
+        + (ETH_TRANSFER_GAS_LIMIT * native_eth_funding_targets_per_wallet)
         if recipient_address
         else 0
     )
@@ -621,6 +639,8 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "stablecoin_routes": stablecoin_routes,
         "route_count": route_count,
         "deployment_targets_per_wallet": deployment_targets_per_wallet,
+        "erc20_funding_targets_per_wallet": erc20_funding_targets_per_wallet,
+        "native_eth_funding_targets_per_wallet": native_eth_funding_targets_per_wallet,
         "required_weth_per_contract": required_weth_per_contract,
         "wrap_transaction_count": wrap_transaction_count,
         "approval_transaction_count": approval_transaction_count,
@@ -632,6 +652,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "approval_gas_units_per_wallet": approval_gas_units_per_wallet,
         "swap_gas_units_per_wallet": swap_gas_units_per_wallet,
         "deployment_gas_units_per_wallet": deployment_gas_units_per_wallet,
+        "contract_funding_gas_units_per_wallet": contract_funding_gas_units_per_wallet,
         "execute_gas_units_per_wallet": execute_gas_units_per_wallet,
         "return_sweep_token_transfer_count_per_wallet": return_sweep_token_transfer_count_per_wallet,
         "return_sweep_transaction_count_per_wallet": return_sweep_transaction_count_per_wallet,
@@ -651,6 +672,7 @@ def _build_auto_top_up_projection(
     *,
     required_eth_per_contract: Decimal,
     required_weth_per_contract: Decimal,
+    reserved_native_eth_per_contract: Decimal,
     execution_estimate: dict,
 ):
     enabled = bool(template.get("auto_top_up_enabled", False))
@@ -660,12 +682,12 @@ def _build_auto_top_up_projection(
     wrap_gas_units_per_wallet = int(execution_estimate.get("wrap_gas_units_per_wallet") or 0)
     wrap_gas_fee_eth_per_wallet = wei_to_decimal(int(gas_price_wei) * wrap_gas_units_per_wallet)
     projected_post_wrap_eth_per_wallet = max(
-        required_eth_per_contract - required_weth_per_contract - wrap_gas_fee_eth_per_wallet,
+        required_eth_per_contract - required_weth_per_contract - reserved_native_eth_per_contract - wrap_gas_fee_eth_per_wallet,
         Decimal("0"),
     )
     projected_triggered = (
         enabled
-        and required_weth_per_contract > 0
+        and (required_weth_per_contract > 0 or reserved_native_eth_per_contract > 0)
         and projected_post_wrap_eth_per_wallet <= threshold
         and target > projected_post_wrap_eth_per_wallet
     )
@@ -696,7 +718,8 @@ def _build_auto_top_up_projection(
 def _build_template_cost_snapshot(template: dict, contract_count: int, *, include_live_market: bool = False):
     gas_reserve = Decimal(str(template["gas_reserve_eth_per_contract"]))
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
-    direct_eth = Decimal(str(template["direct_contract_eth_per_contract"]))
+    direct_subwallet_eth = Decimal(str(template["direct_contract_eth_per_contract"]))
+    direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
     direct_weth = Decimal(str(template["direct_contract_weth_per_contract"]))
     contract_count_decimal = Decimal(contract_count)
     gas_price_wei = _get_estimated_gas_price_wei()
@@ -707,7 +730,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     )
 
     local_wrap_eth_per_contract = swap_budget + direct_weth
-    configured_unwrapped_eth_per_contract = gas_reserve + direct_eth
+    configured_unwrapped_eth_per_contract = gas_reserve + direct_subwallet_eth
     minimum_unwrapped_eth_per_contract = max(
         configured_unwrapped_eth_per_contract,
         Decimal(str(execution_estimate["local_execution_gas_fee_eth_per_wallet"])),
@@ -716,7 +739,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         minimum_unwrapped_eth_per_contract - configured_unwrapped_eth_per_contract,
         Decimal("0"),
     )
-    required_eth_per_contract = minimum_unwrapped_eth_per_contract + local_wrap_eth_per_contract
+    required_eth_per_contract = minimum_unwrapped_eth_per_contract + local_wrap_eth_per_contract + direct_contract_native_eth
     required_weth_per_contract = execution_estimate["required_weth_per_contract"]
     required_eth_total = required_eth_per_contract * contract_count_decimal
     required_weth_total = required_weth_per_contract * contract_count_decimal
@@ -725,7 +748,26 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         contract_count,
         required_eth_per_contract=required_eth_per_contract,
         required_weth_per_contract=required_weth_per_contract,
+        reserved_native_eth_per_contract=direct_contract_native_eth,
         execution_estimate=execution_estimate,
+    )
+    funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
+    funding_network_fee_eth = wei_to_decimal(int(gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * funding_transaction_count)
+    projected_auto_top_up_eth_total = Decimal(str(auto_top_up.get("projected_total_eth") or "0"))
+    top_up_network_fee_eth = Decimal(str(auto_top_up.get("projected_network_fee_eth") or "0"))
+    contract_sync_network_fee_eth = Decimal("0")
+    total_network_fee_eth = (
+        Decimal(str(execution_estimate["local_execution_gas_fee_eth_total"]))
+        + funding_network_fee_eth
+        + top_up_network_fee_eth
+        + contract_sync_network_fee_eth
+    )
+    total_eth_required_with_fees = (
+        required_eth_total
+        + projected_auto_top_up_eth_total
+        + funding_network_fee_eth
+        + top_up_network_fee_eth
+        + contract_sync_network_fee_eth
     )
 
     stablecoin_addresses = [allocation["token_address"] for allocation in template["stablecoin_allocations"]]
@@ -755,7 +797,22 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
 
     required_eth_total_usd = _usd_value(required_eth_total, market_snapshot.get("eth_usd")) if include_live_market else None
     required_weth_total_usd = _usd_value(required_weth_total, market_snapshot.get("weth_usd")) if include_live_market else None
-    combined_cost_usd = required_eth_total_usd
+    projected_auto_top_up_eth_total_usd = (
+        _usd_value(projected_auto_top_up_eth_total, market_snapshot.get("eth_usd"))
+        if include_live_market
+        else None
+    )
+    total_network_fee_eth_usd = (
+        _usd_value(total_network_fee_eth, market_snapshot.get("eth_usd"))
+        if include_live_market
+        else None
+    )
+    total_eth_required_with_fees_usd = (
+        _usd_value(total_eth_required_with_fees, market_snapshot.get("eth_usd"))
+        if include_live_market
+        else None
+    )
+    combined_cost_usd = total_eth_required_with_fees_usd
 
     return {
         "contract_count": contract_count,
@@ -767,7 +824,9 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         "per_contract": {
             "gas_reserve_eth": _format_decimal(gas_reserve),
             "swap_budget_eth": _format_decimal(swap_budget),
-            "direct_contract_eth": _format_decimal(direct_eth),
+            "direct_contract_eth": _format_decimal(direct_subwallet_eth),
+            "direct_subwallet_eth": _format_decimal(direct_subwallet_eth),
+            "direct_contract_native_eth": _format_decimal(direct_contract_native_eth),
             "direct_contract_weth": _format_decimal(direct_weth),
             "return_wallet_address": template.get("return_wallet_address"),
             "auto_top_up_threshold_eth": auto_top_up["threshold_eth"],
@@ -786,14 +845,21 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "required_weth_total": _format_decimal(required_weth_total),
             "gas_reserve_eth_total": _format_decimal(gas_reserve * contract_count_decimal),
             "swap_budget_eth_total": _format_decimal(swap_budget * contract_count_decimal),
-            "direct_contract_eth_total": _format_decimal(direct_eth * contract_count_decimal),
+            "direct_contract_eth_total": _format_decimal(direct_subwallet_eth * contract_count_decimal),
+            "direct_subwallet_eth_total": _format_decimal(direct_subwallet_eth * contract_count_decimal),
+            "direct_contract_native_eth_total": _format_decimal(direct_contract_native_eth * contract_count_decimal),
             "direct_contract_weth_total": _format_decimal(direct_weth * contract_count_decimal),
             "projected_auto_top_up_eth_total": auto_top_up["projected_total_eth"],
+            "projected_auto_top_up_eth_total_usd": projected_auto_top_up_eth_total_usd,
             "configured_unwrapped_eth_total": _format_decimal(configured_unwrapped_eth_per_contract * contract_count_decimal),
             "minimum_unwrapped_eth_total": _format_decimal(minimum_unwrapped_eth_per_contract * contract_count_decimal),
             "auto_added_gas_buffer_eth_total": _format_decimal(auto_added_gas_buffer_eth_per_contract * contract_count_decimal),
             "local_execution_gas_fee_eth_total": _format_decimal(Decimal(str(execution_estimate["local_execution_gas_fee_eth_total"]))),
+            "total_network_fee_eth": _format_decimal(total_network_fee_eth),
+            "total_network_fee_eth_usd": total_network_fee_eth_usd,
             "total_eth_if_no_weth_available_total": _format_decimal(required_eth_total),
+            "total_eth_required_with_fees": _format_decimal(total_eth_required_with_fees),
+            "total_eth_required_with_fees_usd": total_eth_required_with_fees_usd,
             "required_eth_total_usd": required_eth_total_usd,
             "required_weth_total_usd": required_weth_total_usd,
             "combined_cost_usd": combined_cost_usd,
@@ -809,6 +875,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "swap_transaction_count": execution_estimate["swap_transaction_count"],
             "deployment_transaction_count": execution_estimate["deployment_transaction_count"],
             "contract_funding_transaction_count": execution_estimate["contract_funding_transaction_count"],
+            "contract_funding_gas_units_per_wallet": execution_estimate["contract_funding_gas_units_per_wallet"],
             "execute_transaction_count": execution_estimate["execute_transaction_count"],
             "top_up_transaction_count": auto_top_up["projected_transaction_count"],
             "top_up_network_fee_eth": auto_top_up["projected_network_fee_eth"],
@@ -832,7 +899,7 @@ def get_template_options():
             {
                 "value": "none",
                 "label": "No swap",
-                "description": "Keep this template focused on gas and direct contract funding only.",
+                "description": "Keep this template focused on gas, sub-wallet ETH, and optional direct contract ETH/WETH funding only.",
             },
             {
                 "value": "equal",
@@ -880,6 +947,7 @@ def get_template_options():
             "gas_reserve_eth_per_contract": "0.02",
             "swap_budget_eth_per_contract": "0",
             "direct_contract_eth_per_contract": "0",
+            "direct_contract_native_eth_per_contract": "0",
             "direct_contract_weth_per_contract": "0",
             "auto_top_up_enabled": False,
             "auto_top_up_threshold_eth": "0",
@@ -900,6 +968,11 @@ def get_template_options():
         },
         "contract_sync": get_registry_integration_status(),
     }
+
+
+def get_template_editor_market_snapshot():
+    stablecoin_addresses = [coin["address"] for coin in CURATED_USD_STABLECOINS]
+    return get_market_snapshot(stablecoin_addresses, WETH_ADDRESS)
 
 
 def list_templates():
@@ -1090,11 +1163,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
 
     shortfall_reason = None
     if requires_recipient and not recipient_address:
-        shortfall_reason = "recipient_address is required for templates that swap into managed distributor contracts or fund direct WETH distributors."
+        shortfall_reason = "recipient_address is required for templates that swap into managed distributor contracts or fund direct contract ETH/WETH distributors."
     elif available_eth < required_eth_total:
         shortfall_reason = (
             f"Not enough ETH in the main wallet. Need {_format_decimal(required_eth_total - available_eth)} more ETH "
-            "to fund gas reserve, direct ETH, automatic local execution gas headroom, and the local wrap budget for the new subwallets."
+            "to fund gas reserve, sub-wallet ETH, direct contract ETH, automatic local execution gas headroom, and the local wrap budget for the new subwallets."
         )
     elif available_eth < total_eth_required_with_fees:
         shortfall_reason = (
@@ -1147,6 +1220,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "swap_transaction_count": swap_transaction_count,
             "deployment_transaction_count": deployment_transaction_count,
             "contract_funding_transaction_count": contract_funding_transaction_count,
+            "contract_funding_gas_units_per_wallet": execution_estimate.get("contract_funding_gas_units_per_wallet"),
             "return_sweep_transaction_count": return_sweep_transaction_count,
             "contract_sync_transaction_count": contract_sync_transaction_count,
             "total_transaction_count": total_transaction_count,

@@ -28,6 +28,7 @@ load_dotenv(ENV_PATH)
 Account.enable_unaudited_hdwallet_features()
 
 WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'  # Mainnet WETH
+NATIVE_ETH_SENTINEL_ADDRESS = "0x0000000000000000000000000000000000000000"
 UNISWAP_V3_QUOTER_ADDRESS = '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'
 UNISWAP_V3_ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564'
 UNISWAP_FEE_TIERS = [500, 3000, 10000]
@@ -1267,6 +1268,29 @@ def build_token_transfer_result(
     }
 
 
+def build_native_transfer_result(
+    *,
+    tx_hash: str | None,
+    amount_wei: int,
+    nonce: int | None = None,
+    gas_price_wei: int | None = None,
+    gas_used: int | None = None,
+    block_number: int | None = None,
+    confirmation_source: str = "receipt",
+) -> dict:
+    return {
+        "tx_hash": tx_hash,
+        "status": "confirmed",
+        "amount": format_decimal(wei_to_decimal(amount_wei)),
+        "amount_wei": amount_wei,
+        "gas_used": gas_used,
+        "block_number": block_number,
+        "nonce": nonce,
+        "gas_price_wei": gas_price_wei,
+        "confirmation_source": confirmation_source,
+    }
+
+
 def build_swap_result(
     *,
     tx_hash: str | None,
@@ -1391,6 +1415,52 @@ def recover_token_transfer_after_timeout(
                 tx_hash=tx_hash,
                 amount_units=amount_units,
                 token_decimals=token_decimals,
+                nonce=nonce,
+                gas_price_wei=gas_price_wei,
+                confirmation_source="balance_check",
+            )
+
+        if time.monotonic() >= deadline:
+            return None
+
+        time.sleep(max(int(poll_interval_seconds), 1))
+
+
+def recover_native_eth_transfer_after_timeout(
+    web3_client: Web3,
+    *,
+    recipient_address: str,
+    amount_wei: int,
+    recipient_balance_before_wei: int,
+    tx_hash: str | None,
+    nonce: int | None,
+    gas_price_wei: int | None,
+    grace_seconds: int = TOKEN_TRANSFER_POST_TIMEOUT_GRACE_SECONDS,
+    poll_interval_seconds: int = TOKEN_TRANSFER_POST_TIMEOUT_POLL_INTERVAL_SECONDS,
+) -> dict | None:
+    recipient = Web3.to_checksum_address(recipient_address)
+    deadline = time.monotonic() + max(int(grace_seconds), 0)
+
+    while True:
+        receipt = get_transaction_receipt_if_available(web3_client, tx_hash)
+        recipient_balance_after_wei = int(web3_client.eth.get_balance(recipient))
+
+        if receipt:
+            if int(getattr(receipt, "status", 0) or 0) == 1:
+                return build_native_transfer_result(
+                    tx_hash=tx_hash,
+                    amount_wei=amount_wei,
+                    nonce=nonce,
+                    gas_price_wei=gas_price_wei,
+                    gas_used=int(getattr(receipt, "gasUsed", 0) or 0),
+                    block_number=int(getattr(receipt, "blockNumber", 0) or 0),
+                )
+            raise RuntimeError(f"Transaction failed: {tx_hash}")
+
+        if recipient_balance_after_wei >= int(recipient_balance_before_wei) + int(amount_wei):
+            return build_native_transfer_result(
+                tx_hash=tx_hash,
+                amount_wei=amount_wei,
                 nonce=nonce,
                 gas_price_wei=gas_price_wei,
                 confirmation_source="balance_check",
@@ -1574,6 +1644,71 @@ def approve_token_from_wallet(
         tx_hash=tx_hash,
         nonce=nonce,
         gas_price_wei=approval_gas_price_wei,
+    )
+
+
+def transfer_native_eth_from_wallet(
+    web3_client: Web3,
+    *,
+    wallet_address: str,
+    private_key: str,
+    recipient_address: str,
+    amount_wei: int,
+    nonce: int,
+    gas_price_wei: int | None = None,
+    gas_limit: int = ETH_TRANSFER_GAS_LIMIT,
+) -> dict:
+    owner = Web3.to_checksum_address(wallet_address)
+    recipient = Web3.to_checksum_address(recipient_address)
+    transfer_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    recipient_balance_before_wei = int(web3_client.eth.get_balance(recipient))
+    tx = build_transaction_envelope(
+        web3_client,
+        owner,
+        nonce,
+        gas=gas_limit,
+        gas_price_wei=transfer_gas_price_wei,
+        value=amount_wei,
+        to=recipient,
+    )
+    try:
+        tx_hash = send_signed_transaction(web3_client, tx, private_key)
+    except Exception as exc:
+        raise WalletTransactionError(
+            str(exc),
+            nonce=nonce,
+            gas_price_wei=transfer_gas_price_wei,
+            retryable=_is_retryable_transaction_submit_error(exc),
+            details={
+                "recipient_address": recipient_address,
+                "amount_wei": amount_wei,
+                "recipient_balance_before_wei": recipient_balance_before_wei,
+            },
+        ) from exc
+
+    try:
+        receipt = wait_for_transaction_success(web3_client, tx_hash)
+    except Exception as exc:
+        raise WalletTransactionError(
+            str(exc),
+            tx_hash=tx_hash,
+            nonce=nonce,
+            gas_price_wei=transfer_gas_price_wei,
+            retryable=_is_retryable_transaction_wait_error(exc),
+            details={
+                "recipient_address": recipient_address,
+                "amount_wei": amount_wei,
+                "recipient_balance_before_wei": recipient_balance_before_wei,
+            },
+        ) from exc
+
+    return build_native_transfer_result(
+        tx_hash=tx_hash,
+        amount_wei=amount_wei,
+        nonce=nonce,
+        gas_price_wei=transfer_gas_price_wei,
+        gas_used=int(getattr(receipt, "gasUsed", 0) or 0),
+        block_number=int(getattr(receipt, "blockNumber", 0) or 0),
     )
 
 
@@ -2251,6 +2386,10 @@ def execute_wallet_run(
         template.get("direct_contract_eth_per_contract", "0"),
         "direct_contract_eth_per_contract",
     )
+    direct_contract_native_eth_per_wallet = parse_decimal_amount(
+        template.get("direct_contract_native_eth_per_contract", "0"),
+        "direct_contract_native_eth_per_contract",
+    )
     swap_budget_per_wallet = parse_decimal_amount(
         template.get("swap_budget_eth_per_contract", "0"),
         "swap_budget_eth_per_contract",
@@ -2287,16 +2426,17 @@ def execute_wallet_run(
     recipient_address = template.get("recipient_address")
     has_route_distributors = bool(stablecoin_routes)
     has_direct_weth_distributor = distributor_amount > 0
-    requires_recipient = has_route_distributors or has_direct_weth_distributor
+    has_direct_native_eth_distributor = direct_contract_native_eth_per_wallet > 0
+    requires_recipient = has_route_distributors or has_direct_weth_distributor or has_direct_native_eth_distributor
     if requires_recipient and not recipient_address:
-        raise ValueError("recipient_address is required when stablecoin swaps or direct contract WETH are enabled")
+        raise ValueError("recipient_address is required when stablecoin swaps or direct contract ETH/WETH are enabled")
     if test_auto_execute_after_funding and not recipient_address:
         raise ValueError("recipient_address is required when test_auto_execute_after_funding is enabled")
 
     should_execute_deployment_flow = requires_recipient and bool(recipient_address)
     if not requires_recipient:
         deployment_disabled_message = (
-            "ManagedTokenDistributor auto deployment is skipped because this template only funds ETH. Add a positive stablecoin swap budget with allocations or set direct_contract_weth_per_contract above 0 to produce a distributor funding target."
+            "ManagedTokenDistributor auto deployment is skipped because this template only funds sub-wallet ETH. Add a positive stablecoin swap budget with allocations or set direct contract ETH/WETH above 0 to produce a distributor funding target."
         )
     else:
         deployment_disabled_message = (
@@ -2311,6 +2451,7 @@ def execute_wallet_run(
             "token_address": target["token"]["address"],
             "token_symbol": target["token"]["symbol"],
             "amount": format_decimal(target["amount"]),
+            "funding_asset_kind": target.get("funding_asset_kind") or "erc20",
             "recipient_address": recipient_address,
             "owner_address": item["address"],
             "return_wallet_address": return_wallet_address or item["address"],
@@ -2338,6 +2479,14 @@ def execute_wallet_run(
             "source_tx_hash": target["source_tx_hash"],
             "error": None,
         }
+
+    def build_planned_target_gas_units(*, funding_asset_kind: str) -> int:
+        funding_gas_units = ETH_TRANSFER_GAS_LIMIT if funding_asset_kind == "native_eth" else ERC20_TRANSFER_GAS_LIMIT
+        return (
+            MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT
+            + funding_gas_units
+            + (MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT if test_auto_execute_after_funding else 0)
+        )
 
     needs_onchain_funding = per_wallet_eth > 0
     run_id = run_id or f"run_{int(datetime.utcnow().timestamp())}_{uuid4().hex[:8]}"
@@ -2838,6 +2987,7 @@ def execute_wallet_run(
             "return_wallet_address": return_wallet_address,
             "gas_reserve_eth_per_wallet": format_decimal(gas_reserve_per_wallet),
             "direct_eth_per_wallet": format_decimal(direct_eth_per_wallet),
+            "direct_contract_native_eth_per_wallet": format_decimal(direct_contract_native_eth_per_wallet),
             "per_wallet_eth": format_decimal(per_wallet_eth),
             "per_wallet_local_wrap_weth": format_decimal(per_wallet_wrap_weth),
             "swap_budget_weth_per_wallet": format_decimal(swap_budget_per_wallet),
@@ -3034,6 +3184,7 @@ def execute_wallet_run(
                     "return_wallet_address": return_wallet_address or "subwallet_self",
                     "test_auto_execute_after_funding": test_auto_execute_after_funding,
                     "stablecoin_route_count": len(stablecoin_routes),
+                    "direct_contract_native_eth_per_contract": format_decimal(direct_contract_native_eth_per_wallet),
                     "direct_weth_per_contract": format_decimal(distributor_amount),
                 },
             )
@@ -3046,20 +3197,16 @@ def execute_wallet_run(
                 details={
                     "recipient_address_present": bool(recipient_address),
                     "stablecoin_route_count": len(stablecoin_routes),
+                    "direct_contract_native_eth_per_contract": format_decimal(direct_contract_native_eth_per_wallet),
                     "direct_contract_weth_per_contract": format_decimal(distributor_amount),
                 },
             )
 
         planned_route_count = len(stablecoin_routes)
-        per_deployment_target_gas_units = (
-            MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT
-            + ERC20_TRANSFER_GAS_LIMIT
-            + (MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT if test_auto_execute_after_funding else 0)
-        )
-        planned_deployment_target_count = (
-            planned_route_count + (1 if distributor_amount > 0 and recipient_address else 0)
-            if should_execute_deployment_flow
-            else 0
+        planned_route_deployment_gas_units = planned_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
+        planned_direct_target_gas_units = (
+            (build_planned_target_gas_units(funding_asset_kind="erc20") if distributor_amount > 0 and recipient_address else 0)
+            + (build_planned_target_gas_units(funding_asset_kind="native_eth") if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
         )
 
         for item in run_sub_wallets:
@@ -3288,11 +3435,15 @@ def execute_wallet_run(
                 planned_remaining_execution_gas_units = (
                     (ERC20_APPROVE_GAS_LIMIT if stablecoin_routes else 0)
                     + (planned_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
-                    + (planned_deployment_target_count * per_deployment_target_gas_units)
+                    + planned_route_deployment_gas_units
+                    + planned_direct_target_gas_units
                     + return_sweep_gas_units_per_wallet
                 )
                 if planned_remaining_execution_gas_units > 0:
-                    minimum_post_wrap_balance_eth = estimate_gas_fee_eth(planned_remaining_execution_gas_units)
+                    minimum_post_wrap_balance_eth = (
+                        estimate_gas_fee_eth(planned_remaining_execution_gas_units)
+                        + direct_contract_native_eth_per_wallet
+                    )
                     balance_ready, balance_error = ensure_subwallet_eth_headroom(
                         item,
                         reason="continue through approvals, swaps, and distributor deployment",
@@ -3512,16 +3663,17 @@ def execute_wallet_run(
 
                         token_out = resolve_token(route["token_address"])
                         remaining_route_count = planned_route_count - route_index
-                        remaining_deployment_target_count = (
-                            remaining_route_count + (1 if distributor_amount > 0 and recipient_address else 0)
-                            if should_execute_deployment_flow
-                            else 0
+                        remaining_route_deployment_gas_units = remaining_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
+                        remaining_direct_target_gas_units = (
+                            (build_planned_target_gas_units(funding_asset_kind="erc20") if distributor_amount > 0 and recipient_address else 0)
+                            + (build_planned_target_gas_units(funding_asset_kind="native_eth") if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
                         )
                         minimum_swap_stage_balance_eth = estimate_gas_fee_eth(
                             (remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
-                            + (remaining_deployment_target_count * per_deployment_target_gas_units)
+                            + remaining_route_deployment_gas_units
+                            + remaining_direct_target_gas_units
                             + return_sweep_gas_units_per_wallet
-                        )
+                        ) + direct_contract_native_eth_per_wallet
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
                             item,
                             reason=f"swap into {token_out['symbol']} and finish the remaining automation",
@@ -3772,6 +3924,24 @@ def execute_wallet_run(
                             "token": resolve_token(WETH_ADDRESS),
                             "amount": distributor_amount,
                             "amount_units": decimal_to_wei(distributor_amount),
+                            "funding_asset_kind": "erc20",
+                        }
+                    )
+                if direct_contract_native_eth_per_wallet > 0 and recipient_address and not abort_wallet_execution:
+                    deployment_targets.append(
+                        {
+                            "source": "direct_native_eth",
+                            "source_tx_hash": item["funding_transactions"].get("eth", {}).get("tx_hash"),
+                            "amount_in": format_decimal(direct_contract_native_eth_per_wallet),
+                            "token": {
+                                "symbol": "ETH",
+                                "name": "Ethereum",
+                                "address": NATIVE_ETH_SENTINEL_ADDRESS,
+                                "decimals": 18,
+                            },
+                            "amount": direct_contract_native_eth_per_wallet,
+                            "amount_units": decimal_to_wei(direct_contract_native_eth_per_wallet),
+                            "funding_asset_kind": "native_eth",
                         }
                     )
 
@@ -3788,10 +3958,20 @@ def execute_wallet_run(
                 for deployment_index, target in enumerate(deployment_targets):
                     deployment_info = build_deployment_record(item=item, target=target)
                     try:
-                        remaining_target_count = len(deployment_targets) - deployment_index
-                        minimum_deployment_balance_eth = estimate_gas_fee_eth(
-                            remaining_target_count * per_deployment_target_gas_units
-                            + return_sweep_gas_units_per_wallet
+                        remaining_target_gas_units = sum(
+                            build_planned_target_gas_units(
+                                funding_asset_kind=(remaining_target.get("funding_asset_kind") or "erc20"),
+                            )
+                            for remaining_target in deployment_targets[deployment_index:]
+                        )
+                        remaining_native_eth_to_fund = sum(
+                            remaining_target["amount"]
+                            for remaining_target in deployment_targets[deployment_index:]
+                            if (remaining_target.get("funding_asset_kind") or "erc20") == "native_eth"
+                        )
+                        minimum_deployment_balance_eth = (
+                            estimate_gas_fee_eth(remaining_target_gas_units + return_sweep_gas_units_per_wallet)
+                            + remaining_native_eth_to_fund
                         )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
                             item,
@@ -3954,31 +4134,53 @@ def execute_wallet_run(
                         for funding_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
                             funding_attempt_used = funding_attempt
                             try:
-                                funding_receipt = transfer_token_from_wallet(
-                                    web3_client,
-                                    token_address=target["token"]["address"],
-                                    wallet_address=sub_wallet["address"],
-                                    private_key=sub_wallet["private_key"],
-                                    recipient_address=deployed["contract_address"],
-                                    amount_units=int(target["amount_units"]),
-                                    nonce=funding_nonce,
-                                    gas_price_wei=funding_gas_price_wei,
-                                )
+                                if (target.get("funding_asset_kind") or "erc20") == "native_eth":
+                                    funding_receipt = transfer_native_eth_from_wallet(
+                                        web3_client,
+                                        wallet_address=sub_wallet["address"],
+                                        private_key=sub_wallet["private_key"],
+                                        recipient_address=deployed["contract_address"],
+                                        amount_wei=int(target["amount_units"]),
+                                        nonce=funding_nonce,
+                                        gas_price_wei=funding_gas_price_wei,
+                                    )
+                                else:
+                                    funding_receipt = transfer_token_from_wallet(
+                                        web3_client,
+                                        token_address=target["token"]["address"],
+                                        wallet_address=sub_wallet["address"],
+                                        private_key=sub_wallet["private_key"],
+                                        recipient_address=deployed["contract_address"],
+                                        amount_units=int(target["amount_units"]),
+                                        nonce=funding_nonce,
+                                        gas_price_wei=funding_gas_price_wei,
+                                    )
                                 break
                             except WalletTransactionError as exc:
                                 last_funding_error = exc
                                 if exc.retryable:
-                                    funding_receipt = recover_token_transfer_after_timeout(
-                                        web3_client,
-                                        token_address=target["token"]["address"],
-                                        recipient_address=deployed["contract_address"],
-                                        amount_units=int(target["amount_units"]),
-                                        token_decimals=int(exc.details.get("token_decimals") or target["token"]["decimals"]),
-                                        recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
-                                        tx_hash=exc.tx_hash,
-                                        nonce=funding_nonce,
-                                        gas_price_wei=exc.gas_price_wei,
-                                    )
+                                    if (target.get("funding_asset_kind") or "erc20") == "native_eth":
+                                        funding_receipt = recover_native_eth_transfer_after_timeout(
+                                            web3_client,
+                                            recipient_address=deployed["contract_address"],
+                                            amount_wei=int(target["amount_units"]),
+                                            recipient_balance_before_wei=int(exc.details.get("recipient_balance_before_wei") or 0),
+                                            tx_hash=exc.tx_hash,
+                                            nonce=funding_nonce,
+                                            gas_price_wei=exc.gas_price_wei,
+                                        )
+                                    else:
+                                        funding_receipt = recover_token_transfer_after_timeout(
+                                            web3_client,
+                                            token_address=target["token"]["address"],
+                                            recipient_address=deployed["contract_address"],
+                                            amount_units=int(target["amount_units"]),
+                                            token_decimals=int(exc.details.get("token_decimals") or target["token"]["decimals"]),
+                                            recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
+                                            tx_hash=exc.tx_hash,
+                                            nonce=funding_nonce,
+                                            gas_price_wei=exc.gas_price_wei,
+                                        )
                                     if funding_receipt:
                                         record_run_log(
                                             stage="distribution",
@@ -4061,6 +4263,7 @@ def execute_wallet_run(
                             details={
                                 "contract_address": deployed["contract_address"],
                                 "source": target["source"],
+                                "funding_asset_kind": target.get("funding_asset_kind") or "erc20",
                             },
                         )
                         record_run_log(
@@ -4447,6 +4650,7 @@ def execute_wallet_run(
             details={
                 "recipient_address_present": bool(recipient_address),
                 "stablecoin_route_count": len(stablecoin_routes),
+                "direct_contract_native_eth_per_contract": format_decimal(direct_contract_native_eth_per_wallet),
                 "direct_contract_weth_per_contract": format_decimal(distributor_amount),
             },
         )

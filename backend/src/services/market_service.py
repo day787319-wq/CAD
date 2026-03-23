@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -12,14 +13,20 @@ DEFAULT_BASE_URLS = [
 ]
 
 
-def _coingecko_headers() -> dict:
+def _coingecko_headers_for_base_url(base_url: str) -> dict:
     headers = {
         "Accept": "application/json",
+        "User-Agent": "CAD/1.0 (+https://coingecko.com)",
     }
-    api_key = os.getenv("COINGECKO_API_KEY")
-    if api_key:
+    api_key = (os.getenv("COINGECKO_API_KEY") or "").strip()
+    if not api_key:
+        return headers
+
+    if "pro-api.coingecko.com" in base_url:
         headers["x-cg-pro-api-key"] = api_key
+    elif "api.coingecko.com" in base_url:
         headers["x-cg-demo-api-key"] = api_key
+
     return headers
 
 
@@ -27,7 +34,10 @@ def _coingecko_base_urls() -> list[str]:
     configured_base_url = os.getenv("COINGECKO_API_BASE_URL")
     if configured_base_url:
         return [configured_base_url.rstrip("/")]
-    return DEFAULT_BASE_URLS
+    api_key = (os.getenv("COINGECKO_API_KEY") or "").strip()
+    if api_key:
+        return DEFAULT_BASE_URLS
+    return ["https://api.coingecko.com/api/v3"]
 
 
 def _coingecko_get_json(path: str, params: dict) -> dict:
@@ -36,10 +46,16 @@ def _coingecko_get_json(path: str, params: dict) -> dict:
 
     for base_url in _coingecko_base_urls():
         url = f"{base_url}{path}?{query}"
-        request = urllib.request.Request(url, headers=_coingecko_headers())
+        request = urllib.request.Request(url, headers=_coingecko_headers_for_base_url(base_url))
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                error_payload = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                error_payload = ""
+            last_error = f"{exc} {error_payload}".strip()
         except Exception as exc:
             last_error = exc
 

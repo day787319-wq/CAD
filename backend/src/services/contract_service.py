@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "contracts" / "artifacts" / "src"
+GENERATED_ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "contracts" / "artifacts" / "generated"
 ARTIFACT_PATHS = {
     "MainWalletRegistry": ARTIFACTS_DIR / "MainWalletRegistry.sol" / "MainWalletRegistry.json",
     "SubWalletRegistry": ARTIFACTS_DIR / "SubWalletRegistry.sol" / "SubWalletRegistry.json",
@@ -18,6 +19,10 @@ def load_contract_artifact(contract_name: str) -> dict:
     artifact_path = ARTIFACT_PATHS.get(contract_name)
     if artifact_path is None:
         raise ValueError(f"Unsupported contract artifact: {contract_name}")
+    if contract_name == "ManagedTokenDistributor":
+        generated_artifact_path = GENERATED_ARTIFACTS_DIR / "ManagedTokenDistributor.json"
+        if generated_artifact_path.exists():
+            artifact_path = generated_artifact_path
     if not artifact_path.exists():
         raise RuntimeError(f"Contract artifact not found: {artifact_path}")
 
@@ -136,18 +141,20 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
     status = get_registry_integration_status()
     stablecoin_allocations = template.get("stablecoin_allocations") or []
     distribution_mode = template.get("stablecoin_distribution_mode") or "none"
+    distributor_native_eth_amount = template.get("direct_contract_native_eth_per_contract") or "0"
     distributor_amount = template.get("direct_contract_weth_per_contract") or "0"
     swap_budget = template.get("swap_budget_eth_per_contract") or "0"
     distributor_recipient = template.get("recipient_address")
     return_wallet_address = template.get("return_wallet_address")
     test_auto_execute_after_funding = bool(template.get("test_auto_execute_after_funding", False))
+    distributor_native_eth_amount_configured = _is_positive_amount(distributor_native_eth_amount)
     distributor_amount_configured = _is_positive_amount(distributor_amount)
     has_swap_routes = (
         distribution_mode != "none"
         and len(stablecoin_allocations) > 0
         and _is_positive_amount(swap_budget)
     )
-    distributor_flow_configured = has_swap_routes or distributor_amount_configured
+    distributor_flow_configured = has_swap_routes or distributor_native_eth_amount_configured or distributor_amount_configured
 
     main_wallet_registry = {
         "contract_name": "MainWalletRegistry",
@@ -203,15 +210,16 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
             if status["managed_token_distributor_enabled"] and distributor_recipient and distributor_flow_configured
             else "Set recipient_address to enable ManagedTokenDistributor auto deployment."
             if status["managed_token_distributor_enabled"] and distributor_flow_configured and not distributor_recipient
-            else "This template only funds ETH right now. Add a positive stablecoin swap budget with allocations or set direct_contract_weth_per_contract above 0 to enable ManagedTokenDistributor auto deployment."
+            else "This template only funds sub-wallet ETH right now. Add a positive stablecoin swap budget with allocations or set direct contract ETH/WETH above 0 to enable ManagedTokenDistributor auto deployment."
             if status["managed_token_distributor_enabled"] and distributor_recipient and not distributor_flow_configured
-            else "Set recipient_address and add either a positive stablecoin swap budget with allocations or direct_contract_weth_per_contract above 0 to enable ManagedTokenDistributor auto deployment."
+            else "Set recipient_address and add either a positive stablecoin swap budget with allocations or direct contract ETH/WETH above 0 to enable ManagedTokenDistributor auto deployment."
             if status["managed_token_distributor_enabled"]
             else "ManagedTokenDistributor artifact unavailable."
         ),
         "recipient_address": distributor_recipient,
         "return_wallet_address": return_wallet_address,
         "test_auto_execute_after_funding": test_auto_execute_after_funding,
+        "native_eth_amount": distributor_native_eth_amount,
         "amount": distributor_amount,
         "has_swap_routes": has_swap_routes,
     }

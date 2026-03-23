@@ -230,6 +230,7 @@ class ScyllaDB:
                 gas_reserve_eth_per_contract text,
                 swap_budget_eth_per_contract text,
                 direct_contract_eth_per_contract text,
+                direct_contract_native_eth_per_contract text,
                 direct_contract_weth_per_contract text,
                 auto_top_up_enabled boolean,
                 auto_top_up_threshold_eth text,
@@ -280,6 +281,7 @@ class ScyllaDB:
                 "ALTER TABLE templates ADD gas_reserve_eth_per_contract text",
                 "ALTER TABLE templates ADD swap_budget_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_eth_per_contract text",
+                "ALTER TABLE templates ADD direct_contract_native_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_weth_per_contract text",
                 "ALTER TABLE templates ADD auto_top_up_enabled boolean",
                 "ALTER TABLE templates ADD auto_top_up_threshold_eth text",
@@ -413,6 +415,7 @@ class ScyllaDB:
             "gas_reserve_eth_per_contract": template.get("gas_reserve_eth_per_contract"),
             "swap_budget_eth_per_contract": template.get("swap_budget_eth_per_contract"),
             "direct_contract_eth_per_contract": template.get("direct_contract_eth_per_contract"),
+            "direct_contract_native_eth_per_contract": template.get("direct_contract_native_eth_per_contract"),
             "direct_contract_weth_per_contract": template.get("direct_contract_weth_per_contract"),
             "auto_top_up_enabled": bool(template.get("auto_top_up_enabled", False)),
             "auto_top_up_threshold_eth": template.get("auto_top_up_threshold_eth"),
@@ -446,6 +449,7 @@ class ScyllaDB:
                     gas_reserve_eth_per_contract,
                     swap_budget_eth_per_contract,
                     direct_contract_eth_per_contract,
+                    direct_contract_native_eth_per_contract,
                     direct_contract_weth_per_contract,
                     auto_top_up_enabled,
                     auto_top_up_threshold_eth,
@@ -454,7 +458,7 @@ class ScyllaDB:
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
@@ -480,6 +484,7 @@ class ScyllaDB:
                     payload["gas_reserve_eth_per_contract"],
                     payload["swap_budget_eth_per_contract"],
                     payload["direct_contract_eth_per_contract"],
+                    payload["direct_contract_native_eth_per_contract"],
                     payload["direct_contract_weth_per_contract"],
                     payload["auto_top_up_enabled"],
                     payload["auto_top_up_threshold_eth"],
