@@ -35,6 +35,7 @@ from src.services.wallet_service import (
     format_decimal as format_wallet_decimal,
     get_web3,
     quote_uniswap_swap,
+    resolve_token,
     wei_to_decimal,
 )
 
@@ -102,7 +103,7 @@ def _parse_optional_address(value, field_name: str) -> str | None:
     return Web3.to_checksum_address(normalized)
 
 
-def _parse_auto_top_up_settings(payload: dict) -> dict:
+def _parse_auto_top_up_settings(payload: dict, chain: str) -> dict:
     enabled = bool(payload.get("auto_top_up_enabled", False))
     threshold = _parse_decimal(
         payload.get("auto_top_up_threshold_eth", "0"),
@@ -116,7 +117,10 @@ def _parse_auto_top_up_settings(payload: dict) -> dict:
     if enabled:
         if target <= 0:
             raise ValueError("auto_top_up_target_eth must be greater than 0 when auto top-up is enabled")
-        if target <= threshold:
+        if chain == TEMPLATE_CHAIN_BNB:
+            if target < threshold:
+                raise ValueError("auto_top_up_target_eth must be equal to or greater than auto_top_up_threshold_eth on BNB Chain")
+        elif target <= threshold:
             raise ValueError("auto_top_up_target_eth must be greater than auto_top_up_threshold_eth")
 
     return {
@@ -131,7 +135,28 @@ def _normalize_stablecoin(
     address: str | None = None,
     symbol: str | None = None,
 ):
-    return get_template_chain_token(chain, address=address, symbol=symbol)
+    try:
+        return get_template_chain_token(chain, address=address, symbol=symbol)
+    except ValueError:
+        if address and Web3.is_address(address):
+            return resolve_token(address, chain)
+        raise
+
+
+def resolve_template_token(address: str, chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    normalized_address = (address or "").strip()
+    if not Web3.is_address(normalized_address):
+        raise ValueError("token_address must be a valid EVM address")
+
+    token = resolve_token(normalized_address, normalized_chain)
+    return {
+        "symbol": token["symbol"],
+        "name": token["name"],
+        "address": token["address"],
+        "decimals": int(token["decimals"]),
+        "official_source": None,
+    }
 
 
 def _parse_allocations(
@@ -260,7 +285,7 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         raise ValueError("recipient_address is required when test_auto_execute_after_funding is enabled")
     slippage_percent = _parse_slippage_percent(payload.get("slippage_percent", "0.5"))
     fee_tier = _parse_fee_tier(payload.get("fee_tier"), chain)
-    auto_top_up = _parse_auto_top_up_settings(payload)
+    auto_top_up = _parse_auto_top_up_settings(payload, chain)
 
     allocations = _parse_allocations(
         payload.get("stablecoin_allocations"),

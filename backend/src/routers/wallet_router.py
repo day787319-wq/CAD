@@ -68,6 +68,9 @@ async def import_main_wallet_endpoint(request: ImportMainWalletRequest):
         safe_response = {
             "id": wallet_id,
             "address": wallet_data["address"],
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"]
@@ -89,6 +92,9 @@ async def generate_main_wallet_endpoint():
             "id": wallet_id,
             "address": wallet_data["address"],
             "seed_phrase": seed_phrase,
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"],
@@ -105,6 +111,9 @@ async def import_private_key_wallet_endpoint(request: ImportPrivateKeyWalletRequ
         return {
             "id": wallet_id,
             "address": wallet_data["address"],
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"]

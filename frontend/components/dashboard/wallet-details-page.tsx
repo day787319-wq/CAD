@@ -45,6 +45,17 @@ type BalanceWallet = {
   funding_gas_price_gwei?: number | null;
   balance_error?: string | null;
   balance_refreshed_at?: string | null;
+  token_holdings?: Array<{
+    symbol: string;
+    name?: string | null;
+    address: string;
+    chain?: string | null;
+    chain_label?: string | null;
+    decimals?: number | null;
+    raw_balance?: string | null;
+    balance?: string | null;
+    error?: string | null;
+  }>;
   index?: number;
 };
 
@@ -52,7 +63,7 @@ type WalletDetails = BalanceWallet & {
   sub_wallets: BalanceWallet[];
 };
 
-function formatTokenBalance(value: number | null | undefined, symbol: string) {
+function formatTokenBalance(value: string | number | null | undefined, symbol: string) {
   return value === null || value === undefined ? "Unavailable" : `${formatAmount(value)} ${symbol}`;
 }
 
@@ -1122,6 +1133,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const reviewStablecoinRoutes = activeRunPreview?.stablecoin_routes ?? [];
   const previewStatusNote = preview && selectedTemplate ? getPreviewStatusNote(preview, selectedTemplate, locale) : null;
   const selectedChainUi = getChainUiContext(selectedTemplate, wallet, locale);
+  const walletTokenHoldings = wallet?.token_holdings ?? [];
   const nativeSymbol = selectedChainUi.nativeSymbol;
   const wrappedNativeSymbol = selectedChainUi.wrappedNativeSymbol;
 
@@ -1267,6 +1279,24 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       label={locale === "en" ? `${wrappedNativeSymbol} balance` : locale === "zn" ? `${wrappedNativeSymbol} 余额` : `Số dư ${wrappedNativeSymbol}`}
                       value={walletMatchesSelectedChain ? formatTokenBalance(wallet.weth_balance, wrappedNativeSymbol) : (locale === "en" ? "Refreshing..." : locale === "zn" ? "刷新中..." : "Đang làm mới...")}
                     />
+                    {walletTokenHoldings.map((holding) => (
+                      <InfoCard
+                        key={holding.address}
+                        label={
+                          locale === "en"
+                            ? `${holding.symbol} token`
+                            : locale === "zn"
+                              ? `${holding.symbol} 代币`
+                              : `Token ${holding.symbol}`
+                        }
+                        value={
+                          holding.error
+                            ? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")
+                            : formatTokenBalance(holding.balance, holding.symbol)
+                        }
+                        hint={holding.chain_label ? `${holding.chain_label} • ${shortAddress(holding.address)}` : shortAddress(holding.address)}
+                      />
+                    ))}
                   </div>
                 </SectionBlock>
 

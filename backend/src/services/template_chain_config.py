@@ -28,6 +28,12 @@ ETHEREUM_SWAP_TOKENS = [
         "decimals": 18,
     },
     {
+        "symbol": "BNB",
+        "name": "BNB",
+        "address": "0xb8c77482e45f1f44de1745f52c74426c631bdd52",
+        "decimals": 18,
+    },
+    {
         "symbol": "USDE",
         "name": "Ethena USDe",
         "address": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",

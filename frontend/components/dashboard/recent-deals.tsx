@@ -105,15 +105,29 @@ const copy = {
     zn: "删除钱包 {address}？",
     vn: "Xóa ví {address}?",
   },
+  nativeBalance: { en: "Native balance", zn: "原生代币余额", vn: "Số dư coin gốc" },
+  wrappedBalance: { en: "Wrapped balance", zn: "封装代币余额", vn: "Số dư token bọc" },
 } as const;
 
 type ImportedWallet = {
   id: string;
   type?: string;
   address: string;
+  chain?: string | null;
+  native_symbol?: string | null;
+  wrapped_native_symbol?: string | null;
   eth_balance: number | null;
   weth_balance: number | null;
   weth_address: string;
+  token_holdings?: Array<{
+    symbol: string;
+    name?: string | null;
+    address: string;
+    decimals?: number | null;
+    raw_balance?: string | null;
+    balance?: string | null;
+    error?: string | null;
+  }>;
   balances_live?: boolean;
   created_at?: string | null;
 };
@@ -124,9 +138,18 @@ function walletSummary(wallet: ImportedWallet) {
   return `${wallet.address} | ${wallet.id}`;
 }
 
-function formatBalance(value: number | null | undefined, symbol: string) {
+function formatBalance(value: string | number | null | undefined, symbol: string) {
   if (value === null || value === undefined) return `Unavailable ${symbol}`;
-  return `${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${symbol}`;
+  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
+  if (!Number.isFinite(numeric)) return `Unavailable ${symbol}`;
+  return `${numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${symbol}`;
+}
+
+function formatBalanceValue(value: string | number | null | undefined) {
+  if (value === null || value === undefined) return "Unavailable";
+  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
+  if (!Number.isFinite(numeric)) return "Unavailable";
+  return numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
 export function RecentDeals() {
@@ -375,66 +398,77 @@ export function RecentDeals() {
             </div>
           ) : savedWallets.length > 0 ? (
             <div className="space-y-3">
-              {savedWallets.map((savedWallet) => (
-                <div
-                  key={savedWallet.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openWalletPage(savedWallet.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      openWalletPage(savedWallet.id);
-                    }
-                  }}
-                  className="rounded-2xl border border-border bg-secondary/30 p-4 transition hover:border-accent/50 hover:bg-secondary/45 focus:outline-none focus:ring-2 focus:ring-accent/40"
-                >
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-sky-500 to-cyan-500 text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.65)]">
-                        <WalletCards className="h-5 w-5" />
+              {savedWallets.map((savedWallet) => {
+                const summaryTokenHoldings = savedWallet.token_holdings ?? [];
+                return (
+                  <div
+                    key={savedWallet.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openWalletPage(savedWallet.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openWalletPage(savedWallet.id);
+                      }
+                    }}
+                    className="rounded-2xl border border-border bg-secondary/30 p-4 transition hover:border-accent/50 hover:bg-secondary/45 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  >
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-sky-500 to-cyan-500 text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.65)]">
+                          <WalletCards className="h-5 w-5" />
+                        </div>
+
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground">
+                            {savedWallet.type === "imported_private_key" ? copy.privateKeyType[locale] : copy.mainType[locale]}
+                          </p>
+                          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{savedWallet.address}</p>
+                          <p className="mt-1 break-all text-xs text-muted-foreground">{savedWallet.id}</p>
+                        </div>
                       </div>
 
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-foreground">
-                          {savedWallet.type === "imported_private_key" ? copy.privateKeyType[locale] : copy.mainType[locale]}
-                        </p>
-                        <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{savedWallet.address}</p>
-                        <p className="mt-1 break-all text-xs text-muted-foreground">{savedWallet.id}</p>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <p className="hidden text-xs text-muted-foreground sm:block">{copy.openSavedWallet[locale]}</p>
+                        <Button type="button" variant="outline" size="sm" onClick={(event) => handleCopyAddress(event, savedWallet.address)}>
+                          <Copy className="h-4 w-4" />
+                          {copy.copyAddress[locale]}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={(event) => handleDeleteWallet(event, savedWallet)}
+                          disabled={deletingWalletId === savedWallet.id}
+                        >
+                          {deletingWalletId === savedWallet.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          {copy.deleteWallet[locale]}
+                        </Button>
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-2">
-                      <p className="hidden text-xs text-muted-foreground sm:block">{copy.openSavedWallet[locale]}</p>
-                      <Button type="button" variant="outline" size="sm" onClick={(event) => handleCopyAddress(event, savedWallet.address)}>
-                        <Copy className="h-4 w-4" />
-                        {copy.copyAddress[locale]}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={(event) => handleDeleteWallet(event, savedWallet)}
-                        disabled={deletingWalletId === savedWallet.id}
-                      >
-                        {deletingWalletId === savedWallet.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                        {copy.deleteWallet[locale]}
-                      </Button>
+                    <div className={`mt-4 grid gap-3 ${summaryTokenHoldings.length > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+                      <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy.nativeBalance[locale]}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.eth_balance)}</p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy.wrappedBalance[locale]}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.weth_balance)}</p>
+                      </div>
+                      {summaryTokenHoldings.map((holding) => (
+                        <div key={holding.address} className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{holding.symbol}</p>
+                          <p className="mt-1 text-sm font-semibold text-foreground">
+                            {holding.error ? `Unavailable ${holding.symbol}` : formatBalance(holding.balance, holding.symbol)}
+                          </p>
+                        </div>
+                      ))}
                     </div>
                   </div>
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">ETH</p>
-                      <p className="mt-1 text-sm font-semibold text-foreground">{formatBalance(savedWallet.eth_balance, "ETH")}</p>
-                    </div>
-                    <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">WETH</p>
-                      <p className="mt-1 text-sm font-semibold text-foreground">{formatBalance(savedWallet.weth_balance, "WETH")}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-border bg-secondary/20 p-6 text-center">

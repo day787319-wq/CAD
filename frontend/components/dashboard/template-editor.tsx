@@ -1,11 +1,13 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/components/i18n-provider";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -96,6 +98,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const { locale } = useI18n();
   const [form, setForm] = useState<TemplateEditorForm>(defaultTemplateForm(options));
   const [editorOptions, setEditorOptions] = useState<TemplateOptions | null>(options);
+  const [manualStablecoins, setManualStablecoins] = useState<TemplateOptions["stablecoins"]>([]);
+  const [hiddenStablecoinAddresses, setHiddenStablecoinAddresses] = useState<string[]>([]);
+  const [manualTokenAddress, setManualTokenAddress] = useState("");
+  const [resolvingManualToken, setResolvingManualToken] = useState(false);
+  const [tokenPickerOpen, setTokenPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<TemplatePriceSnapshot | null>(null);
@@ -144,6 +151,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
     let active = true;
     setSaveError(null);
+    setManualStablecoins([]);
+    setHiddenStablecoinAddresses([]);
+    setManualTokenAddress("");
+    setTokenPickerOpen(false);
     const nextForm = template ? templateToForm(template) : defaultTemplateForm(options);
     setForm(nextForm);
     setEditorOptions(options);
@@ -164,9 +175,37 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     };
   }, [open, template, options]);
 
+  const selectedCustomStablecoins = useMemo(
+    () =>
+      form.stablecoin_allocations
+        .filter((allocation) => !stablecoins.some((coin) => coin.address.toLowerCase() === allocation.token_address.toLowerCase()))
+        .map((allocation) => ({
+          symbol: allocation.token_symbol,
+          name: allocation.token_symbol,
+          address: allocation.token_address,
+          decimals: null,
+          official_source: null,
+        })),
+    [form.stablecoin_allocations, stablecoins],
+  );
+  const displayStablecoins = useMemo(() => {
+    const merged = [...stablecoins];
+    const seen = new Set(merged.map((coin) => coin.address.toLowerCase()));
+    const hidden = new Set(hiddenStablecoinAddresses.map((address) => address.toLowerCase()));
+
+    for (const coin of [...manualStablecoins, ...selectedCustomStablecoins]) {
+      const normalized = coin.address.toLowerCase();
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      merged.push(coin);
+    }
+
+    return merged.filter((coin) => !hidden.has(coin.address.toLowerCase()));
+  }, [hiddenStablecoinAddresses, manualStablecoins, selectedCustomStablecoins, stablecoins]);
+
   const selectedStablecoins = useMemo(
-    () => stablecoins.filter((coin) => selectedStablecoinAddresses.has(coin.address.toLowerCase())),
-    [selectedStablecoinAddresses, stablecoins],
+    () => displayStablecoins.filter((coin) => selectedStablecoinAddresses.has(coin.address.toLowerCase())),
+    [displayStablecoins, selectedStablecoinAddresses],
   );
   const distributionPreviewRows = useMemo(
     () => getStablecoinDistributionRows(form),
@@ -248,6 +287,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         stablecoin_distribution_mode: nextOptions.defaults.stablecoin_distribution_mode ?? "none",
         stablecoin_allocations: [],
       }));
+      setManualStablecoins([]);
+      setHiddenStablecoinAddresses([]);
+      setManualTokenAddress("");
+      setTokenPickerOpen(false);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Failed to load template options");
     }
@@ -308,6 +351,69 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         })),
       }));
     }
+  };
+
+  const addManualStablecoin = async () => {
+    const normalizedAddress = manualTokenAddress.trim();
+    if (!normalizedAddress) return;
+
+    setResolvingManualToken(true);
+    setSaveError(null);
+    try {
+      const response = await fetch(
+        `${TEMPLATE_API_URL}/api/templates/token/resolve?chain=${encodeURIComponent(form.chain)}&address=${encodeURIComponent(normalizedAddress)}`,
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail ?? "Failed to resolve token");
+      }
+
+      setManualStablecoins((current) => {
+        const exists = current.some((coin) => coin.address.toLowerCase() === payload.address.toLowerCase());
+        return exists ? current : [...current, payload];
+      });
+      setHiddenStablecoinAddresses((current) => current.filter((address) => address.toLowerCase() !== payload.address.toLowerCase()));
+
+      setForm((current) => {
+        const exists = current.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === payload.address.toLowerCase());
+        if (exists) return current;
+        return {
+          ...current,
+          stablecoin_allocations: [
+            ...current.stablecoin_allocations,
+            {
+              token_address: payload.address,
+              token_symbol: payload.symbol,
+              percent: null,
+              weth_amount_per_contract: null,
+            },
+          ],
+        };
+      });
+
+      setManualTokenAddress("");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to resolve token");
+    } finally {
+      setResolvingManualToken(false);
+    }
+  };
+
+  const deleteSwapToken = (tokenAddress: string, isCustomToken: boolean) => {
+    const normalized = tokenAddress.toLowerCase();
+    if (isCustomToken) {
+      setManualStablecoins((current) => current.filter((coin) => coin.address.toLowerCase() !== normalized));
+    } else {
+      setHiddenStablecoinAddresses((current) => {
+        if (current.some((address) => address.toLowerCase() === normalized)) return current;
+        return [...current, tokenAddress];
+      });
+    }
+    setForm((current) => ({
+      ...current,
+      stablecoin_allocations: current.stablecoin_allocations.filter((allocation) => allocation.token_address.toLowerCase() !== normalized),
+    }));
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -441,25 +547,28 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <label className="text-sm font-medium text-foreground">
                   {locale === "en" ? "Chain" : locale === "zn" ? "链" : "Chain"}
                 </label>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {chainOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      disabled={Boolean(template)}
-                      onClick={() => void handleChainChange(option.value)}
-                      className={`rounded-2xl border px-4 py-3 text-left transition ${
-                        form.chain === option.value
-                          ? "border-primary/30 bg-accent text-foreground shadow-[0_12px_28px_-24px_rgba(37,99,235,0.55)]"
-                          : "border-border/70 bg-card hover:bg-secondary/35"
-                      } ${template ? "cursor-default opacity-85" : ""}`}
-                    >
-                      <p className="text-sm font-semibold text-foreground">{option.label}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {option.native_symbol} / {option.wrapped_native_symbol}
-                      </p>
-                    </button>
-                  ))}
+                <Select value={form.chain} onValueChange={(value) => void handleChainChange(value as TemplateChain)} disabled={Boolean(template)}>
+                  <SelectTrigger className="w-full border-border bg-card">
+                    <SelectValue placeholder={locale === "en" ? "Select chain" : locale === "zn" ? "选择链" : "Chọn chain"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {chainOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="text-sm font-medium text-foreground">{option.label}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {option.native_symbol} / {option.wrapped_native_symbol}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="cad-panel-soft flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                  <span className="font-medium text-foreground">{currentChain.label}</span>
+                  <span className="text-muted-foreground">
+                    {currentChain.native_symbol} / {currentChain.wrapped_native_symbol}
+                  </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {template
@@ -715,10 +824,16 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 />
                 <p className="text-xs text-muted-foreground">
                   {locale === "en"
-                    ? `The main wallet will top the sub-wallet back up to this native ${nativeSymbol} target. Set it higher than the trigger.`
+                    ? form.chain === "bnb"
+                      ? `The main wallet will top the sub-wallet back up to this native ${nativeSymbol} target. Set it equal to or higher than the trigger.`
+                      : `The main wallet will top the sub-wallet back up to this native ${nativeSymbol} target. Set it higher than the trigger.`
                     : locale === "zn"
-                      ? `主钱包会把子钱包补回到这个原生 ${nativeSymbol} 目标值。请将其设为高于触发阈值。`
-                      : `Ví chính sẽ nạp lại ví con về mức ${nativeSymbol} gốc này. Hãy đặt nó cao hơn ngưỡng kích hoạt.`}
+                      ? form.chain === "bnb"
+                        ? `主钱包会把子钱包补回到这个原生 ${nativeSymbol} 目标值。请将其设为等于或高于触发阈值。`
+                        : `主钱包会把子钱包补回到这个原生 ${nativeSymbol} 目标值。请将其设为高于触发阈值。`
+                      : form.chain === "bnb"
+                        ? `Ví chính sẽ nạp lại ví con về mức ${nativeSymbol} gốc này. Hãy đặt nó bằng hoặc cao hơn ngưỡng kích hoạt.`
+                        : `Ví chính sẽ nạp lại ví con về mức ${nativeSymbol} gốc này. Hãy đặt nó cao hơn ngưỡng kích hoạt.`}
                 </p>
                 <LiveValueHint label="Live value" value={topUpTargetUsdLabel} />
               </div>
@@ -750,33 +865,91 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
             {form.stablecoin_distribution_mode !== "none" ? (
               <>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {stablecoins.map((coin) => {
-                    const active = selectedStablecoinAddresses.has(coin.address.toLowerCase());
-                    return (
-                      <button
-                        key={coin.address}
-                        type="button"
-                        onClick={() => toggleStablecoin(coin.address, coin.symbol)}
-                        className={`rounded-2xl px-4 py-4 text-left transition ${
-                          active
-                            ? "bg-accent/85 shadow-[0_18px_36px_-26px_rgba(56,189,248,0.35)] ring-1 ring-sky-200"
-                            : "bg-card ring-1 ring-border/70 hover:bg-secondary/35"
-                        }`}
-                      >
-                        <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">{coin.name}</p>
-                        <p className="mt-2 font-mono text-[11px] text-muted-foreground">{shortAddress(coin.address)}</p>
-                        <p className="mt-2 text-[11px] text-muted-foreground">
-                          {coin.official_source ? "Verified from official docs" : `${currentChain.label} token`}
-                        </p>
-                        <p className="mt-1 text-[11px] font-medium text-sky-700">
-                          Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
-                        </p>
-                      </button>
-                    );
-                  })}
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">
+                      {locale === "en" ? "Add token manually" : locale === "zn" ? "手动添加代币" : "Thêm token thủ công"}
+                    </label>
+                    <Input
+                      value={manualTokenAddress}
+                      onChange={(event) => setManualTokenAddress(event.target.value)}
+                      placeholder={locale === "en" ? "Paste token address" : locale === "zn" ? "粘贴代币地址" : "Dán địa chỉ token"}
+                      spellCheck={false}
+                    />
+                  </div>
+                  <Button type="button" variant="outline" onClick={addManualStablecoin} disabled={resolvingManualToken || !manualTokenAddress.trim()}>
+                    {resolvingManualToken ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    {locale === "en" ? "Add token" : locale === "zn" ? "添加代币" : "Thêm token"}
+                  </Button>
                 </div>
+
+                <Collapsible open={tokenPickerOpen} onOpenChange={setTokenPickerOpen} className="space-y-3">
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="cad-panel-soft flex w-full items-center justify-between gap-4 px-4 py-3 text-left"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-foreground">
+                          {locale === "en" ? "Token list" : locale === "zn" ? "代币列表" : "Danh sách token"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {locale === "en"
+                            ? `${displayStablecoins.length} available • ${selectedStablecoins.length} selected`
+                            : locale === "zn"
+                              ? `${displayStablecoins.length} 个可选 • 已选 ${selectedStablecoins.length} 个`
+                              : `${displayStablecoins.length} token • đã chọn ${selectedStablecoins.length}`}
+                        </p>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${tokenPickerOpen ? "rotate-180" : ""}`} />
+                    </button>
+                  </CollapsibleTrigger>
+
+                  <CollapsibleContent className="space-y-2">
+                    {displayStablecoins.map((coin) => {
+                      const active = selectedStablecoinAddresses.has(coin.address.toLowerCase());
+                      const isCustomToken = !stablecoins.some((item) => item.address.toLowerCase() === coin.address.toLowerCase());
+                      return (
+                        <div
+                          key={coin.address}
+                          className={`relative rounded-2xl px-4 py-4 transition ${
+                            active
+                              ? "bg-accent/85 shadow-[0_18px_36px_-26px_rgba(56,189,248,0.35)] ring-1 ring-sky-200"
+                              : "bg-card ring-1 ring-border/70 hover:bg-secondary/35"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleStablecoin(coin.address, coin.symbol)}
+                            className="block w-full pr-10 text-left"
+                          >
+                            <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{coin.name}</p>
+                            <p className="mt-2 break-all font-mono text-[11px] font-semibold text-foreground">{coin.address}</p>
+                            <div className="mt-3 flex items-center justify-between gap-3">
+                              <p className="text-[11px] text-muted-foreground">
+                                {isCustomToken ? (locale === "en" ? "Manual token" : locale === "zn" ? "手动添加代币" : "Token thêm thủ công") : `${currentChain.label} token`}
+                              </p>
+                              <p className="text-[11px] font-medium text-sky-700">
+                                Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
+                              </p>
+                            </div>
+                          </button>
+
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="absolute right-3 top-3 h-8 w-8 rounded-xl"
+                            onClick={() => deleteSwapToken(coin.address, isCustomToken)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </CollapsibleContent>
+                </Collapsible>
 
                 {(form.stablecoin_distribution_mode === "manual_percent" ||
                   form.stablecoin_distribution_mode === "manual_weth_amount") &&

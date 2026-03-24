@@ -48,6 +48,9 @@ CHAIN_TRUSTWALLET_SLUG = {
     TEMPLATE_CHAIN_ETHEREUM: "ethereum",
     TEMPLATE_CHAIN_BNB: "smartchain",
 }
+WALLET_SUMMARY_TOKEN_SYMBOLS = {
+    TEMPLATE_CHAIN_ETHEREUM: ["BNB"],
+}
 WETH_ABI = [
     {
         "constant": True,
@@ -782,6 +785,61 @@ def get_wallet_balances(address: str, chain: str | None = None) -> dict:
     return {
         **payload,
     }
+
+
+def get_wallet_summary_token_holdings(address: str, chain: str | None = None) -> list[dict]:
+    normalized_chain = normalize_template_chain(chain)
+    owner_address = Web3.to_checksum_address(address)
+    token_holdings: list[dict] = []
+    source_chains = [normalized_chain]
+
+    for configured_chain in WALLET_SUMMARY_TOKEN_SYMBOLS:
+        if configured_chain not in source_chains:
+            source_chains.append(configured_chain)
+
+    for source_chain in source_chains:
+        identifiers = WALLET_SUMMARY_TOKEN_SYMBOLS.get(source_chain, [])
+        if not identifiers:
+            continue
+
+        runtime = get_chain_runtime_config(source_chain)
+        web3_client = get_web3(source_chain)
+        rpc_error = None
+        if not web3_client:
+            rpc_error = (
+                f"{runtime['rpc_env_name']} is not configured"
+                if runtime["rpc_env_name"]
+                else f"{runtime['chain_label']} RPC is not configured"
+            )
+        elif not web3_client.is_connected():
+            rpc_error = f"{runtime['chain_label']} RPC is unavailable"
+
+        for identifier in identifiers:
+            token = resolve_token(identifier, source_chain)
+            entry = {
+                "symbol": token["symbol"],
+                "name": token["name"],
+                "address": Web3.to_checksum_address(token["address"]),
+                "decimals": int(token["decimals"]),
+                "raw_balance": None,
+                "balance": None,
+                "error": rpc_error,
+                "chain": source_chain,
+                "chain_label": runtime["chain_label"],
+            }
+
+            if rpc_error is None:
+                try:
+                    token_contract = web3_client.eth.contract(address=entry["address"], abi=ERC20_ABI)
+                    raw_balance = int(token_contract.functions.balanceOf(owner_address).call())
+                    entry["raw_balance"] = str(raw_balance)
+                    entry["balance"] = format_decimal(token_units_to_decimal(raw_balance, entry["decimals"]))
+                except Exception as exc:
+                    entry["error"] = str(exc)
+
+            token_holdings.append(entry)
+
+    return token_holdings
 
 
 def format_decimal(value: Decimal | None):
@@ -5082,7 +5140,7 @@ def list_saved_wallets():
         if record.get("parent_id") in (None, "") and record.get("type") in {"main", "imported_private_key"}
     ]
     root_wallets.sort(key=lambda record: str(record.get("created_at") or ""), reverse=True)
-    return [serialize_wallet_record(record) for record in root_wallets]
+    return [serialize_wallet_record(record, include_token_holdings=True) for record in root_wallets]
 
 
 def list_wallet_runs(main_wallet_id: str | None = None):
@@ -5129,7 +5187,13 @@ def delete_wallet(wallet_id: str):
         "deleted_run_count": deleted_run_count,
     }
 
-def serialize_wallet_record(record: dict, index: int | None = None, *, chain: str | None = None):
+def serialize_wallet_record(
+    record: dict,
+    index: int | None = None,
+    *,
+    chain: str | None = None,
+    include_token_holdings: bool = False,
+):
     payload = {
         'id': record['id'],
         'type': record['type'],
@@ -5138,6 +5202,8 @@ def serialize_wallet_record(record: dict, index: int | None = None, *, chain: st
         'created_at': record.get('created_at'),
         **get_wallet_balances(record['address'], chain=chain),
     }
+    if include_token_holdings:
+        payload['token_holdings'] = get_wallet_summary_token_holdings(record['address'], chain=chain)
     if index is not None:
         payload['index'] = index
     return payload
@@ -5157,7 +5223,7 @@ def get_wallet_details(wallet_id: str, chain: str | None = None):
         for index, record in enumerate(sub_wallet_records)
     ]
 
-    details = serialize_wallet_record(wallet, chain=normalized_chain)
+    details = serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=True)
     details['sub_wallets'] = sub_wallets
     return details
 
