@@ -3,10 +3,11 @@ pragma solidity ^0.8.20;
 
 interface IERC20Minimal {
     function balanceOf(address account) external view returns (uint256);
-    function transfer(address to, uint256 value) external returns (bool);
 }
 
 contract ManagedTokenDistributor {
+    bytes4 private constant TRANSFER_SELECTOR = bytes4(keccak256("transfer(address,uint256)"));
+
     address public immutable tokenOut;
     uint256 public immutable amount;
     address public immutable recipient;
@@ -50,6 +51,15 @@ contract ManagedTokenDistributor {
         _;
     }
 
+    function _safeTransfer(address token, address to, uint256 value) private {
+        (bool success, bytes memory returnData) = token.call(
+            abi.encodeWithSelector(TRANSFER_SELECTOR, to, value)
+        );
+
+        if (!success) revert TransferFailed();
+        if (returnData.length > 0 && !abi.decode(returnData, (bool))) revert TransferFailed();
+    }
+
     function execute() external onlyOwner {
         if (executed) revert AlreadyExecuted();
 
@@ -74,13 +84,13 @@ contract ManagedTokenDistributor {
 
         uint256 balance = IERC20Minimal(tokenOut).balanceOf(address(this));
         if (balance < amount) revert InsufficientBalance(balance, amount);
-        if (!IERC20Minimal(tokenOut).transfer(recipient, amount)) revert TransferFailed();
+        _safeTransfer(tokenOut, recipient, amount);
 
         emit Executed(tokenOut, amount, recipient);
 
         uint256 remainingBalance = IERC20Minimal(tokenOut).balanceOf(address(this));
         if (remainingBalance > 0) {
-            if (!IERC20Minimal(tokenOut).transfer(returnWallet, remainingBalance)) revert TransferFailed();
+            _safeTransfer(tokenOut, returnWallet, remainingBalance);
             emit ExcessReturned(tokenOut, remainingBalance, returnWallet);
         }
     }
@@ -89,7 +99,7 @@ contract ManagedTokenDistributor {
         uint256 balance = IERC20Minimal(token).balanceOf(address(this));
         require(balance > 0, "No tokens to rescue");
 
-        if (!IERC20Minimal(token).transfer(returnWallet, balance)) revert TransferFailed();
+        _safeTransfer(token, returnWallet, balance);
 
         emit TokensRescued(token, balance, returnWallet);
     }

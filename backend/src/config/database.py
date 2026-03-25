@@ -218,6 +218,7 @@ class ScyllaDB:
             CREATE TABLE IF NOT EXISTS templates (
                 id text PRIMARY KEY,
                 name text,
+                chain text,
                 target_token_symbol text,
                 target_token_address text,
                 weth_per_subwallet text,
@@ -310,6 +311,7 @@ class ScyllaDB:
         if self.mode == "scylla":
             template_alter_statements = [
                 "ALTER TABLE templates ADD template_version text",
+                "ALTER TABLE templates ADD chain text",
                 "ALTER TABLE templates ADD gas_reserve_eth_per_contract text",
                 "ALTER TABLE templates ADD swap_budget_eth_per_contract text",
                 "ALTER TABLE templates ADD direct_contract_eth_per_contract text",
@@ -485,6 +487,7 @@ class ScyllaDB:
         payload = {
             "id": template["id"],
             "name": template["name"],
+            "chain": template.get("chain"),
             "target_token_symbol": template["target_token_symbol"],
             "target_token_address": template["target_token_address"],
             "weth_per_subwallet": template["weth_per_subwallet"],
@@ -519,6 +522,7 @@ class ScyllaDB:
                 INSERT INTO templates (
                     id,
                     name,
+                    chain,
                     target_token_symbol,
                     target_token_address,
                     weth_per_subwallet,
@@ -547,13 +551,14 @@ class ScyllaDB:
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
                 (
                     payload["id"],
                     payload["name"],
+                    payload["chain"],
                     payload["target_token_symbol"],
                     payload["target_token_address"],
                     payload["weth_per_subwallet"],
@@ -690,6 +695,24 @@ class ScyllaDB:
 
         run_records.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         return run_records
+
+    def delete_wallet_run(self, run_id: str):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            row = self.session.execute("SELECT * FROM wallet_runs WHERE id = %s", (run_id,)).one()
+            if row is None:
+                return None
+            record = self._serialize_wallet_run_record(dict(row._asdict()))
+            self.session.execute("DELETE FROM wallet_runs WHERE id = %s", (run_id,))
+            return record
+
+        payload = self._read_local_runs()
+        record = payload.pop(run_id, None)
+        if record is None:
+            return None
+        self._write_local_runs(payload)
+        return self._serialize_wallet_run_record(record)
 
     def delete_wallet_runs_for_main(self, main_wallet_id: str):
         self.connect_keyspace()

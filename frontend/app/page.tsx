@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { OverviewSection } from "@/components/dashboard/sections/overview";
 import { PipelineSection } from "@/components/dashboard/sections/pipeline";
+import { TemplatesSection } from "@/components/dashboard/sections/templates";
 import { DealsSection } from "@/components/dashboard/sections/deals";
 import { CustomersSection } from "@/components/dashboard/sections/customers";
 import { TeamSection } from "@/components/dashboard/sections/team";
@@ -12,7 +13,7 @@ import { ForecastingSection } from "@/components/dashboard/sections/forecasting"
 import { ReportsSection } from "@/components/dashboard/sections/reports";
 import { SettingsSection } from "@/components/dashboard/sections/settings";
 
-export type Section = "overview" | "pipeline" | "deals" | "customers" | "team" | "forecasting" | "reports" | "settings";
+export type Section = "overview" | "templates" | "pipeline" | "deals" | "customers" | "team" | "forecasting" | "reports" | "settings";
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<Section>("overview");
@@ -22,6 +23,8 @@ export default function Dashboard() {
     switch (activeSection) {
       case "overview":
         return <OverviewSection />;
+      case "templates":
+        return <TemplatesSection />;
       case "pipeline":
         return <PipelineSection />;
       case "deals":

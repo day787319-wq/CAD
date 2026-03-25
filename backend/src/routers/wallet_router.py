@@ -1,10 +1,11 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 from datetime import datetime
 
 from src.services.wallet_service import (
     create_wallet_run as create_wallet_run_service,
     delete_wallet as delete_wallet_service,
+    delete_wallet_run as delete_wallet_run_service,
     generate_sub_wallets as generate_sub_wallets_service,
     generate_main_wallet as generate_main_wallet_service,
     get_wallet_details as get_wallet_details_service,
@@ -68,6 +69,9 @@ async def import_main_wallet_endpoint(request: ImportMainWalletRequest):
         safe_response = {
             "id": wallet_id,
             "address": wallet_data["address"],
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"]
@@ -89,6 +93,9 @@ async def generate_main_wallet_endpoint():
             "id": wallet_id,
             "address": wallet_data["address"],
             "seed_phrase": seed_phrase,
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"],
@@ -105,6 +112,9 @@ async def import_private_key_wallet_endpoint(request: ImportPrivateKeyWalletRequ
         return {
             "id": wallet_id,
             "address": wallet_data["address"],
+            "chain": wallet_data["chain"],
+            "native_symbol": wallet_data["native_symbol"],
+            "wrapped_native_symbol": wallet_data["wrapped_native_symbol"],
             "eth_balance": wallet_data["eth_balance"],
             "weth_balance": wallet_data["weth_balance"],
             "weth_address": wallet_data["weth_address"]
@@ -154,6 +164,15 @@ async def execute_wallet_run_endpoint(request: WalletRunRequest, background_task
 async def list_wallet_runs_endpoint(main_wallet_id: str | None = None):
     try:
         return {"runs": list_wallet_runs_service(main_wallet_id=main_wallet_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/runs/{run_id}")
+async def delete_wallet_run_endpoint(run_id: str):
+    try:
+        return delete_wallet_run_service(run_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -229,9 +248,9 @@ async def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{wallet_id}/details")
-async def get_wallet_details_endpoint(wallet_id: str):
+async def get_wallet_details_endpoint(wallet_id: str, chain: str | None = Query(default=None)):
     try:
-        wallet = get_wallet_details_service(wallet_id)
+        wallet = get_wallet_details_service(wallet_id, chain=chain)
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
         return wallet

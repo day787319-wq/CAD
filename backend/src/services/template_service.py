@@ -11,18 +11,32 @@ from src.services.contract_service import (
     get_registry_integration_status,
 )
 from src.services.market_service import get_market_snapshot
+from src.services.template_chain_config import (
+    DEFAULT_TEMPLATE_CHAIN,
+    ETHEREUM_SWAP_TOKENS,
+    TEMPLATE_CHAIN_BNB,
+    TEMPLATE_CHAIN_ETHEREUM,
+    TEMPLATE_CHAIN_TOKEN_BY_ADDRESS,
+    TEMPLATE_CHAIN_TOKEN_BY_SYMBOL,
+    get_template_chain_choices,
+    get_template_chain_config,
+    get_template_chain_token,
+    get_template_chain_tokens,
+    normalize_template_chain,
+)
 from src.services.wallet_service import (
+    CONTRACT_NATIVE_ETH_TRANSFER_GAS_LIMIT,
     ERC20_APPROVE_GAS_LIMIT,
     ERC20_TRANSFER_GAS_LIMIT,
     ETH_TRANSFER_GAS_LIMIT,
     MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT,
     MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT,
     UNISWAP_V3_SWAP_GAS_LIMIT,
-    WETH_ADDRESS,
     WETH_DEPOSIT_GAS_LIMIT,
     format_decimal as format_wallet_decimal,
     get_web3,
     quote_uniswap_swap,
+    resolve_token,
     wei_to_decimal,
 )
 
@@ -32,92 +46,9 @@ TEMPLATE_VERSION_V2 = "v2"
 MAX_TEMPLATE_PREVIEW_COUNT = 100
 UNISWAP_FEE_TIERS = [500, 3000, 10000]
 
-CURATED_USD_STABLECOINS = [
-    {
-        "symbol": "USDC",
-        "name": "USD Coin",
-        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-        "decimals": 6,
-    },
-    {
-        "symbol": "USDT",
-        "name": "Tether USD",
-        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-        "decimals": 6,
-    },
-    {
-        "symbol": "DAI",
-        "name": "Dai",
-        "address": "0x6b175474e89094c44da98b954eedeac495271d0f",
-        "decimals": 18,
-    },
-    {
-        "symbol": "USDE",
-        "name": "Ethena USDe",
-        "address": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
-        "decimals": 18,
-    },
-    {
-        "symbol": "USDS",
-        "name": "Sky Dollar",
-        "address": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
-        "decimals": 18,
-    },
-    {
-        "symbol": "PYUSD",
-        "name": "PayPal USD",
-        "address": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
-        "decimals": 6,
-    },
-    {
-        "symbol": "FRAX",
-        "name": "Frax",
-        "address": "0x853d955acef822db058eb8505911ed77f175b99e",
-        "decimals": 18,
-    },
-    {
-        "symbol": "LUSD",
-        "name": "Liquity USD",
-        "address": "0x5f98805a4e8be255a32880fdec7f6728c6568ba0",
-        "decimals": 18,
-    },
-    {
-        "symbol": "TUSD",
-        "name": "TrueUSD",
-        "address": "0x0000000000085d4780b73119b644ae5ecd22b376",
-        "decimals": 18,
-    },
-    {
-        "symbol": "USDP",
-        "name": "Pax Dollar",
-        "address": "0x8e870d67f660d95d5be530380d0ec0bd388289e1",
-        "decimals": 18,
-    },
-    {
-        "symbol": "GUSD",
-        "name": "Gemini Dollar",
-        "address": "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd",
-        "decimals": 2,
-    },
-    {
-        "symbol": "CRVUSD",
-        "name": "crvUSD",
-        "address": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
-        "decimals": 18,
-    },
-    {
-        "symbol": "SUSD",
-        "name": "sUSD",
-        "address": "0x57ab1ec28d129707052df4df418d58a2d46d5f51",
-        "decimals": 18,
-    },
-]
-CURATED_USD_STABLECOIN_BY_ADDRESS = {
-    coin["address"].lower(): coin for coin in CURATED_USD_STABLECOINS
-}
-CURATED_USD_STABLECOIN_BY_SYMBOL = {
-    coin["symbol"].upper(): coin for coin in CURATED_USD_STABLECOINS
-}
+CURATED_USD_STABLECOINS = ETHEREUM_SWAP_TOKENS
+CURATED_USD_STABLECOIN_BY_ADDRESS = TEMPLATE_CHAIN_TOKEN_BY_ADDRESS[TEMPLATE_CHAIN_ETHEREUM]
+CURATED_USD_STABLECOIN_BY_SYMBOL = TEMPLATE_CHAIN_TOKEN_BY_SYMBOL[TEMPLATE_CHAIN_ETHEREUM]
 DISTRIBUTION_MODE_VALUES = {"none", "equal", "manual_percent", "manual_weth_amount"}
 
 
@@ -149,7 +80,10 @@ def _parse_slippage_percent(value) -> Decimal:
     return slippage
 
 
-def _parse_fee_tier(value) -> int | None:
+def _parse_fee_tier(value, chain: str | None = None) -> int | None:
+    normalized_chain = normalize_template_chain(chain)
+    if normalized_chain != TEMPLATE_CHAIN_ETHEREUM:
+        return None
     if value in (None, "", "auto"):
         return None
     try:
@@ -166,11 +100,11 @@ def _parse_optional_address(value, field_name: str) -> str | None:
     if not normalized:
         return None
     if not Web3.is_address(normalized):
-        raise ValueError(f"{field_name} must be a valid Ethereum address")
+        raise ValueError(f"{field_name} must be a valid EVM address")
     return Web3.to_checksum_address(normalized)
 
 
-def _parse_auto_top_up_settings(payload: dict) -> dict:
+def _parse_auto_top_up_settings(payload: dict, chain: str) -> dict:
     enabled = bool(payload.get("auto_top_up_enabled", False))
     threshold = _parse_decimal(
         payload.get("auto_top_up_threshold_eth", "0"),
@@ -184,7 +118,10 @@ def _parse_auto_top_up_settings(payload: dict) -> dict:
     if enabled:
         if target <= 0:
             raise ValueError("auto_top_up_target_eth must be greater than 0 when auto top-up is enabled")
-        if target <= threshold:
+        if chain == TEMPLATE_CHAIN_BNB:
+            if target < threshold:
+                raise ValueError("auto_top_up_target_eth must be equal to or greater than auto_top_up_threshold_eth on BNB Chain")
+        elif target <= threshold:
             raise ValueError("auto_top_up_target_eth must be greater than auto_top_up_threshold_eth")
 
     return {
@@ -194,22 +131,40 @@ def _parse_auto_top_up_settings(payload: dict) -> dict:
     }
 
 
-def _normalize_stablecoin(address: str | None = None, symbol: str | None = None):
-    if address:
-        token = CURATED_USD_STABLECOIN_BY_ADDRESS.get(address.strip().lower())
-        if token:
-            return token
-    if symbol:
-        token = CURATED_USD_STABLECOIN_BY_SYMBOL.get(symbol.strip().upper())
-        if token:
-            return token
-    raise ValueError("Unsupported stablecoin")
+def _normalize_stablecoin(
+    chain: str,
+    address: str | None = None,
+    symbol: str | None = None,
+):
+    try:
+        return get_template_chain_token(chain, address=address, symbol=symbol)
+    except ValueError:
+        if address and Web3.is_address(address):
+            return resolve_token(address, chain)
+        raise
+
+
+def resolve_template_token(address: str, chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    normalized_address = (address or "").strip()
+    if not Web3.is_address(normalized_address):
+        raise ValueError("token_address must be a valid EVM address")
+
+    token = resolve_token(normalized_address, normalized_chain)
+    return {
+        "symbol": token["symbol"],
+        "name": token["name"],
+        "address": token["address"],
+        "decimals": int(token["decimals"]),
+        "official_source": None,
+    }
 
 
 def _parse_allocations(
     allocations_payload,
     distribution_mode: str,
     swap_budget_eth_per_contract: Decimal,
+    chain: str,
 ):
     if distribution_mode == "none":
         if swap_budget_eth_per_contract > 0:
@@ -228,6 +183,7 @@ def _parse_allocations(
             raise ValueError("Invalid stablecoin allocation")
 
         token = _normalize_stablecoin(
+            chain,
             raw_allocation.get("token_address"),
             raw_allocation.get("token_symbol"),
         )
@@ -287,6 +243,8 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
     if not name:
         raise ValueError("Template name is required")
 
+    chain = normalize_template_chain(payload.get("chain"))
+    chain_config = get_template_chain_config(chain)
     template_version = payload.get("template_version") or TEMPLATE_VERSION_V2
     if template_version != TEMPLATE_VERSION_V2:
         raise ValueError("Unsupported template version")
@@ -303,10 +261,7 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         payload.get("swap_budget_eth_per_contract", "0"),
         "swap_budget_eth_per_contract",
     )
-    direct_eth = _parse_decimal(
-        payload.get("direct_contract_eth_per_contract", "0"),
-        "direct_contract_eth_per_contract",
-    )
+    direct_eth = Decimal("0")
     direct_contract_native_eth = _parse_decimal(
         payload.get("direct_contract_native_eth_per_contract", "0"),
         "direct_contract_native_eth_per_contract",
@@ -320,22 +275,27 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
     test_auto_execute_after_funding = bool(payload.get("test_auto_execute_after_funding", False))
     requires_recipient = direct_contract_native_eth > 0 or direct_weth > 0 or distribution_mode != "none"
     if requires_recipient and recipient_address is None:
-        raise ValueError("recipient_address is required when stablecoin swaps or direct contract ETH/WETH are enabled")
+        raise ValueError(
+            f"recipient_address is required when token swaps or direct contract "
+            f"{chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} funding are enabled"
+        )
     if test_auto_execute_after_funding and recipient_address is None:
         raise ValueError("recipient_address is required when test_auto_execute_after_funding is enabled")
     slippage_percent = _parse_slippage_percent(payload.get("slippage_percent", "0.5"))
-    fee_tier = _parse_fee_tier(payload.get("fee_tier"))
-    auto_top_up = _parse_auto_top_up_settings(payload)
+    fee_tier = _parse_fee_tier(payload.get("fee_tier"), chain)
+    auto_top_up = _parse_auto_top_up_settings(payload, chain)
 
     allocations = _parse_allocations(
         payload.get("stablecoin_allocations"),
         distribution_mode,
         swap_budget,
+        chain,
     )
 
     return {
         "id": template_id,
         "name": name,
+        "chain": chain,
         "template_version": TEMPLATE_VERSION_V2,
         "gas_reserve_eth_per_contract": _format_decimal(gas_reserve),
         "swap_budget_eth_per_contract": _format_decimal(swap_budget),
@@ -350,7 +310,7 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         "auto_top_up_enabled": auto_top_up["enabled"],
         "auto_top_up_threshold_eth": _format_decimal(auto_top_up["threshold"]),
         "auto_top_up_target_eth": _format_decimal(auto_top_up["target"]),
-        # Local sub-wallet wrapping is the only supported WETH funding mode today.
+        # Swap routes still wrap inside the sub-wallet. Direct distributor WETH can be sourced from the main wallet.
         "auto_wrap_eth_to_weth": True,
         "stablecoin_distribution_mode": distribution_mode,
         "stablecoin_allocations": allocations,
@@ -369,6 +329,7 @@ def _serialize_template_for_storage(template: dict):
     return {
         "id": template["id"],
         "name": template["name"],
+        "chain": template.get("chain") or DEFAULT_TEMPLATE_CHAIN,
         "target_token_symbol": primary_target.get("token_symbol") if primary_target else None,
         "target_token_address": primary_target.get("token_address") if primary_target else None,
         "weth_per_subwallet": template["swap_budget_eth_per_contract"],
@@ -417,6 +378,7 @@ def _deserialize_template_record(record: dict | None):
     return {
         "id": record["id"],
         "name": record.get("name"),
+        "chain": normalize_template_chain(record.get("chain")),
         "template_version": TEMPLATE_VERSION_V2,
         "gas_reserve_eth_per_contract": record.get("gas_reserve_eth_per_contract") or "0",
         "swap_budget_eth_per_contract": record.get("swap_budget_eth_per_contract") or "0",
@@ -469,7 +431,9 @@ def _build_allocation_preview(
     *,
     include_live_market: bool = False,
 ):
+    chain_config = get_template_chain_config(template.get("chain"))
     token = _normalize_stablecoin(
+        template.get("chain") or DEFAULT_TEMPLATE_CHAIN,
         allocation.get("token_address"),
         allocation.get("token_symbol"),
     )
@@ -489,7 +453,7 @@ def _build_allocation_preview(
 
     quote = {
         "available": False,
-        "token_in": "WETH",
+        "token_in": chain_config["wrapped_native_symbol"],
         "token_out": token["symbol"],
         "error": None,
         "source": "template-allocation",
@@ -500,14 +464,15 @@ def _build_allocation_preview(
     per_contract_min_output = None
     total_min_output = None
 
-    if include_live_market and per_contract_weth > 0:
+    if include_live_market and per_contract_weth > 0 and chain_config["quote_supported"]:
         try:
             raw_quote = quote_uniswap_swap(
-                "WETH",
+                chain_config["wrapped_native_symbol"],
                 token["address"],
                 _format_decimal(per_contract_weth),
                 fee_tier=template.get("fee_tier"),
                 slippage_percent=template.get("slippage_percent"),
+                chain=template.get("chain"),
             )
             quote = {
                 "available": True,
@@ -520,12 +485,21 @@ def _build_allocation_preview(
         except Exception as exc:
             quote = {
                 "available": False,
-                "token_in": "WETH",
+                "token_in": chain_config["wrapped_native_symbol"],
                 "token_out": token["symbol"],
                 "error": str(exc),
                 "source": "template-allocation",
                 "slippage_percent": template.get("slippage_percent"),
             }
+    elif include_live_market and per_contract_weth > 0:
+        quote = {
+            "available": False,
+            "token_in": chain_config["wrapped_native_symbol"],
+            "token_out": token["symbol"],
+            "error": f"Live swap quotes are not configured for {chain_config['label']} yet.",
+            "source": "template-allocation",
+            "slippage_percent": template.get("slippage_percent"),
+        }
 
     token_price_usd = market_snapshot.get("token_prices", {}).get(token["address"].lower()) if include_live_market else None
     return {
@@ -550,10 +524,10 @@ def _build_allocation_preview(
     }
 
 
-def _get_estimated_gas_price_wei() -> Decimal:
+def _get_estimated_gas_price_wei(chain: str | None = None) -> Decimal:
     gas_price_wei = Decimal("0")
     try:
-        web3_client = get_web3()
+        web3_client = get_web3(chain)
         if web3_client and web3_client.is_connected():
             gas_price_wei = Decimal(web3_client.eth.gas_price)
     except Exception:
@@ -574,10 +548,15 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
     ]
     route_count = len(stablecoin_routes)
-    erc20_funding_targets_per_wallet = route_count + (1 if direct_weth > 0 else 0)
-    native_eth_funding_targets_per_wallet = 1 if direct_contract_native_eth > 0 else 0
+    local_erc20_funding_targets_per_wallet = route_count
+    main_wallet_erc20_funding_targets_per_wallet = 1 if direct_weth > 0 else 0
+    main_wallet_native_eth_funding_targets_per_wallet = 1 if direct_contract_native_eth > 0 else 0
+    erc20_funding_targets_per_wallet = (
+        local_erc20_funding_targets_per_wallet + main_wallet_erc20_funding_targets_per_wallet
+    )
+    native_eth_funding_targets_per_wallet = main_wallet_native_eth_funding_targets_per_wallet
     deployment_targets_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
-    required_weth_per_contract = swap_budget + direct_weth
+    required_weth_per_contract = swap_budget
     wrap_transaction_count = contract_count if required_weth_per_contract > 0 else 0
     approval_transaction_count = contract_count if route_count > 0 else 0
     swap_transaction_count = contract_count * route_count
@@ -585,7 +564,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     contract_funding_transaction_count = deployment_transaction_count if recipient_address else 0
     execute_transaction_count = deployment_transaction_count if recipient_address and test_auto_execute_after_funding else 0
     return_sweep_token_transfer_count_per_wallet = (
-        route_count + (1 if required_weth_per_contract > 0 else 0)
+        route_count + (1 if swap_budget > 0 else 0)
         if return_wallet_address
         else 0
     )
@@ -600,17 +579,23 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     approval_gas_units_per_wallet = ERC20_APPROVE_GAS_LIMIT if route_count > 0 else 0
     swap_gas_units_per_wallet = UNISWAP_V3_SWAP_GAS_LIMIT * route_count
     deployment_gas_units_per_wallet = (
-        (MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT * deployment_targets_per_wallet)
-        + (ERC20_TRANSFER_GAS_LIMIT * erc20_funding_targets_per_wallet)
-        + (ETH_TRANSFER_GAS_LIMIT * native_eth_funding_targets_per_wallet)
+        MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT * deployment_targets_per_wallet
+        if recipient_address
+        else 0
+    )
+    local_contract_funding_gas_units_per_wallet = (
+        ERC20_TRANSFER_GAS_LIMIT * local_erc20_funding_targets_per_wallet
+        if recipient_address
+        else 0
+    )
+    main_wallet_direct_funding_gas_units_per_wallet = (
+        (ERC20_TRANSFER_GAS_LIMIT * main_wallet_erc20_funding_targets_per_wallet)
+        + (CONTRACT_NATIVE_ETH_TRANSFER_GAS_LIMIT * main_wallet_native_eth_funding_targets_per_wallet)
         if recipient_address
         else 0
     )
     contract_funding_gas_units_per_wallet = (
-        (ERC20_TRANSFER_GAS_LIMIT * erc20_funding_targets_per_wallet)
-        + (ETH_TRANSFER_GAS_LIMIT * native_eth_funding_targets_per_wallet)
-        if recipient_address
-        else 0
+        local_contract_funding_gas_units_per_wallet + main_wallet_direct_funding_gas_units_per_wallet
     )
     execute_gas_units_per_wallet = (
         MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT * deployment_targets_per_wallet
@@ -627,11 +612,12 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         + approval_gas_units_per_wallet
         + swap_gas_units_per_wallet
         + deployment_gas_units_per_wallet
+        + local_contract_funding_gas_units_per_wallet
         + execute_gas_units_per_wallet
         + return_sweep_gas_units_per_wallet
     )
     local_execution_gas_units_total = local_execution_gas_units_per_wallet * contract_count
-    gas_price_wei = gas_price_wei if gas_price_wei is not None else _get_estimated_gas_price_wei()
+    gas_price_wei = gas_price_wei if gas_price_wei is not None else _get_estimated_gas_price_wei(template.get("chain"))
     local_execution_gas_fee_wei_per_wallet = int(gas_price_wei) * local_execution_gas_units_per_wallet
     local_execution_gas_fee_wei_total = int(gas_price_wei) * local_execution_gas_units_total
 
@@ -639,6 +625,9 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "stablecoin_routes": stablecoin_routes,
         "route_count": route_count,
         "deployment_targets_per_wallet": deployment_targets_per_wallet,
+        "local_erc20_funding_targets_per_wallet": local_erc20_funding_targets_per_wallet,
+        "main_wallet_erc20_funding_targets_per_wallet": main_wallet_erc20_funding_targets_per_wallet,
+        "main_wallet_native_eth_funding_targets_per_wallet": main_wallet_native_eth_funding_targets_per_wallet,
         "erc20_funding_targets_per_wallet": erc20_funding_targets_per_wallet,
         "native_eth_funding_targets_per_wallet": native_eth_funding_targets_per_wallet,
         "required_weth_per_contract": required_weth_per_contract,
@@ -652,6 +641,8 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "approval_gas_units_per_wallet": approval_gas_units_per_wallet,
         "swap_gas_units_per_wallet": swap_gas_units_per_wallet,
         "deployment_gas_units_per_wallet": deployment_gas_units_per_wallet,
+        "local_contract_funding_gas_units_per_wallet": local_contract_funding_gas_units_per_wallet,
+        "main_wallet_direct_funding_gas_units_per_wallet": main_wallet_direct_funding_gas_units_per_wallet,
         "contract_funding_gas_units_per_wallet": contract_funding_gas_units_per_wallet,
         "execute_gas_units_per_wallet": execute_gas_units_per_wallet,
         "return_sweep_token_transfer_count_per_wallet": return_sweep_token_transfer_count_per_wallet,
@@ -716,21 +707,21 @@ def _build_auto_top_up_projection(
 
 
 def _build_template_cost_snapshot(template: dict, contract_count: int, *, include_live_market: bool = False):
+    chain_config = get_template_chain_config(template.get("chain"))
     gas_reserve = Decimal(str(template["gas_reserve_eth_per_contract"]))
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
-    direct_subwallet_eth = Decimal(str(template["direct_contract_eth_per_contract"]))
     direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
     direct_weth = Decimal(str(template["direct_contract_weth_per_contract"]))
     contract_count_decimal = Decimal(contract_count)
-    gas_price_wei = _get_estimated_gas_price_wei()
+    gas_price_wei = _get_estimated_gas_price_wei(template.get("chain"))
     execution_estimate = _build_template_execution_estimate(
         template,
         contract_count,
         gas_price_wei=gas_price_wei,
     )
 
-    local_wrap_eth_per_contract = swap_budget + direct_weth
-    configured_unwrapped_eth_per_contract = gas_reserve + direct_subwallet_eth
+    local_wrap_eth_per_contract = swap_budget
+    configured_unwrapped_eth_per_contract = gas_reserve
     minimum_unwrapped_eth_per_contract = max(
         configured_unwrapped_eth_per_contract,
         Decimal(str(execution_estimate["local_execution_gas_fee_eth_per_wallet"])),
@@ -739,39 +730,65 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         minimum_unwrapped_eth_per_contract - configured_unwrapped_eth_per_contract,
         Decimal("0"),
     )
-    required_eth_per_contract = minimum_unwrapped_eth_per_contract + local_wrap_eth_per_contract + direct_contract_native_eth
+    required_eth_per_contract = minimum_unwrapped_eth_per_contract + local_wrap_eth_per_contract
     required_weth_per_contract = execution_estimate["required_weth_per_contract"]
     required_eth_total = required_eth_per_contract * contract_count_decimal
     required_weth_total = required_weth_per_contract * contract_count_decimal
+    direct_contract_native_eth_total = direct_contract_native_eth * contract_count_decimal
+    direct_contract_weth_total = direct_weth * contract_count_decimal
     auto_top_up = _build_auto_top_up_projection(
         template,
         contract_count,
         required_eth_per_contract=required_eth_per_contract,
         required_weth_per_contract=required_weth_per_contract,
-        reserved_native_eth_per_contract=direct_contract_native_eth,
+        reserved_native_eth_per_contract=Decimal("0"),
         execution_estimate=execution_estimate,
     )
     funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
     funding_network_fee_eth = wei_to_decimal(int(gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * funding_transaction_count)
     projected_auto_top_up_eth_total = Decimal(str(auto_top_up.get("projected_total_eth") or "0"))
     top_up_network_fee_eth = Decimal(str(auto_top_up.get("projected_network_fee_eth") or "0"))
+    main_wallet_weth_wrap_count = 1 if direct_contract_weth_total > 0 else 0
+    main_wallet_weth_wrap_network_fee_eth = wei_to_decimal(
+        int(gas_price_wei) * WETH_DEPOSIT_GAS_LIMIT * main_wallet_weth_wrap_count
+    )
+    main_wallet_direct_funding_network_fee_eth = wei_to_decimal(
+        int(gas_price_wei)
+        * int(execution_estimate.get("main_wallet_direct_funding_gas_units_per_wallet") or 0)
+        * contract_count
+    )
     contract_sync_network_fee_eth = Decimal("0")
     total_network_fee_eth = (
         Decimal(str(execution_estimate["local_execution_gas_fee_eth_total"]))
         + funding_network_fee_eth
         + top_up_network_fee_eth
+        + main_wallet_direct_funding_network_fee_eth
+        + main_wallet_weth_wrap_network_fee_eth
         + contract_sync_network_fee_eth
     )
     total_eth_required_with_fees = (
         required_eth_total
+        + direct_contract_native_eth_total
+        + direct_contract_weth_total
         + projected_auto_top_up_eth_total
         + funding_network_fee_eth
         + top_up_network_fee_eth
+        + main_wallet_direct_funding_network_fee_eth
+        + main_wallet_weth_wrap_network_fee_eth
         + contract_sync_network_fee_eth
     )
 
     stablecoin_addresses = [allocation["token_address"] for allocation in template["stablecoin_allocations"]]
-    market_snapshot = get_market_snapshot(stablecoin_addresses, WETH_ADDRESS) if include_live_market else _empty_market_snapshot()
+    market_snapshot = (
+        get_market_snapshot(
+            stablecoin_addresses,
+            chain_config["wrapped_native_address"],
+            asset_platform=chain_config["coingecko_asset_platform"],
+            native_coin_id=chain_config["coingecko_native_coin_id"],
+        )
+        if include_live_market
+        else _empty_market_snapshot()
+    )
     stablecoin_quotes = [
         _build_allocation_preview(
             template,
@@ -824,8 +841,6 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         "per_contract": {
             "gas_reserve_eth": _format_decimal(gas_reserve),
             "swap_budget_eth": _format_decimal(swap_budget),
-            "direct_contract_eth": _format_decimal(direct_subwallet_eth),
-            "direct_subwallet_eth": _format_decimal(direct_subwallet_eth),
             "direct_contract_native_eth": _format_decimal(direct_contract_native_eth),
             "direct_contract_weth": _format_decimal(direct_weth),
             "return_wallet_address": template.get("return_wallet_address"),
@@ -838,17 +853,17 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "local_execution_gas_fee_eth": _format_decimal(Decimal(str(execution_estimate["local_execution_gas_fee_eth_per_wallet"]))),
             "required_eth": _format_decimal(required_eth_per_contract),
             "required_weth": _format_decimal(required_weth_per_contract),
-            "total_eth_if_no_weth_available": _format_decimal(required_eth_per_contract),
+            "total_eth_if_no_weth_available": _format_decimal(
+                required_eth_per_contract + direct_contract_native_eth + direct_weth
+            ),
         },
         "totals": {
             "required_eth_total": _format_decimal(required_eth_total),
             "required_weth_total": _format_decimal(required_weth_total),
             "gas_reserve_eth_total": _format_decimal(gas_reserve * contract_count_decimal),
             "swap_budget_eth_total": _format_decimal(swap_budget * contract_count_decimal),
-            "direct_contract_eth_total": _format_decimal(direct_subwallet_eth * contract_count_decimal),
-            "direct_subwallet_eth_total": _format_decimal(direct_subwallet_eth * contract_count_decimal),
-            "direct_contract_native_eth_total": _format_decimal(direct_contract_native_eth * contract_count_decimal),
-            "direct_contract_weth_total": _format_decimal(direct_weth * contract_count_decimal),
+            "direct_contract_native_eth_total": _format_decimal(direct_contract_native_eth_total),
+            "direct_contract_weth_total": _format_decimal(direct_contract_weth_total),
             "projected_auto_top_up_eth_total": auto_top_up["projected_total_eth"],
             "projected_auto_top_up_eth_total_usd": projected_auto_top_up_eth_total_usd,
             "configured_unwrapped_eth_total": _format_decimal(configured_unwrapped_eth_per_contract * contract_count_decimal),
@@ -857,7 +872,9 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "local_execution_gas_fee_eth_total": _format_decimal(Decimal(str(execution_estimate["local_execution_gas_fee_eth_total"]))),
             "total_network_fee_eth": _format_decimal(total_network_fee_eth),
             "total_network_fee_eth_usd": total_network_fee_eth_usd,
-            "total_eth_if_no_weth_available_total": _format_decimal(required_eth_total),
+            "total_eth_if_no_weth_available_total": _format_decimal(
+                required_eth_total + direct_contract_native_eth_total + direct_contract_weth_total
+            ),
             "total_eth_required_with_fees": _format_decimal(total_eth_required_with_fees),
             "total_eth_required_with_fees_usd": total_eth_required_with_fees_usd,
             "required_eth_total_usd": required_eth_total_usd,
@@ -876,6 +893,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "deployment_transaction_count": execution_estimate["deployment_transaction_count"],
             "contract_funding_transaction_count": execution_estimate["contract_funding_transaction_count"],
             "contract_funding_gas_units_per_wallet": execution_estimate["contract_funding_gas_units_per_wallet"],
+            "main_wallet_direct_funding_gas_units_per_wallet": execution_estimate["main_wallet_direct_funding_gas_units_per_wallet"],
             "execute_transaction_count": execution_estimate["execute_transaction_count"],
             "top_up_transaction_count": auto_top_up["projected_transaction_count"],
             "top_up_network_fee_eth": auto_top_up["projected_network_fee_eth"],
@@ -892,32 +910,23 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     }
 
 
-def get_template_options():
-    return {
-        "stablecoins": CURATED_USD_STABLECOINS,
-        "distribution_modes": [
+def get_template_options(chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    chain_config = get_template_chain_config(normalized_chain)
+    if normalized_chain == TEMPLATE_CHAIN_BNB:
+        fee_tiers = [
             {
-                "value": "none",
-                "label": "No swap",
-                "description": "Keep this template focused on gas, sub-wallet ETH, and optional direct contract ETH/WETH funding only.",
-            },
-            {
-                "value": "equal",
-                "label": "Equal split",
-                "description": "Split the per-contract swap budget evenly across the selected stablecoins.",
-            },
-            {
-                "value": "manual_percent",
-                "label": "Manual %",
-                "description": "Assign exact percentages across the selected stablecoins.",
-            },
-            {
-                "value": "manual_weth_amount",
-                "label": "Manual exact WETH",
-                "description": "Assign exact WETH amounts per contract across the selected stablecoins.",
-            },
-        ],
-        "fee_tiers": [
+                "value": None,
+                "label": "Auto route",
+                "description": "Use PancakeSwap routing on BNB Chain without a selectable V3 fee tier.",
+            }
+        ]
+        swap_settings_note = (
+            "Slippage sets your minimum received guardrail. BNB Chain swaps use PancakeSwap routing, "
+            "so fee tier stays on auto."
+        )
+    else:
+        fee_tiers = [
             {
                 "value": None,
                 "label": "Auto best route",
@@ -938,8 +947,46 @@ def get_template_options():
                 "label": "1.00%",
                 "description": "Use the 10000 fee tier pool for tokens that route there best.",
             },
+        ]
+        swap_settings_note = "Slippage sets your minimum received guardrail. Fee tier can stay on auto unless you want to force a pool."
+
+    return {
+        "available_chains": get_template_chain_choices(),
+        "selected_chain": normalized_chain,
+        "native_symbol": chain_config["native_symbol"],
+        "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
+        "quote_supported": chain_config["quote_supported"],
+        "stablecoins": get_template_chain_tokens(normalized_chain),
+        "distribution_modes": [
+            {
+                "value": "none",
+                "label": "No swap",
+                "description": (
+                    f"Keep this template focused on gas, sub-wallet {chain_config['native_symbol']}, and optional "
+                    f"direct contract {chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} funding only."
+                ),
+            },
+            {
+                "value": "equal",
+                "label": "Equal split",
+                "description": "Split the per-contract swap budget evenly across the selected tokens.",
+            },
+            {
+                "value": "manual_percent",
+                "label": "Manual %",
+                "description": "Assign exact percentages across the selected tokens.",
+            },
+            {
+                "value": "manual_weth_amount",
+                "label": f"Manual exact {chain_config['wrapped_native_symbol']}",
+                "description": (
+                    f"Assign exact {chain_config['wrapped_native_symbol']} amounts per contract across the selected tokens."
+                ),
+            },
         ],
+        "fee_tiers": fee_tiers,
         "defaults": {
+            "chain": normalized_chain,
             "template_version": TEMPLATE_VERSION_V2,
             "recipient_address": None,
             "return_wallet_address": None,
@@ -959,20 +1006,37 @@ def get_template_options():
             "stablecoin_allocations": [],
         },
         "hints": {
-            "summary": "This template defines one contract / one subwallet.",
-            "swap_budget_note": "Stablecoin swaps always use WETH, but the run now funds ETH first and wraps only the required WETH amount inside each sub-wallet.",
-            "swap_settings_note": "Slippage sets your minimum received guardrail. Fee tier can stay on auto unless you want to force a pool.",
-            "auto_top_up_note": "If a sub-wallet's post-wrap ETH balance falls to or below the trigger, the run can send a second ETH transfer from the main wallet to refill it to the target before swaps and deployments continue.",
-            "return_wallet_note": "If set, the run sweeps leftover ETH, WETH, and supported stablecoin balances from each sub-wallet into this address after execution. Distributor contracts also store it as the destination for future excess or rescue transfers.",
+            "summary": f"This template defines one contract / one subwallet on {chain_config['label']}.",
+            "swap_budget_note": (
+                f"Token swaps use {chain_config['wrapped_native_symbol']}, but the run funds "
+                f"{chain_config['native_symbol']} first and wraps only the required "
+                f"{chain_config['wrapped_native_symbol']} amount inside each sub-wallet."
+            ),
+            "swap_settings_note": swap_settings_note,
+            "auto_top_up_note": (
+                f"If a sub-wallet's post-wrap {chain_config['native_symbol']} balance falls to or below the trigger, "
+                f"the run can send a second {chain_config['native_symbol']} transfer from the main wallet to refill it to the target before swaps and deployments continue."
+            ),
+            "return_wallet_note": (
+                f"If set, the run sweeps leftover {chain_config['native_symbol']}, {chain_config['wrapped_native_symbol']}, "
+                f"and supported token balances from each sub-wallet into this address after execution. Distributor contracts also store it as the destination for future excess or rescue transfers."
+            ),
             "test_auto_execute_note": "Testing only. After a distributor is deployed and funded, the sub-wallet immediately calls execute(). If you want the contract output to land in the return wallet during a test, set recipient_address to the same address.",
         },
         "contract_sync": get_registry_integration_status(),
     }
 
 
-def get_template_editor_market_snapshot():
-    stablecoin_addresses = [coin["address"] for coin in CURATED_USD_STABLECOINS]
-    return get_market_snapshot(stablecoin_addresses, WETH_ADDRESS)
+def get_template_editor_market_snapshot(chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    chain_config = get_template_chain_config(normalized_chain)
+    stablecoin_addresses = [coin["address"] for coin in chain_config["tokens"]]
+    return get_market_snapshot(
+        stablecoin_addresses,
+        chain_config["wrapped_native_address"],
+        asset_platform=chain_config["coingecko_asset_platform"],
+        native_coin_id=chain_config["coingecko_native_coin_id"],
+    )
 
 
 def list_templates():
@@ -1072,10 +1136,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
+    chain_config = get_template_chain_config(template.get("chain"))
 
     from src.services.wallet_service import get_wallet_details
 
-    wallet = get_wallet_details(wallet_id)
+    wallet = get_wallet_details(wallet_id, chain=template.get("chain"))
     if not wallet:
         raise ValueError("Wallet not found")
     if wallet.get("type") == "sub":
@@ -1098,23 +1163,35 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
 
     available_eth = Decimal(str(wallet["eth_balance"]))
     available_weth = Decimal(str(wallet["weth_balance"]))
-    weth_from_main_wallet = Decimal("0")
+    direct_contract_native_eth_total = Decimal(str(cost_snapshot["totals"].get("direct_contract_native_eth_total") or "0"))
+    direct_contract_weth_total = Decimal(str(cost_snapshot["totals"].get("direct_contract_weth_total") or "0"))
+    weth_from_main_wallet = direct_contract_weth_total
+    weth_from_existing_main_wallet = min(available_weth, direct_contract_weth_total)
+    main_wallet_weth_wrapped = max(direct_contract_weth_total - available_weth, Decimal("0"))
     funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
     wrap_transaction_count = int(execution_estimate["wrap_transaction_count"])
     approval_transaction_count = int(execution_estimate["approval_transaction_count"])
     swap_transaction_count = int(execution_estimate["swap_transaction_count"])
     deployment_transaction_count = contract_count * deployment_contracts_per_wallet if recipient_address else 0
     contract_funding_transaction_count = deployment_transaction_count if recipient_address else 0
+    main_wallet_wrap_transaction_count = 1 if main_wallet_weth_wrapped > 0 else 0
     funding_gas_units = ETH_TRANSFER_GAS_LIMIT * funding_transaction_count
-    total_execution_gas_units = funding_gas_units + int(execution_estimate["local_execution_gas_units_total"])
+    main_wallet_wrap_gas_units = WETH_DEPOSIT_GAS_LIMIT * main_wallet_wrap_transaction_count
     gas_price_wei = Decimal(str(execution_estimate["estimated_gas_price_gwei"] or "0")) * Decimal("1000000000")
-    execution_fee = {
-        "gas_price_wei": int(gas_price_wei),
-        "gas_units": total_execution_gas_units,
-        "fee_wei": int(gas_price_wei) * total_execution_gas_units,
-        "fee_eth": "0",
-    }
+    main_wallet_direct_funding_gas_units = (
+        int(execution_estimate.get("main_wallet_direct_funding_gas_units_per_wallet") or 0) * contract_count
+    )
+    total_execution_gas_units = (
+        funding_gas_units
+        + int(execution_estimate["local_execution_gas_units_total"])
+        + main_wallet_direct_funding_gas_units
+        + main_wallet_wrap_gas_units
+    )
     funding_network_fee_eth = wei_to_decimal(int(gas_price_wei) * funding_gas_units)
+    main_wallet_direct_funding_network_fee_eth = wei_to_decimal(
+        int(gas_price_wei) * main_wallet_direct_funding_gas_units
+    )
+    main_wallet_wrap_network_fee_eth = wei_to_decimal(int(gas_price_wei) * main_wallet_wrap_gas_units)
     registry_sync_preview = build_registry_sync_preview(
         wallet["address"],
         contract_count,
@@ -1132,22 +1209,26 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         Decimal(str(cost_snapshot["totals"]["local_execution_gas_fee_eth_total"]))
         + funding_network_fee_eth
         + top_up_network_fee_eth
+        + main_wallet_direct_funding_network_fee_eth
+        + main_wallet_wrap_network_fee_eth
         + contract_sync_network_fee_eth
     )
-    wrappable_eth = max(required_weth_total, Decimal("0"))
-    effective_weth_available = required_weth_total
+    wrappable_eth = main_wallet_weth_wrapped
+    effective_weth_available = weth_from_existing_main_wallet + main_wallet_weth_wrapped
     weth_from_wrapped_eth = required_weth_total
-    total_eth_deducted = required_eth_total
+    total_eth_deducted = required_eth_total + direct_contract_native_eth_total + main_wallet_weth_wrapped
     total_eth_required_with_fees = (
-        required_eth_total
+        total_eth_deducted
         + projected_auto_top_up_eth_total
         + funding_network_fee_eth
         + top_up_network_fee_eth
+        + main_wallet_direct_funding_network_fee_eth
+        + main_wallet_wrap_network_fee_eth
         + contract_sync_network_fee_eth
     )
-    remaining_eth_after_funding = available_eth - required_eth_total
+    remaining_eth_after_funding = available_eth - total_eth_deducted
     remaining_eth_after_run = available_eth - total_eth_required_with_fees
-    remaining_weth_after_funding = available_weth
+    remaining_weth_after_funding = max(available_weth - weth_from_existing_main_wallet, Decimal("0"))
     total_transaction_count = (
         funding_transaction_count
         + top_up_transaction_count
@@ -1158,20 +1239,34 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         + deployment_transaction_count
         + contract_funding_transaction_count
         + return_sweep_transaction_count
+        + main_wallet_wrap_transaction_count
     )
     can_proceed = available_eth >= total_eth_required_with_fees and (not requires_recipient or bool(recipient_address))
 
     shortfall_reason = None
     if requires_recipient and not recipient_address:
-        shortfall_reason = "recipient_address is required for templates that swap into managed distributor contracts or fund direct contract ETH/WETH distributors."
+        shortfall_reason = (
+            "recipient_address is required for templates that swap into managed distributor contracts "
+            f"or fund direct contract {chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} distributors."
+        )
     elif available_eth < required_eth_total:
         shortfall_reason = (
-            f"Not enough ETH in the main wallet. Need {_format_decimal(required_eth_total - available_eth)} more ETH "
-            "to fund gas reserve, sub-wallet ETH, direct contract ETH, automatic local execution gas headroom, and the local wrap budget for the new subwallets."
+            f"Not enough {chain_config['native_symbol']} in the main wallet. "
+            f"Need {_format_decimal(required_eth_total - available_eth)} more {chain_config['native_symbol']} "
+            f"to fund gas reserve, sub-wallet {chain_config['native_symbol']}, "
+            f"automatic local execution gas headroom, and the local {chain_config['wrapped_native_symbol']} swap budget for the new subwallets."
+        )
+    elif available_eth < total_eth_deducted:
+        shortfall_reason = (
+            f"Not enough {chain_config['native_symbol']} in the main wallet. "
+            f"Need {_format_decimal(total_eth_deducted - available_eth)} more {chain_config['native_symbol']} "
+            f"to fund the sub-wallets, send direct contract {chain_config['native_symbol']}, "
+            f"and cover any direct contract {chain_config['wrapped_native_symbol']} wrap shortfall on the main wallet."
         )
     elif available_eth < total_eth_required_with_fees:
         shortfall_reason = (
-            f"Not enough ETH in the main wallet. Need {_format_decimal(total_eth_required_with_fees - available_eth)} more ETH "
+            f"Not enough {chain_config['native_symbol']} in the main wallet. "
+            f"Need {_format_decimal(total_eth_required_with_fees - available_eth)} more {chain_config['native_symbol']} "
             "to fund the new subwallets, reserve any projected auto top-ups, and cover the main-wallet funding transaction fees."
         )
 
@@ -1195,6 +1290,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "weth_sent_to_subwallets": "0",
             "weth_from_main_wallet": _format_decimal(weth_from_main_wallet),
             "weth_from_wrapped_eth": _format_decimal(weth_from_wrapped_eth),
+            "main_wallet_weth_wrapped": _format_decimal(main_wallet_weth_wrapped),
             "auto_top_up_eth_reserved": _format_decimal(projected_auto_top_up_eth_total),
             "total_eth_deducted": _format_decimal(total_eth_deducted),
         },
@@ -1202,17 +1298,24 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "execution": {
             "funding_network_fee_eth": format_wallet_decimal(funding_network_fee_eth),
             "top_up_network_fee_eth": format_wallet_decimal(top_up_network_fee_eth),
-            "main_wallet_network_fee_eth": format_wallet_decimal(funding_network_fee_eth + top_up_network_fee_eth),
+            "main_wallet_network_fee_eth": format_wallet_decimal(
+                funding_network_fee_eth
+                + top_up_network_fee_eth
+                + main_wallet_direct_funding_network_fee_eth
+                + main_wallet_wrap_network_fee_eth
+            ),
             "local_execution_gas_fee_eth": format_wallet_decimal(local_execution_gas_fee_eth_total),
             "local_execution_gas_fee_per_wallet_eth": format_wallet_decimal(local_execution_gas_fee_eth_per_wallet),
             "contract_sync_network_fee_eth": format_wallet_decimal(contract_sync_network_fee_eth),
             "total_network_fee_eth": format_wallet_decimal(total_network_fee_eth),
-            "estimated_gas_price_gwei": format_wallet_decimal(Decimal(execution_fee["gas_price_wei"]) / Decimal("1000000000")),
+            "estimated_gas_price_gwei": format_wallet_decimal(gas_price_wei / Decimal("1000000000")),
             "estimated_gas_units": total_execution_gas_units + top_up_gas_units,
             "execute_gas_units_per_wallet": execution_estimate.get("execute_gas_units_per_wallet"),
             "return_sweep_gas_units_per_wallet": execution_estimate.get("return_sweep_gas_units_per_wallet"),
             "local_execution_gas_units_per_wallet": execution_estimate["local_execution_gas_units_per_wallet"],
             "funding_transaction_count": funding_transaction_count,
+            "main_wallet_wrap_transaction_count": main_wallet_wrap_transaction_count,
+            "main_wallet_wrap_gas_units": main_wallet_wrap_gas_units,
             "top_up_transaction_count": top_up_transaction_count,
             "execute_transaction_count": execute_transaction_count,
             "wrap_transaction_count": wrap_transaction_count,

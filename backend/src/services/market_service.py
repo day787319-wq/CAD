@@ -62,7 +62,13 @@ def _coingecko_get_json(path: str, params: dict) -> dict:
     raise RuntimeError(f"CoinGecko request failed: {last_error}")
 
 
-def get_market_snapshot(token_addresses: list[str], weth_address: str) -> dict:
+def get_market_snapshot(
+    token_addresses: list[str],
+    wrapped_native_address: str,
+    *,
+    asset_platform: str = "ethereum",
+    native_coin_id: str = "ethereum",
+) -> dict:
     snapshot = {
         "available": False,
         "currency": "usd",
@@ -77,19 +83,19 @@ def get_market_snapshot(token_addresses: list[str], weth_address: str) -> dict:
         eth_payload = _coingecko_get_json(
             "/simple/price",
             {
-                "ids": "ethereum",
+                "ids": native_coin_id,
                 "vs_currencies": "usd",
             },
         )
 
         addresses = []
-        for address in [weth_address, *(token_addresses or [])]:
+        for address in [wrapped_native_address, *(token_addresses or [])]:
             normalized = address.lower()
             if normalized not in addresses:
                 addresses.append(normalized)
 
         token_payload = _coingecko_get_json(
-            "/simple/token_price/ethereum",
+            f"/simple/token_price/{asset_platform}",
             {
                 "contract_addresses": ",".join(addresses),
                 "vs_currencies": "usd",
@@ -101,8 +107,8 @@ def get_market_snapshot(token_addresses: list[str], weth_address: str) -> dict:
             usd_value = token_payload.get(address.lower(), {}).get("usd")
             token_prices[address.lower()] = str(Decimal(str(usd_value))) if usd_value is not None else None
 
-        eth_usd = eth_payload.get("ethereum", {}).get("usd")
-        weth_usd = token_payload.get(weth_address.lower(), {}).get("usd")
+        eth_usd = eth_payload.get(native_coin_id, {}).get("usd")
+        weth_usd = token_payload.get(wrapped_native_address.lower(), {}).get("usd")
 
         snapshot.update(
             {
