@@ -26,6 +26,7 @@ import {
   formatAmount,
   formatFeeTier,
   formatRelativeTimestamp,
+  getTemplateChainMeta,
   getStablecoinDistributionRows,
   shortAddress,
 } from "@/lib/template";
@@ -76,21 +77,47 @@ function getChainUiContext(
   wallet?: Pick<BalanceWallet, "chain" | "native_symbol" | "wrapped_native_symbol"> | null,
   locale?: SupportedLocale,
 ) {
-  const chain = template?.chain ?? (wallet?.chain === "bnb" ? "bnb" : "ethereum_mainnet");
-  const defaultNativeSymbol = chain === "bnb" ? "BNB" : "ETH";
-  const defaultWrappedNativeSymbol = chain === "bnb" ? "WBNB" : "WETH";
+  const requestedChain = (template?.chain ?? wallet?.chain ?? "ethereum_mainnet") as Template["chain"];
+  const chain = requestedChain in {
+    ethereum_mainnet: true,
+    bnb: true,
+    arbitrum: true,
+    avalanche: true,
+    base: true,
+    optimism: true,
+    polygon: true,
+    xlayer: true,
+  }
+    ? requestedChain
+    : "ethereum_mainnet";
+  const defaultMeta = getTemplateChainMeta(chain);
+  const defaultNativeSymbol = defaultMeta.nativeSymbol;
+  const defaultWrappedNativeSymbol = defaultMeta.wrappedNativeSymbol;
   const walletMatchesChain = wallet?.chain === chain;
   const nativeSymbol = walletMatchesChain ? wallet?.native_symbol ?? defaultNativeSymbol : defaultNativeSymbol;
   const wrappedNativeSymbol = walletMatchesChain ? wallet?.wrapped_native_symbol ?? defaultWrappedNativeSymbol : defaultWrappedNativeSymbol;
   const chainLabel = locale
     ? localeText(locale, {
-        en: chain === "bnb" ? "BNB Chain" : "Ethereum Mainnet",
-        zn: chain === "bnb" ? "BNB 链" : "以太坊主网",
-        vn: chain === "bnb" ? "BNB Chain" : "Ethereum Mainnet",
+        en: defaultMeta.label,
+        zn:
+          chain === "bnb"
+            ? "BNB 链"
+            : chain === "arbitrum"
+              ? "Arbitrum"
+              : chain === "avalanche"
+                ? "Avalanche"
+                : chain === "base"
+                  ? "Base"
+                  : chain === "optimism"
+                    ? "Optimism"
+                    : chain === "polygon"
+                      ? "Polygon"
+                      : chain === "xlayer"
+                        ? "X Layer"
+                        : "以太坊主网",
+        vn: defaultMeta.label,
       })
-    : chain === "bnb"
-      ? "BNB Chain"
-      : "Ethereum Mainnet";
+    : defaultMeta.label;
 
   return {
     chain,
@@ -651,12 +678,21 @@ function buildTemplateSummary(template: Template, locale: SupportedLocale) {
     })}${autoTopUpSuffix}${testingExecuteSuffix}`;
   }
 
-  const routeCount = template.stablecoin_allocations.length;
+  const routeCount = getStablecoinDistributionRows(template).filter(
+    (route) => (toNumericValue(route.weth_amount_per_contract) ?? 0) > 0,
+  ).length;
+  if (routeCount === 0) {
+    return locale === "en"
+      ? `No funded token routes · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
+      : locale === "zn"
+        ? `暂无已注资的代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
+        : `Chưa có tuyến token được cấp vốn · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`;
+  }
   return locale === "en"
-    ? `${routeCount} token route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier)}${autoTopUpSuffix}${testingExecuteSuffix}`
+    ? `${routeCount} token route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
     : locale === "zn"
-      ? `${routeCount} 个代币路由 · ${formatFeeTier(template.fee_tier)}${autoTopUpSuffix}${testingExecuteSuffix}`
-      : `${routeCount} tuyến token · ${formatFeeTier(template.fee_tier)}${autoTopUpSuffix}${testingExecuteSuffix}`;
+      ? `${routeCount} 个代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
+      : `${routeCount} tuyến token · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`;
 }
 
 function buildTemplateChainNote(template: Template, locale: SupportedLocale) {
@@ -1450,9 +1486,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                                 <TemplateMetric label="Gas" value={`${formatAmount(template.gas_reserve_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
-                                <TemplateMetric label="Swap" value={`${formatAmount(template.swap_budget_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
-                                <TemplateMetric label={template.chain === "bnb" ? "Contract BNB" : "Contract ETH"} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
-                                <TemplateMetric label={template.chain === "bnb" ? "Contract WBNB" : "Contract WETH"} value={`${formatAmount(template.direct_contract_weth_per_contract)} ${templateChainUi.wrappedNativeSymbol}`} />
+                                <TemplateMetric label="Swap" value={`${formatAmount(template.swap_budget_eth_per_contract)} ${templateChainUi.wrappedNativeSymbol}`} />
+                                <TemplateMetric label={`Contract ${templateChainUi.nativeSymbol}`} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
+                                <TemplateMetric label={`Contract ${templateChainUi.wrappedNativeSymbol}`} value={`${formatAmount(template.direct_contract_weth_per_contract)} ${templateChainUi.wrappedNativeSymbol}`} />
                                 <TemplateMetric label={locale === "en" ? "Auto Top-Up" : locale === "zn" ? "自动补充" : "Nạp thêm tự động"} value={buildAutoTopUpSummary(template, locale)} />
                                 <TemplateMetric label={locale === "en" ? "Test Execute" : locale === "zn" ? "测试执行" : "Chạy thử"} value={buildTestingExecuteSummary(template, locale)} />
                                 <TemplateMetric label={locale === "en" ? "Return Wallet" : locale === "zn" ? "回收钱包" : "Ví nhận lại"} value={buildReturnWalletSummary(template, locale)} />
@@ -1531,10 +1567,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </p>
                                     <p className="mt-1 text-sm font-semibold text-slate-900">
                                       {locale === "en"
-                                        ? `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} gas reserve • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, nativeSymbol)} swap budget`
+                                        ? `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} gas reserve • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, wrappedNativeSymbol)} swap budget`
                                         : locale === "zn"
-                                          ? `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} gas 预留 • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, nativeSymbol)} 兑换预算`
-                                          : `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} dự phòng gas • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, nativeSymbol)} ngân sách swap`}
+                                          ? `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} gas 预留 • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, wrappedNativeSymbol)} 兑换预算`
+                                          : `${formatCryptoMetric(selectedTemplate.gas_reserve_eth_per_contract, nativeSymbol)} dự phòng gas • ${formatCryptoMetric(selectedTemplate.swap_budget_eth_per_contract, wrappedNativeSymbol)} ngân sách swap`}
                                     </p>
                                   </div>
                                 </div>
@@ -1740,7 +1776,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? "Protection" : locale === "zn" ? "保护设置" : "Bảo vệ"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
-                                          {formatCryptoMetric(selectedTemplate.slippage_percent)}% slippage • {formatFeeTier(selectedTemplate.fee_tier)}
+                                          {formatCryptoMetric(selectedTemplate.slippage_percent)}% slippage • {formatFeeTier(selectedTemplate.fee_tier, selectedTemplate.chain)}
                                         </p>
                                       </div>
                                       <div className="cad-panel-muted px-4 py-3">

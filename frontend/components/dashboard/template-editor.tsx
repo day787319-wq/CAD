@@ -7,7 +7,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { useI18n } from "@/components/i18n-provider";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -20,6 +20,7 @@ import {
   defaultTemplateForm,
   formatAmount,
   formatRelativeTimestamp,
+  formatSwapBackendLabel,
   formatUsd,
   getStablecoinDistributionRows,
   shortAddress,
@@ -114,9 +115,21 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       native_symbol: "ETH",
       wrapped_native_symbol: "WETH",
       quote_supported: true,
+      primary_swap_backend: "uniswap_v3",
+      primary_swap_backend_label: "Uniswap V3",
+      fallback_swap_backends: [],
+      fallback_swap_backend_labels: [],
     };
   const nativeSymbol = currentOptions?.native_symbol ?? currentChain.native_symbol;
   const wrappedNativeSymbol = currentOptions?.wrapped_native_symbol ?? currentChain.wrapped_native_symbol;
+  const primaryBackendLabel =
+    currentOptions?.primary_swap_backend_label ??
+    currentChain.primary_swap_backend_label ??
+    formatSwapBackendLabel(currentOptions?.primary_swap_backend ?? currentChain.primary_swap_backend);
+  const fallbackBackendLabels =
+    currentOptions?.fallback_swap_backend_labels ??
+    currentChain.fallback_swap_backend_labels ??
+    [];
   const selectedStablecoinAddresses = useMemo(
     () => new Set(form.stablecoin_allocations.map((allocation) => allocation.token_address.toLowerCase())),
     [form.stablecoin_allocations],
@@ -550,15 +563,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               <span>{locale === "en" ? "Updated" : locale === "zn" ? "更新时间" : "Cập nhật"} {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
             </div>
             {marketError ? <p className="mt-2 text-xs text-amber-800">{locale === "en" ? "Market data warning" : locale === "zn" ? "市场数据警告" : "Cảnh báo dữ liệu thị trường"}: {marketError}</p> : null}
-            {!currentChain.quote_supported ? (
-              <p className="mt-2 text-xs text-amber-800">
-                {locale === "en"
-                  ? `${currentChain.label} supports token selection, pricing, and wallet execution for funding, local wrap, auto top-up, and direct contract funding. Live swap quoting and token swap execution are still unavailable.`
-                  : locale === "zn"
-                    ? `${currentChain.label} 当前支持模板编辑器中的代币选择、价格显示，以及注资、本地包装、自动补充和直接合约注资执行；但实时兑换报价和代币兑换执行仍不可用。`
-                    : `${currentChain.label} hỗ trợ chọn token, xem giá và chạy ví cho cấp vốn, wrap cục bộ, auto top-up và cấp vốn hợp đồng trực tiếp. Báo giá swap trực tiếp và thực thi swap token vẫn chưa khả dụng.`}
-              </p>
-            ) : null}
+            <p className="mt-2 text-xs text-muted-foreground">
+              {locale === "en"
+                ? `Primary routing: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Fallback: ${fallbackBackendLabels.join(" -> ")}` : ""}.`
+                : locale === "zn"
+                  ? `主路由：${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · 回退：${fallbackBackendLabels.join(" -> ")}` : ""}。`
+                  : `Định tuyến chính: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Dự phòng: ${fallbackBackendLabels.join(" -> ")}` : ""}.`}
+            </p>
           </div>
 
           <SectionCard
@@ -602,9 +613,45 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     : locale === "en"
                       ? "Choose the network first, then select the swap tokens for that chain."
                       : locale === "zn"
-                        ? "先选择网络，再选择该链上的兑换代币。"
-                        : "Chọn mạng trước, rồi chọn token swap của chain đó."}
+                      ? "先选择网络，再选择该链上的兑换代币。"
+                      : "Chọn mạng trước, rồi chọn token swap của chain đó."}
                 </p>
+              </div>
+
+              <div className="cad-panel-soft space-y-3 px-4 py-3 sm:col-span-2">
+                <p className="text-sm font-medium text-foreground">
+                  {locale === "en" ? "Chain asset guide" : locale === "zn" ? "链资产说明" : "Hướng dẫn tài sản của chain"}
+                </p>
+                <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                  <p>
+                    {locale === "en"
+                      ? `Gas token for reserve and top-up: ${nativeSymbol}`
+                      : locale === "zn"
+                        ? `用于 gas 预留和补充的代币：${nativeSymbol}`
+                        : `Token gas cho dự trữ và nạp thêm: ${nativeSymbol}`}
+                  </p>
+                  <p>
+                    {locale === "en"
+                      ? `Wrapped-native token for swap budget and wrapped funding: ${wrappedNativeSymbol}`
+                      : locale === "zn"
+                        ? `用于兑换预算和包装代币注资的包装原生代币：${wrappedNativeSymbol}`
+                        : `Wrapped-native dùng cho ngân sách swap và cấp vốn wrapped: ${wrappedNativeSymbol}`}
+                  </p>
+                  <p>
+                    {locale === "en"
+                      ? `Sub-wallet gas stays in ${nativeSymbol}. Local wrapping only creates ${wrappedNativeSymbol} when the plan needs it.`
+                      : locale === "zn"
+                        ? `子钱包 gas 保持为 ${nativeSymbol}。只有在流程需要时才会在本地包装成 ${wrappedNativeSymbol}。`
+                        : `Gas của ví con giữ ở dạng ${nativeSymbol}. Chỉ wrap cục bộ sang ${wrappedNativeSymbol} khi kế hoạch thực sự cần.`}
+                  </p>
+                  <p>
+                    {locale === "en"
+                      ? `Primary swap backend: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Fallback order: ${fallbackBackendLabels.join(" -> ")}` : ""}. Swap budget and route protection apply to ${wrappedNativeSymbol}, not ${nativeSymbol}.`
+                      : locale === "zn"
+                        ? `主兑换后端：${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · 回退顺序：${fallbackBackendLabels.join(" -> ")}` : ""}。兑换预算和路由保护针对的是 ${wrappedNativeSymbol}，而不是 ${nativeSymbol}。`
+                        : `Backend swap chính: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Thứ tự dự phòng: ${fallbackBackendLabels.join(" -> ")}` : ""}. Ngân sách swap và bảo vệ tuyến áp dụng cho ${wrappedNativeSymbol}, không phải ${nativeSymbol}.`}
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-2 sm:col-span-2">
@@ -1251,9 +1298,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                       ))}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {form.chain === "bnb"
-                        ? "BNB Chain uses PancakeSwap auto routing. Fee tier stays on auto."
-                        : "Leave this on auto unless you know you want to force a specific V3 pool fee."}
+                      {`Primary routing uses ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` with fallback ${fallbackBackendLabels.join(" -> ")}` : ""}. Leave this on auto unless you know you want to force a specific V3 pool fee.`}
                     </p>
                   </div>
                 </div>
@@ -1366,7 +1411,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Fee tier: {currentOptions?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? (form.chain === "bnb" ? "Auto route" : "Auto best route")}
+              Fee tier: {currentOptions?.fee_tiers.find((option) => option.value === form.fee_tier)?.label ?? currentOptions?.fee_tiers[0]?.label ?? "Auto"}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">

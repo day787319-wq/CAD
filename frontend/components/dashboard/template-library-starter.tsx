@@ -13,6 +13,7 @@ import {
   TemplateOptions,
   formatAmount,
   formatFeeTier,
+  getTemplateChainMeta,
   getStablecoinDistributionRows,
 } from "@/lib/template";
 
@@ -30,9 +31,9 @@ const copy = {
     vn: "Một mẫu tương ứng một hợp đồng / một ví con",
   },
   introBody: {
-    en: "Define the ETH-first funding plan here: gas reserve, direct contract funding, direct main-wallet WETH distributor funding, and stablecoin swap budgets. A main wallet is not needed yet.",
-    zn: "在这里定义以 ETH 为核心的资金计划：Gas 预留、直接合约注资、由主钱包提供的直接 WETH 分发合约资金以及稳定币兑换预算。此阶段还不需要主钱包。",
-    vn: "Xác định kế hoạch cấp vốn ưu tiên ETH tại đây: dự trữ gas, cấp vốn trực tiếp cho hợp đồng, cấp vốn WETH trực tiếp từ ví chính cho hợp đồng phân phối và ngân sách hoán đổi stablecoin. Chưa cần ví chính ở bước này.",
+    en: "Define the native-first funding plan here: gas reserve, direct contract funding, direct main-wallet wrapped-native distributor funding, and token swap budgets. A main wallet is not needed yet.",
+    zn: "在这里定义以原生代币为核心的资金计划：Gas 预留、直接合约注资、由主钱包提供的包装原生代币分发合约资金以及代币兑换预算。此阶段还不需要主钱包。",
+    vn: "Xác định kế hoạch cấp vốn ưu tiên tài sản gốc tại đây: dự trữ gas, cấp vốn trực tiếp cho hợp đồng, cấp wrapped-native trực tiếp từ ví chính cho hợp đồng phân phối và ngân sách hoán đổi token. Chưa cần ví chính ở bước này.",
   },
   loading: { en: "Loading templates...", zn: "正在加载模板...", vn: "Đang tải mẫu..." },
   empty: {
@@ -218,8 +219,10 @@ export function TemplateLibraryStarter() {
               </p>
             </div>
 
-            {visibleTemplates.map((template) => (
-              <div key={template.id} className="rounded-xl border border-border/70 bg-background/75 p-4">
+            {visibleTemplates.map((template) => {
+              const chainMeta = getTemplateChainMeta(template.chain);
+              return (
+                <div key={template.id} className="rounded-xl border border-border/70 bg-background/75 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-foreground">{template.name}</p>
@@ -252,14 +255,14 @@ export function TemplateLibraryStarter() {
                 </div>
 
                 <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  <SummaryPill label={copy.gasReserve[locale]} value={`${formatAmount(template.gas_reserve_eth_per_contract)} ETH`} />
-                  <SummaryPill label={copy.swapBudget[locale]} value={`${formatAmount(template.swap_budget_eth_per_contract)} ETH`} />
-                  <SummaryPill label={copy.contractEth[locale]} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ETH`} />
-                  <SummaryPill label={copy.contractWeth[locale]} value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
+                  <SummaryPill label={copy.gasReserve[locale]} value={`${formatAmount(template.gas_reserve_eth_per_contract)} ${chainMeta.nativeSymbol}`} />
+                  <SummaryPill label={copy.swapBudget[locale]} value={`${formatAmount(template.swap_budget_eth_per_contract)} ${chainMeta.wrappedNativeSymbol}`} />
+                  <SummaryPill label={`Contract ${chainMeta.nativeSymbol}`} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ${chainMeta.nativeSymbol}`} />
+                  <SummaryPill label={`Contract ${chainMeta.wrappedNativeSymbol}`} value={`${formatAmount(template.direct_contract_weth_per_contract)} ${chainMeta.wrappedNativeSymbol}`} />
                 </div>
 
                 <p className="mt-3 text-xs text-muted-foreground">
-                  {`${formatAmount(template.slippage_percent)}% slippage · ${formatFeeTier(template.fee_tier)}`}
+                  {`${formatAmount(template.slippage_percent)}% slippage · ${formatFeeTier(template.fee_tier, template.chain)}`}
                 </p>
 
                 {template.stablecoin_allocations.length > 0 ? (
@@ -267,15 +270,16 @@ export function TemplateLibraryStarter() {
                     {getStablecoinDistributionRows(template).map((allocation) => (
                       <div key={allocation.token_address} className="rounded-xl border border-border/60 bg-secondary/10 px-3 py-2 text-xs text-muted-foreground">
                         <span className="font-medium text-foreground">{allocation.token_symbol}</span>
-                        {` ${formatAmount(allocation.weth_amount_per_contract)} WETH · ${formatAmount(allocation.percent)}%`}
+                        {` ${formatAmount(allocation.weth_amount_per_contract)} ${chainMeta.wrappedNativeSymbol} · ${formatAmount(allocation.percent)}%`}
                       </div>
                     ))}
                   </div>
                 ) : null}
 
                 <TemplateMarketCheckPanel template={template} />
-              </div>
-            ))}
+                </div>
+              );
+            })}
 
             {templates.length > visibleTemplates.length ? (
               <p className="text-xs text-muted-foreground">

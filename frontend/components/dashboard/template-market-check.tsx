@@ -8,9 +8,13 @@ import {
   TEMPLATE_API_URL,
   Template,
   TemplateMarketCheck,
+  getTemplateChainMeta,
   formatAmount,
   formatFeeTier,
+  formatRouteFeeTiers,
+  formatRoutePath,
   formatRelativeTimestamp,
+  formatSwapBackendLabel,
   formatUsd,
   shortAddress,
 } from "@/lib/template";
@@ -66,6 +70,11 @@ function formatTokenAmount(value: string | null | undefined, symbol: string) {
   return `${formatAmount(value)} ${symbol}`;
 }
 
+function toFiniteNumber(value: string | number | null | undefined) {
+  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 export function TemplateMarketCheckPanel({
   template,
   contractCount = 1,
@@ -82,10 +91,10 @@ export function TemplateMarketCheckPanel({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
   const requestIdRef = useRef(0);
-  const chainMeta =
-    template.chain === "bnb"
-      ? { nativeSymbol: "BNB", wrappedNativeSymbol: "WBNB" }
-      : { nativeSymbol: "ETH", wrappedNativeSymbol: "WETH" };
+  const chainMeta = getTemplateChainMeta(template.chain);
+  const fundedQuotes = (marketCheck?.stablecoin_quotes ?? []).filter(
+    (quote) => (toFiniteNumber(quote.per_contract_weth_amount) ?? 0) > 0,
+  );
 
   const normalizedContractCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
 
@@ -265,7 +274,7 @@ export function TemplateMarketCheckPanel({
                 <MetricCard label={`${chainMeta.nativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.eth_usd)} />
                 <MetricCard label={`${chainMeta.wrappedNativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.weth_usd)} />
                 <MetricCard label={locale === "en" ? "Slippage" : locale === "zn" ? "滑点" : "Trượt giá"} value={`${formatAmount(marketCheck.slippage_percent)}%`} />
-                <MetricCard label={locale === "en" ? "Fee tier" : locale === "zn" ? "费率层级" : "Mức phí"} value={formatFeeTier(marketCheck.fee_tier)} />
+                <MetricCard label={locale === "en" ? "Fee tier" : locale === "zn" ? "费率层级" : "Mức phí"} value={formatFeeTier(marketCheck.fee_tier, template.chain)} />
                 <MetricCard label={locale === "en" ? "Checked at" : locale === "zn" ? "检查时间" : "Thời điểm kiểm tra"} value={formatRelativeTimestamp(marketCheck.price_snapshot.fetched_at)} />
               </div>
 
@@ -275,10 +284,10 @@ export function TemplateMarketCheckPanel({
                 </div>
               ) : null}
 
-              {marketCheck.stablecoin_quotes.length > 0 ? (
+              {fundedQuotes.length > 0 ? (
                 <div className="space-y-3">
                   <p className="text-sm font-semibold text-foreground">{copy.stablePricing[locale]}</p>
-                  {marketCheck.stablecoin_quotes.map((quote) => (
+                  {fundedQuotes.map((quote) => (
                     <div key={quote.token_address} className="cad-panel-soft p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -288,12 +297,14 @@ export function TemplateMarketCheckPanel({
                         <p className="text-xs text-muted-foreground">{formatAmount(quote.percent)}%</p>
                       </div>
 
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
                         <MetricCard label={locale === "en" ? `${chainMeta.wrappedNativeSymbol} allocated` : locale === "zn" ? `已分配 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} phân bổ`} value={`${formatAmount(quote.per_contract_weth_amount)} ${chainMeta.wrappedNativeSymbol}`} />
                         <MetricCard label={locale === "en" ? "Token spot" : locale === "zn" ? "代币现价" : "Giá token hiện tại"} value={formatUsd(quote.token_usd)} />
                         <MetricCard label={locale === "en" ? "Est. output" : locale === "zn" ? "预计输出" : "Đầu ra ước tính"} value={quote.per_contract_output ? `${formatAmount(quote.per_contract_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_output_usd)} />
                         <MetricCard label={locale === "en" ? "Minimum received" : locale === "zn" ? "最低接收量" : "Nhận tối thiểu"} value={quote.per_contract_min_output ? `${formatAmount(quote.per_contract_min_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_min_output_usd)} />
-                        <MetricCard label={locale === "en" ? "Route fee" : locale === "zn" ? "路由费用" : "Phí tuyến"} value={formatFeeTier(quote.quote.fee_tier)} />
+                        <MetricCard label={locale === "en" ? "Backend" : locale === "zn" ? "路由后端" : "Backend"} value={formatSwapBackendLabel(quote.quote.backend)} />
+                        <MetricCard label={locale === "en" ? "Route fee" : locale === "zn" ? "路由费用" : "Phí tuyến"} value={formatRouteFeeTiers(quote.quote.fee_tier, quote.quote.path_fee_tiers, quote.quote.backend, template.chain)} />
+                        <MetricCard label={locale === "en" ? "Route path" : locale === "zn" ? "路由路径" : "Đường đi"} value={formatRoutePath(quote.quote.path_symbols, quote.quote.token_in, quote.quote.token_out)} />
                         <MetricCard label={locale === "en" ? "Swap value" : locale === "zn" ? "兑换价值" : "Giá trị swap"} value={formatUsd(quote.per_contract_weth_usd)} hint={`${formatAmount(quote.quote.slippage_percent ?? marketCheck.slippage_percent)}% ${locale === "en" ? "slippage" : locale === "zn" ? "滑点" : "trượt giá"}`} />
                       </div>
 

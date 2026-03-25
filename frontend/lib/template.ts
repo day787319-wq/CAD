@@ -34,7 +34,78 @@ export type StablecoinAllocation = {
   weth_amount_per_contract?: string | null;
 };
 
-export type TemplateChain = "ethereum_mainnet" | "bnb";
+export type TemplateChain =
+  | "ethereum_mainnet"
+  | "bnb"
+  | "arbitrum"
+  | "avalanche"
+  | "base"
+  | "optimism"
+  | "polygon"
+  | "xlayer";
+
+export const TEMPLATE_CHAIN_META: Record<
+  TemplateChain,
+  {
+    label: string;
+    nativeSymbol: string;
+    wrappedNativeSymbol: string;
+    quoteSupported: boolean;
+  }
+> = {
+  ethereum_mainnet: {
+    label: "Ethereum Mainnet",
+    nativeSymbol: "ETH",
+    wrappedNativeSymbol: "WETH",
+    quoteSupported: true,
+  },
+  bnb: {
+    label: "BNB Chain",
+    nativeSymbol: "BNB",
+    wrappedNativeSymbol: "WBNB",
+    quoteSupported: true,
+  },
+  arbitrum: {
+    label: "Arbitrum",
+    nativeSymbol: "ETH",
+    wrappedNativeSymbol: "WETH",
+    quoteSupported: true,
+  },
+  avalanche: {
+    label: "Avalanche",
+    nativeSymbol: "AVAX",
+    wrappedNativeSymbol: "WAVAX",
+    quoteSupported: true,
+  },
+  base: {
+    label: "Base",
+    nativeSymbol: "ETH",
+    wrappedNativeSymbol: "WETH",
+    quoteSupported: true,
+  },
+  optimism: {
+    label: "Optimism",
+    nativeSymbol: "ETH",
+    wrappedNativeSymbol: "WETH",
+    quoteSupported: true,
+  },
+  polygon: {
+    label: "Polygon",
+    nativeSymbol: "POL",
+    wrappedNativeSymbol: "WPOL",
+    quoteSupported: true,
+  },
+  xlayer: {
+    label: "X Layer",
+    nativeSymbol: "OKB",
+    wrappedNativeSymbol: "WOKB",
+    quoteSupported: true,
+  },
+};
+
+export function getTemplateChainMeta(chain: TemplateChain) {
+  return TEMPLATE_CHAIN_META[chain] ?? TEMPLATE_CHAIN_META.ethereum_mainnet;
+}
 
 export type Template = {
   id: string;
@@ -70,11 +141,19 @@ export type TemplateOptions = {
     native_symbol: string;
     wrapped_native_symbol: string;
     quote_supported: boolean;
+    primary_swap_backend?: string | null;
+    primary_swap_backend_label?: string | null;
+    fallback_swap_backends?: string[];
+    fallback_swap_backend_labels?: string[];
   }>;
   selected_chain: TemplateChain;
   native_symbol: string;
   wrapped_native_symbol: string;
   quote_supported: boolean;
+  primary_swap_backend?: string | null;
+  primary_swap_backend_label?: string | null;
+  fallback_swap_backends?: string[];
+  fallback_swap_backend_labels?: string[];
   stablecoins: StablecoinOption[];
   distribution_modes: Array<{
     value: Template["stablecoin_distribution_mode"];
@@ -354,7 +433,12 @@ export type TemplateStablecoinQuote = {
     amount_in?: string;
     amount_out?: string;
     min_amount_out?: string;
+    backend?: string | null;
     fee_tier?: number | null;
+    route_type?: string | null;
+    path_symbols?: string[];
+    path_addresses?: string[];
+    path_fee_tiers?: number[];
     source?: string;
     slippage_percent?: string;
     error?: string | null;
@@ -444,14 +528,52 @@ export function formatRelativeTimestamp(value: string | null | undefined) {
   return `${formatted} ${DASHBOARD_TIME_ZONE_LABEL}`;
 }
 
-export function formatFeeTier(value: number | null | undefined) {
+export function formatFeeTier(value: number | null | undefined, chain?: TemplateChain) {
+  const chainMeta = chain ? getTemplateChainMeta(chain) : null;
   if (value === null || value === undefined) {
+    if (chainMeta && !chainMeta.quoteSupported) {
+      return translateText(getRuntimeLocale(), "Auto best route");
+    }
     return translateText(getRuntimeLocale(), "Auto best route");
   }
   if (value === 500) return "0.05%";
   if (value === 3000) return "0.30%";
   if (value === 10000) return "1.00%";
   return `${value}`;
+}
+
+export function formatSwapBackendLabel(value: string | null | undefined) {
+  if (!value) return translateText(getRuntimeLocale(), "Direct transfer");
+  if (value === "uniswap_v3") return "Uniswap V3";
+  if (value === "pancakeswap_v2") return "PancakeSwap V2";
+  return value;
+}
+
+export function formatRouteFeeTiers(
+  feeTier: number | null | undefined,
+  pathFeeTiers?: number[] | null,
+  backend?: string | null,
+  chain?: TemplateChain,
+) {
+  if (pathFeeTiers && pathFeeTiers.length > 0) {
+    return pathFeeTiers.map((value) => formatFeeTier(value, chain)).join(" -> ");
+  }
+  if (backend === "pancakeswap_v2") {
+    return translateText(getRuntimeLocale(), "Pool auto selected");
+  }
+  return formatFeeTier(feeTier, chain);
+}
+
+export function formatRoutePath(
+  pathSymbols?: string[] | null,
+  tokenIn?: string | null,
+  tokenOut?: string | null,
+) {
+  const symbols = (pathSymbols ?? []).filter(Boolean);
+  if (symbols.length > 0) return symbols.join(" -> ");
+  if (tokenIn && tokenOut) return `${tokenIn} -> ${tokenOut}`;
+  if (tokenOut) return tokenOut;
+  return translateText(getRuntimeLocale(), "Unavailable");
 }
 
 export function shortAddress(value: string) {
@@ -578,8 +700,9 @@ export function buildTemplateWalletSupportPreview(input: {
   contractCount: number;
 }): TemplateWalletSupportPreview {
   const { template, wallet, contractCount } = input;
-  const nativeSymbol = template.chain === "bnb" ? "BNB" : "ETH";
-  const wrappedNativeSymbol = template.chain === "bnb" ? "WBNB" : "WETH";
+  const chainMeta = getTemplateChainMeta(template.chain);
+  const nativeSymbol = chainMeta.nativeSymbol;
+  const wrappedNativeSymbol = chainMeta.wrappedNativeSymbol;
 
   const gasReserve = toFiniteNumber(template.gas_reserve_eth_per_contract) ?? 0;
   const swapBudget = toFiniteNumber(template.swap_budget_eth_per_contract) ?? 0;
