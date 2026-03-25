@@ -48,9 +48,7 @@ CHAIN_TRUSTWALLET_SLUG = {
     TEMPLATE_CHAIN_ETHEREUM: "ethereum",
     TEMPLATE_CHAIN_BNB: "smartchain",
 }
-WALLET_SUMMARY_TOKEN_SYMBOLS = {
-    TEMPLATE_CHAIN_ETHEREUM: ["BNB"],
-}
+WALLET_SUMMARY_TOKEN_SYMBOLS = {}
 WETH_ABI = [
     {
         "constant": True,
@@ -255,8 +253,12 @@ TOKEN_CONFIG = {
         'logo_url': 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x6B175474E89094C44Da98b954EedeAC495271d0F/logo.png',
     },
 }
+NON_STANDARD_ERC20_TRANSFER_RETURN_TOKENS = {
+    TOKEN_CONFIG["USDT"]["address"].lower(),
+}
 ETH_DECIMALS = Decimal("1000000000000000000")
 ETH_TRANSFER_GAS_LIMIT = 21_000
+CONTRACT_NATIVE_ETH_TRANSFER_GAS_LIMIT = 50_000
 ERC20_APPROVE_GAS_LIMIT = 70_000
 WETH_TRANSFER_GAS_LIMIT = 90_000
 ERC20_TRANSFER_GAS_LIMIT = 90_000
@@ -1321,6 +1323,15 @@ def execute_managed_token_distributor_from_wallet(
     try:
         estimated_gas = contract.functions.execute().estimate_gas({"from": owner})
     except Exception:
+        try:
+            contract.functions.execute().call({"from": owner})
+        except Exception as call_exc:
+            raise WalletTransactionError(
+                str(call_exc),
+                nonce=nonce,
+                gas_price_wei=execution_gas_price_wei,
+                retryable=False,
+            ) from call_exc
         estimated_gas = gas_limit
 
     tx = contract.functions.execute().build_transaction(
@@ -1924,11 +1935,19 @@ def transfer_native_eth_from_wallet(
     recipient = Web3.to_checksum_address(recipient_address)
     transfer_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
     recipient_balance_before_wei = int(web3_client.eth.get_balance(recipient))
+    try:
+        estimated_gas = web3_client.eth.estimate_gas({
+            "from": owner,
+            "to": recipient,
+            "value": amount_wei,
+        })
+    except Exception:
+        estimated_gas = gas_limit
     tx = build_transaction_envelope(
         web3_client,
         owner,
         nonce,
-        gas=gas_limit,
+        gas=max(int(estimated_gas), gas_limit),
         gas_price_wei=transfer_gas_price_wei,
         value=amount_wei,
         to=recipient,
@@ -2701,6 +2720,13 @@ def execute_wallet_run(
     if not template:
         raise ValueError("Template not found")
     ensure_supported_template_chain(template)
+    template_chain = normalize_template_chain(template.get("chain"))
+    chain_config = get_template_chain_config(template_chain)
+    swap_runtime = get_swap_runtime_config(template_chain)
+    native_symbol = chain_config["native_symbol"]
+    wrapped_native_symbol = chain_config["wrapped_native_symbol"]
+    wrapped_native_address = Web3.to_checksum_address(chain_config["wrapped_native_address"])
+    swap_router_address = swap_runtime["router_address"]
 
     preview = preview_template(main_id, template_id, count)
     if not preview.get("can_proceed"):
@@ -2708,6 +2734,10 @@ def execute_wallet_run(
 
     per_wallet_eth = parse_decimal_amount(preview["per_contract"]["required_eth"], "required_eth")
     per_wallet_wrap_weth = parse_decimal_amount(preview["per_contract"]["required_weth"], "required_weth")
+    main_wallet_weth_wrapped = parse_decimal_amount(
+        preview["funding"].get("main_wallet_weth_wrapped", "0"),
+        "main_wallet_weth_wrapped",
+    )
     total_eth_deducted = parse_decimal_amount(preview["funding"]["total_eth_deducted"], "total_eth_deducted")
     main_wallet_network_fee_eth = parse_decimal_amount(
         preview["execution"].get("main_wallet_network_fee_eth", preview["execution"]["funding_network_fee_eth"]),
@@ -2728,10 +2758,6 @@ def execute_wallet_run(
     gas_reserve_per_wallet = parse_decimal_amount(
         template.get("gas_reserve_eth_per_contract", "0"),
         "gas_reserve_eth_per_contract",
-    )
-    direct_eth_per_wallet = parse_decimal_amount(
-        template.get("direct_contract_eth_per_contract", "0"),
-        "direct_contract_eth_per_contract",
     )
     direct_contract_native_eth_per_wallet = parse_decimal_amount(
         template.get("direct_contract_native_eth_per_contract", "0"),
@@ -2792,7 +2818,7 @@ def execute_wallet_run(
         )
     else:
         deployment_disabled_message = (
-            "ManagedTokenDistributor auto deployment will run after each sub-wallet finishes any local wrap and configured swaps."
+            "ManagedTokenDistributor auto deployment will run after each sub-wallet finishes any local wrap and configured swaps, then apply any direct ETH/WETH funding from the main wallet."
         )
 
     def build_deployment_record(*, item: dict, target: dict):
@@ -2829,11 +2855,18 @@ def execute_wallet_run(
             "execution_tx_hash": None,
             "source": target["source"],
             "source_tx_hash": target["source_tx_hash"],
+            "funding_wallet_kind": target.get("funding_wallet_kind") or "subwallet",
             "error": None,
         }
 
-    def build_planned_target_gas_units(*, funding_asset_kind: str) -> int:
-        funding_gas_units = ETH_TRANSFER_GAS_LIMIT if funding_asset_kind == "native_eth" else ERC20_TRANSFER_GAS_LIMIT
+    def build_planned_target_gas_units(*, funding_asset_kind: str, funding_wallet_kind: str = "subwallet") -> int:
+        funding_gas_units = 0
+        if funding_wallet_kind != "main_wallet":
+            funding_gas_units = (
+                CONTRACT_NATIVE_ETH_TRANSFER_GAS_LIMIT
+                if funding_asset_kind == "native_eth"
+                else ERC20_TRANSFER_GAS_LIMIT
+            )
         return (
             MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT
             + funding_gas_units
@@ -2880,7 +2913,9 @@ def execute_wallet_run(
     web3_client = get_web3(template_chain)
     sender = None
     sender_private_key = None
-    if needs_onchain_funding or auto_top_up_enabled:
+    main_wallet_nonce = None
+    main_wallet_direct_weth_source_tx_hash = None
+    if needs_onchain_funding or auto_top_up_enabled or should_execute_deployment_flow:
         sender = Web3.to_checksum_address(main_wallet["address"])
         sender_private_key = main_wallet["private_key"]
     funding_fee_estimate = {
@@ -2888,6 +2923,7 @@ def execute_wallet_run(
         "funding_fee_eth": preview["execution"].get("funding_network_fee_eth"),
         "top_up_fee_eth": preview["execution"].get("top_up_network_fee_eth"),
         "main_wallet_fee_eth": preview["execution"].get("main_wallet_network_fee_eth"),
+        "main_wallet_wrap_transaction_count": preview["execution"].get("main_wallet_wrap_transaction_count"),
         "local_execution_gas_fee_eth": preview["execution"].get("local_execution_gas_fee_eth"),
         "contract_sync_fee_eth": preview["execution"].get("contract_sync_network_fee_eth"),
         "projected_auto_top_up_eth": preview["funding"].get("auto_top_up_eth_reserved"),
@@ -3342,10 +3378,10 @@ def execute_wallet_run(
             "subwallet_count": count,
             "return_wallet_address": return_wallet_address,
             "gas_reserve_eth_per_wallet": format_decimal(gas_reserve_per_wallet),
-            "direct_eth_per_wallet": format_decimal(direct_eth_per_wallet),
             "direct_contract_native_eth_per_wallet": format_decimal(direct_contract_native_eth_per_wallet),
             "per_wallet_eth": format_decimal(per_wallet_eth),
             "per_wallet_local_wrap_weth": format_decimal(per_wallet_wrap_weth),
+            "main_wallet_weth_wrapped": format_decimal(main_wallet_weth_wrapped),
             "swap_budget_weth_per_wallet": format_decimal(swap_budget_per_wallet),
             "direct_contract_weth_per_wallet": format_decimal(distributor_amount),
             "test_auto_execute_after_funding": test_auto_execute_after_funding,
@@ -3390,8 +3426,10 @@ def execute_wallet_run(
                 "initial_funding_eth": format_decimal(total_eth_deducted),
                 "projected_auto_top_up_eth": format_decimal(projected_auto_top_up_eth_total),
                 "local_wrap_weth_total": format_decimal(per_wallet_wrap_weth * Decimal(count)),
+                "main_wallet_weth_wrapped": format_decimal(main_wallet_weth_wrapped),
                 "local_execution_gas_fee_eth": format_decimal(local_execution_gas_fee_eth),
                 "funding_transaction_count": preview["execution"].get("funding_transaction_count"),
+                "main_wallet_wrap_transaction_count": preview["execution"].get("main_wallet_wrap_transaction_count"),
                 "top_up_transaction_count": preview["execution"].get("top_up_transaction_count"),
             },
         )
@@ -3459,14 +3497,14 @@ def execute_wallet_run(
     if needs_onchain_funding:
         sender = Web3.to_checksum_address(main_wallet["address"])
         sender_private_key = main_wallet["private_key"]
-        nonce = web3_client.eth.get_transaction_count(sender, "pending")
+        main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
 
         record_run_log(
             stage="funding",
             event="funding_submission_started",
             status="started",
             message=f"Submitting {native_symbol} funding transfers from the main wallet.",
-            details={"starting_nonce": nonce},
+            details={"starting_nonce": main_wallet_nonce},
         )
 
         try:
@@ -3480,7 +3518,7 @@ def execute_wallet_run(
                     **build_transaction_envelope(
                         web3_client,
                         sender,
-                        nonce,
+                        main_wallet_nonce,
                         gas=ETH_TRANSFER_GAS_LIMIT,
                         value=decimal_to_wei(per_wallet_eth),
                     ),
@@ -3510,7 +3548,7 @@ def execute_wallet_run(
                     },
                 )
                 funding_submitted_transaction_count += 1
-                nonce += 1
+                main_wallet_nonce += 1
         except Exception as exc:
             error_message = str(exc)
             record_run_log(
@@ -3526,6 +3564,189 @@ def execute_wallet_run(
         else:
             status = "submitted" if funding_submitted_transaction_count > 0 else "created"
 
+    if not error_message and should_execute_deployment_flow and main_wallet_weth_wrapped > 0:
+        if sender is None or sender_private_key is None:
+            sender = Web3.to_checksum_address(main_wallet["address"])
+            sender_private_key = main_wallet["private_key"]
+        if main_wallet_nonce is None:
+            main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
+
+        wrap_amount_wei = decimal_to_wei(main_wallet_weth_wrapped)
+        wrap_receipt = None
+        wrap_gas_price_wei = int(web3_client.eth.gas_price)
+        main_wallet_weth_contract = web3_client.eth.contract(
+            address=wrapped_native_address,
+            abi=WETH_ABI,
+        )
+        balance_before_wrap_units = int(main_wallet_weth_contract.functions.balanceOf(sender).call())
+        last_wrap_error: WalletTransactionError | None = None
+        wrap_attempt_used = 0
+
+        try:
+            for wrap_attempt in range(1, WETH_WRAP_MAX_ATTEMPTS + 1):
+                wrap_attempt_used = wrap_attempt
+                if wrap_attempt == 1:
+                    record_run_log(
+                        stage="wrapping",
+                        event="main_wallet_eth_wrap_started",
+                        status="started",
+                        message=f"Starting main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                        details={
+                            "amount": format_decimal(main_wallet_weth_wrapped),
+                            "attempt": wrap_attempt,
+                            "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
+                        },
+                    )
+                else:
+                    record_run_log(
+                        stage="wrapping",
+                        event="main_wallet_eth_wrap_retry_started",
+                        status="started",
+                        message=(
+                            f"Retrying main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding "
+                            f"(attempt {wrap_attempt}/{WETH_WRAP_MAX_ATTEMPTS})."
+                        ),
+                        tx_hash=last_wrap_error.tx_hash if last_wrap_error else None,
+                        details={
+                            "amount": format_decimal(main_wallet_weth_wrapped),
+                            "attempt": wrap_attempt,
+                            "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
+                            "gas_price_wei": wrap_gas_price_wei,
+                            "previous_error": str(last_wrap_error) if last_wrap_error else None,
+                        },
+                    )
+
+                try:
+                    wrap_receipt = wrap_eth_to_weth_from_wallet(
+                        web3_client,
+                        wallet_address=main_wallet["address"],
+                        private_key=main_wallet["private_key"],
+                        wrapped_native_address=wrapped_native_address,
+                        amount_wei=wrap_amount_wei,
+                        nonce=main_wallet_nonce,
+                        gas_price_wei=wrap_gas_price_wei,
+                    )
+                    record_run_log(
+                        stage="wrapping",
+                        event="main_wallet_eth_wrap_submitted",
+                        status="submitted",
+                        message=f"Submitted main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                        tx_hash=wrap_receipt["tx_hash"],
+                        movement={
+                            "action": "wrap",
+                            "asset": native_symbol,
+                            "amount": format_decimal(main_wallet_weth_wrapped),
+                            "from_address": main_wallet["address"],
+                            "to_address": wrapped_native_address,
+                        },
+                    )
+                    break
+                except WalletTransactionError as exc:
+                    last_wrap_error = exc
+                    if exc.tx_hash:
+                        record_run_log(
+                            stage="wrapping",
+                            event="main_wallet_eth_wrap_submitted",
+                            status="submitted",
+                            message=f"Submitted main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                            tx_hash=exc.tx_hash,
+                            movement={
+                                "action": "wrap",
+                                "asset": native_symbol,
+                                "amount": format_decimal(main_wallet_weth_wrapped),
+                                "from_address": main_wallet["address"],
+                                "to_address": wrapped_native_address,
+                            },
+                        )
+                    if exc.retryable:
+                        wrap_receipt = recover_weth_wrap_after_timeout(
+                            web3_client,
+                            wallet_address=main_wallet["address"],
+                            wrapped_native_address=wrapped_native_address,
+                            amount_wei=wrap_amount_wei,
+                            balance_before_units=balance_before_wrap_units,
+                            tx_hash=exc.tx_hash,
+                            nonce=main_wallet_nonce,
+                            gas_price_wei=exc.gas_price_wei,
+                        )
+                        if wrap_receipt:
+                            record_run_log(
+                                stage="wrapping",
+                                event="main_wallet_eth_wrap_recovered_after_timeout",
+                                status="confirmed",
+                                message=(
+                                    f"Main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding "
+                                    "was recovered after the receipt timeout."
+                                ),
+                                tx_hash=exc.tx_hash,
+                                details={
+                                    "attempt": wrap_attempt,
+                                    "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
+                                    "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                                },
+                            )
+                            break
+
+                        if wrap_attempt < WETH_WRAP_MAX_ATTEMPTS:
+                            wrap_gas_price_wei = get_bumped_gas_price_wei(
+                                web3_client,
+                                exc.gas_price_wei,
+                                multiplier=WETH_WRAP_GAS_PRICE_BUMP_MULTIPLIER,
+                            )
+                            record_run_log(
+                                stage="wrapping",
+                                event="main_wallet_eth_wrap_retry_scheduled",
+                                status="started",
+                                message=(
+                                    f"Main-wallet wrap attempt {wrap_attempt}/{WETH_WRAP_MAX_ATTEMPTS} timed out. "
+                                    "Retrying with a higher gas price."
+                                ),
+                                tx_hash=exc.tx_hash,
+                                details={
+                                    "attempt": wrap_attempt,
+                                    "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
+                                    "replacement_nonce": main_wallet_nonce,
+                                    "next_gas_price_wei": wrap_gas_price_wei,
+                                },
+                            )
+                            continue
+                    raise
+
+            if not wrap_receipt:
+                raise last_wrap_error or RuntimeError("Main-wallet WETH wrap did not produce a confirmation")
+
+            main_wallet_direct_weth_source_tx_hash = wrap_receipt["tx_hash"]
+            main_wallet_nonce += 1
+            record_run_log(
+                stage="wrapping",
+                event="main_wallet_eth_wrap_confirmed",
+                status="confirmed",
+                message=f"Confirmed main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                tx_hash=wrap_receipt["tx_hash"],
+                movement={
+                    "action": "wrap",
+                    "asset": native_symbol,
+                    "amount": format_decimal(main_wallet_weth_wrapped),
+                    "from_address": main_wallet["address"],
+                    "to_address": wrapped_native_address,
+                },
+                details={
+                    "attempts": wrap_attempt_used,
+                    "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                },
+            )
+        except Exception as exc:
+            error_message = str(exc)
+            status = "partial" if funding_submitted_transaction_count > 0 else "failed"
+            record_run_log(
+                stage="wrapping",
+                event="main_wallet_eth_wrap_failed",
+                status="failed",
+                message=f"Main-wallet {wrapped_native_symbol} funding wrap failed: {error_message}",
+                tx_hash=last_wrap_error.tx_hash if last_wrap_error else None,
+                details={"amount": format_decimal(main_wallet_weth_wrapped)},
+            )
+
     distributor_interface = get_managed_token_distributor_interface() if should_execute_deployment_flow else None
 
     if not error_message:
@@ -3534,7 +3755,7 @@ def execute_wallet_run(
                 stage="deployment",
                 event="managed_token_distributor_prepared",
                 status="ready",
-                message="Preparing the local wrap, approve, swap, deployment, and distributor funding flow.",
+                message="Preparing the local wrap, approve, swap, deployment, and main-wallet distributor funding flow.",
                 details={
                     "recipient_address": recipient_address,
                     "return_wallet_address": return_wallet_address or "subwallet_self",
@@ -3542,6 +3763,7 @@ def execute_wallet_run(
                     "stablecoin_route_count": len(stablecoin_routes),
                     "direct_contract_native_eth_per_contract": format_decimal(direct_contract_native_eth_per_wallet),
                     "direct_weth_per_contract": format_decimal(distributor_amount),
+                    "main_wallet_weth_wrapped": format_decimal(main_wallet_weth_wrapped),
                 },
             )
         else:
@@ -3561,8 +3783,22 @@ def execute_wallet_run(
         planned_route_count = len(stablecoin_routes)
         planned_route_deployment_gas_units = planned_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
         planned_direct_target_gas_units = (
-            (build_planned_target_gas_units(funding_asset_kind="erc20") if distributor_amount > 0 and recipient_address else 0)
-            + (build_planned_target_gas_units(funding_asset_kind="native_eth") if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
+            (
+                build_planned_target_gas_units(
+                    funding_asset_kind="erc20",
+                    funding_wallet_kind="main_wallet",
+                )
+                if distributor_amount > 0 and recipient_address
+                else 0
+            )
+            + (
+                build_planned_target_gas_units(
+                    funding_asset_kind="native_eth",
+                    funding_wallet_kind="main_wallet",
+                )
+                if direct_contract_native_eth_per_wallet > 0 and recipient_address
+                else 0
+            )
         )
 
         for item in run_sub_wallets:
@@ -3798,10 +4034,7 @@ def execute_wallet_run(
                     + return_sweep_gas_units_per_wallet
                 )
                 if planned_remaining_execution_gas_units > 0:
-                    minimum_post_wrap_balance_eth = (
-                        estimate_gas_fee_eth(planned_remaining_execution_gas_units)
-                        + direct_contract_native_eth_per_wallet
-                    )
+                    minimum_post_wrap_balance_eth = estimate_gas_fee_eth(planned_remaining_execution_gas_units)
                     balance_ready, balance_error = ensure_subwallet_eth_headroom(
                         item,
                         reason="continue through approvals, swaps, and distributor deployment",
@@ -4023,15 +4256,29 @@ def execute_wallet_run(
                         remaining_route_count = planned_route_count - route_index
                         remaining_route_deployment_gas_units = remaining_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
                         remaining_direct_target_gas_units = (
-                            (build_planned_target_gas_units(funding_asset_kind="erc20") if distributor_amount > 0 and recipient_address else 0)
-                            + (build_planned_target_gas_units(funding_asset_kind="native_eth") if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
+                            (
+                                build_planned_target_gas_units(
+                                    funding_asset_kind="erc20",
+                                    funding_wallet_kind="main_wallet",
+                                )
+                                if distributor_amount > 0 and recipient_address
+                                else 0
+                            )
+                            + (
+                                build_planned_target_gas_units(
+                                    funding_asset_kind="native_eth",
+                                    funding_wallet_kind="main_wallet",
+                                )
+                                if direct_contract_native_eth_per_wallet > 0 and recipient_address
+                                else 0
+                            )
                         )
                         minimum_swap_stage_balance_eth = estimate_gas_fee_eth(
                             (remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
                             + remaining_route_deployment_gas_units
                             + remaining_direct_target_gas_units
                             + return_sweep_gas_units_per_wallet
-                        ) + direct_contract_native_eth_per_wallet
+                        )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
                             item,
                             reason=f"swap into {token_out['symbol']} and finish the remaining automation",
@@ -4278,19 +4525,20 @@ def execute_wallet_run(
                     deployment_targets.append(
                         {
                             "source": "direct_weth",
-                            "source_tx_hash": item["wrap_transaction"]["tx_hash"] if item["wrap_transaction"] else None,
+                            "source_tx_hash": main_wallet_direct_weth_source_tx_hash,
                             "amount_in": format_decimal(distributor_amount),
                             "token": resolve_token(wrapped_native_address, template_chain),
                             "amount": distributor_amount,
                             "amount_units": decimal_to_wei(distributor_amount),
                             "funding_asset_kind": "erc20",
+                            "funding_wallet_kind": "main_wallet",
                         }
                     )
                 if direct_contract_native_eth_per_wallet > 0 and recipient_address and not abort_wallet_execution:
                     deployment_targets.append(
                         {
                             "source": "direct_native_eth",
-                            "source_tx_hash": item["funding_transactions"].get("eth", {}).get("tx_hash"),
+                            "source_tx_hash": None,
                             "amount_in": format_decimal(direct_contract_native_eth_per_wallet),
                             "token": {
                                 "symbol": native_symbol,
@@ -4301,6 +4549,7 @@ def execute_wallet_run(
                             "amount": direct_contract_native_eth_per_wallet,
                             "amount_units": decimal_to_wei(direct_contract_native_eth_per_wallet),
                             "funding_asset_kind": "native_eth",
+                            "funding_wallet_kind": "main_wallet",
                         }
                     )
 
@@ -4320,13 +4569,17 @@ def execute_wallet_run(
                         remaining_target_gas_units = sum(
                             build_planned_target_gas_units(
                                 funding_asset_kind=(remaining_target.get("funding_asset_kind") or "erc20"),
+                                funding_wallet_kind=(remaining_target.get("funding_wallet_kind") or "subwallet"),
                             )
                             for remaining_target in deployment_targets[deployment_index:]
                         )
                         remaining_native_eth_to_fund = sum(
                             remaining_target["amount"]
                             for remaining_target in deployment_targets[deployment_index:]
-                            if (remaining_target.get("funding_asset_kind") or "erc20") == "native_eth"
+                            if (
+                                (remaining_target.get("funding_asset_kind") or "erc20") == "native_eth"
+                                and (remaining_target.get("funding_wallet_kind") or "subwallet") != "main_wallet"
+                            )
                         )
                         minimum_deployment_balance_eth = (
                             estimate_gas_fee_eth(remaining_target_gas_units + return_sweep_gas_units_per_wallet)
@@ -4484,8 +4737,18 @@ def execute_wallet_run(
                             },
                         )
 
+                        funding_from_main_wallet = (target.get("funding_wallet_kind") or "subwallet") == "main_wallet"
+                        funding_wallet_address = main_wallet["address"] if funding_from_main_wallet else sub_wallet["address"]
+                        funding_private_key = main_wallet["private_key"] if funding_from_main_wallet else sub_wallet["private_key"]
                         funding_receipt = None
-                        funding_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
+                        if funding_from_main_wallet:
+                            if sender is None:
+                                sender = Web3.to_checksum_address(main_wallet["address"])
+                            if main_wallet_nonce is None:
+                                main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
+                            funding_nonce = main_wallet_nonce
+                        else:
+                            funding_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
                         funding_gas_price_wei = int(web3_client.eth.gas_price)
                         last_funding_error: WalletTransactionError | None = None
                         funding_attempt_used = 0
@@ -4496,8 +4759,8 @@ def execute_wallet_run(
                                 if (target.get("funding_asset_kind") or "erc20") == "native_eth":
                                     funding_receipt = transfer_native_eth_from_wallet(
                                         web3_client,
-                                        wallet_address=sub_wallet["address"],
-                                        private_key=sub_wallet["private_key"],
+                                        wallet_address=funding_wallet_address,
+                                        private_key=funding_private_key,
                                         recipient_address=deployed["contract_address"],
                                         amount_wei=int(target["amount_units"]),
                                         nonce=funding_nonce,
@@ -4508,8 +4771,8 @@ def execute_wallet_run(
                                         web3_client,
                                         token_address=target["token"]["address"],
                                         chain=template_chain,
-                                        wallet_address=sub_wallet["address"],
-                                        private_key=sub_wallet["private_key"],
+                                        wallet_address=funding_wallet_address,
+                                        private_key=funding_private_key,
                                         recipient_address=deployed["contract_address"],
                                         amount_units=int(target["amount_units"]),
                                         nonce=funding_nonce,
@@ -4547,8 +4810,8 @@ def execute_wallet_run(
                                             event="managed_token_distributor_funding_recovered_after_timeout",
                                             status="confirmed",
                                             message=(
-                                                f"Funding transfer for {target['token']['symbol']} on subwallet {item['address']} "
-                                                f"was recovered after the receipt timeout."
+                                                f"Funding transfer for {target['token']['symbol']} into the distributor on subwallet "
+                                                f"{item['address']} was recovered after the receipt timeout."
                                             ),
                                             tx_hash=exc.tx_hash,
                                             wallet_id=item["wallet_id"],
@@ -4573,7 +4836,7 @@ def execute_wallet_run(
                                             status="started",
                                             message=(
                                                 f"Funding transfer attempt {funding_attempt}/{TOKEN_TRANSFER_MAX_ATTEMPTS} "
-                                                f"for {target['token']['symbol']} timed out on subwallet {item['address']}. "
+                                                f"for {target['token']['symbol']} into the distributor on subwallet {item['address']} timed out. "
                                                 f"Retrying with a higher gas price."
                                             ),
                                             tx_hash=exc.tx_hash,
@@ -4592,6 +4855,8 @@ def execute_wallet_run(
 
                         if not funding_receipt:
                             raise last_funding_error or RuntimeError("ManagedTokenDistributor funding transfer did not produce a confirmation")
+                        if funding_from_main_wallet:
+                            main_wallet_nonce = funding_nonce + 1
 
                         deployment_info["funding_tx_hash"] = funding_receipt["tx_hash"]
                         deployment_info["funding_status"] = funding_receipt["status"]
@@ -4617,13 +4882,14 @@ def execute_wallet_run(
                                 "action": "transfer",
                                 "asset": target["token"]["symbol"],
                                 "amount": format_decimal(target["amount"]),
-                                "from_address": item["address"],
+                                "from_address": funding_wallet_address,
                                 "to_address": deployed["contract_address"],
                             },
                             details={
                                 "contract_address": deployed["contract_address"],
                                 "source": target["source"],
                                 "funding_asset_kind": target.get("funding_asset_kind") or "erc20",
+                                "funding_wallet_kind": target.get("funding_wallet_kind") or "subwallet",
                             },
                         )
                         record_run_log(
@@ -4643,12 +4909,43 @@ def execute_wallet_run(
                         )
 
                         if test_auto_execute_after_funding:
+                            if target["token"]["address"].lower() in NON_STANDARD_ERC20_TRANSFER_RETURN_TOKENS:
+                                deployment_info["execution_status"] = "skipped"
+                                deployment_info["execution_message"] = (
+                                    f"Testing mode execute() is skipped for {target['token']['symbol']} because the current "
+                                    "ManagedTokenDistributor artifact does not yet support this token's non-standard "
+                                    "ERC20 transfer return behavior."
+                                )
+                                record_run_log(
+                                    stage="distribution",
+                                    event="managed_token_distributor_execute_skipped_nonstandard_token",
+                                    status="skipped",
+                                    message=(
+                                        f"Skipped testing execute() for {target['token']['symbol']} on subwallet {item['address']} "
+                                        "because this token uses a non-standard ERC20 transfer return format."
+                                    ),
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    details={
+                                        "contract_address": deployed["contract_address"],
+                                        "recipient_address": recipient_address,
+                                        "return_wallet_address": return_wallet_address,
+                                    },
+                                )
+                                continue
+
                             execute_attempt_used = 0
                             try:
-                                remaining_future_target_count = len(deployment_targets) - deployment_index - 1
+                                remaining_future_target_gas_units = sum(
+                                    build_planned_target_gas_units(
+                                        funding_asset_kind=(remaining_target.get("funding_asset_kind") or "erc20"),
+                                        funding_wallet_kind=(remaining_target.get("funding_wallet_kind") or "subwallet"),
+                                    )
+                                    for remaining_target in deployment_targets[deployment_index + 1 :]
+                                )
                                 minimum_execute_balance_eth = estimate_gas_fee_eth(
                                     MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT
-                                    + (remaining_future_target_count * per_deployment_target_gas_units)
+                                    + remaining_future_target_gas_units
                                     + return_sweep_gas_units_per_wallet
                                 )
                                 balance_ready, balance_error = ensure_subwallet_eth_headroom(
@@ -5145,6 +5442,18 @@ def list_saved_wallets():
 
 def list_wallet_runs(main_wallet_id: str | None = None):
     return db.list_wallet_runs(main_wallet_id=main_wallet_id)
+
+
+def delete_wallet_run(run_id: str):
+    deleted_run = db.delete_wallet_run(run_id)
+    if not deleted_run:
+        raise ValueError("Run not found")
+
+    return {
+        "id": run_id,
+        "deleted": True,
+        "main_wallet_id": deleted_run.get("main_wallet_id"),
+    }
 
 
 def export_wallet_keystore(wallet_id: str, access_passphrase: str, export_passphrase: str):

@@ -206,7 +206,7 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
             else "unavailable"
         ),
         "message": (
-            "ManagedTokenDistributor auto deployment is ready. Each sub-wallet will deploy after any local wrap and configured swap outputs are available."
+            "ManagedTokenDistributor auto deployment is ready. Each sub-wallet will deploy after any local wrap and configured swap outputs are available, and direct ETH/WETH can then be funded from the main wallet."
             if status["managed_token_distributor_enabled"] and distributor_recipient and distributor_flow_configured
             else "Set recipient_address to enable ManagedTokenDistributor auto deployment."
             if status["managed_token_distributor_enabled"] and distributor_flow_configured and not distributor_recipient

@@ -696,6 +696,24 @@ class ScyllaDB:
         run_records.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         return run_records
 
+    def delete_wallet_run(self, run_id: str):
+        self.connect_keyspace()
+
+        if self.mode == "scylla":
+            row = self.session.execute("SELECT * FROM wallet_runs WHERE id = %s", (run_id,)).one()
+            if row is None:
+                return None
+            record = self._serialize_wallet_run_record(dict(row._asdict()))
+            self.session.execute("DELETE FROM wallet_runs WHERE id = %s", (run_id,))
+            return record
+
+        payload = self._read_local_runs()
+        record = payload.pop(run_id, None)
+        if record is None:
+            return None
+        self._write_local_runs(payload)
+        return self._serialize_wallet_run_record(record)
+
     def delete_wallet_runs_for_main(self, main_wallet_id: str):
         self.connect_keyspace()
         runs = self.list_wallet_runs(main_wallet_id=main_wallet_id)

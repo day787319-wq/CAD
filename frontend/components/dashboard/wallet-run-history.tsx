@@ -1,7 +1,7 @@
 "use client";
 
-import { MouseEvent, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, Boxes, CheckCircle2, CircleDashed, CircleSlash, Copy, Download, Loader2, Rocket, ScrollText, WalletCards } from "lucide-react";
+import { type CSSProperties, MouseEvent, useEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowRightLeft, Boxes, CheckCircle2, CircleDashed, CircleSlash, Copy, Download, Loader2, Rocket, ScrollText, Trash2, WalletCards } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -472,7 +472,11 @@ function isCompletedStatus(status: string | null | undefined) {
 }
 
 function isRunningStatus(status: string | null | undefined) {
-  return ["queued", "running", "started", "submitted", "ready", "created"].includes((status ?? "").toLowerCase());
+  return ["queued", "running", "started", "submitted", "wrapping", "swapping", "deploying"].includes((status ?? "").toLowerCase());
+}
+
+function shouldAnimateLogStatus(status: string | null | undefined) {
+  return ["queued", "running", "started", "wrapping", "swapping", "deploying"].includes((status ?? "").toLowerCase());
 }
 
 function isFailedStatus(status: string | null | undefined) {
@@ -789,6 +793,118 @@ function getProgressPercent(run: WalletRun, stageSummaries: ReturnType<typeof ge
   return Math.max(15, Math.round((weight / Math.max(stageSummaries.length, 1)) * 100));
 }
 
+function parseLogAttempt(log: RunLog) {
+  const rawAttempt = log.details?.attempt;
+  if (typeof rawAttempt === "number" && Number.isFinite(rawAttempt)) return rawAttempt;
+  if (typeof rawAttempt === "string") {
+    const parsed = Number(rawAttempt);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 1;
+}
+
+function estimateRunningLogDurationSeconds(log: RunLog | null | undefined) {
+  if (!log) return null;
+
+  const stage = (log.stage ?? "").toLowerCase();
+  const event = (log.event ?? "").toLowerCase();
+  const attempt = Math.max(parseLogAttempt(log), 1);
+
+  let baseSeconds = 60;
+  if (event.includes("execute")) {
+    baseSeconds = 95;
+  } else if (event.includes("deployment")) {
+    baseSeconds = 140;
+  } else if (event.includes("swap")) {
+    baseSeconds = 110;
+  } else if (event.includes("approval")) {
+    baseSeconds = 75;
+  } else if (event.includes("wrap")) {
+    baseSeconds = 70;
+  } else if (event.includes("funding")) {
+    baseSeconds = stage === "distribution" ? 75 : 50;
+  } else {
+    switch (stage) {
+      case "funding":
+        baseSeconds = 50;
+        break;
+      case "wrapping":
+        baseSeconds = 70;
+        break;
+      case "approval":
+        baseSeconds = 75;
+        break;
+      case "swap":
+        baseSeconds = 110;
+        break;
+      case "deployment":
+        baseSeconds = 140;
+        break;
+      case "distribution":
+        baseSeconds = 85;
+        break;
+      default:
+        baseSeconds = 60;
+        break;
+    }
+  }
+
+  if (attempt > 1) {
+    baseSeconds += (attempt - 1) * 35;
+  }
+
+  if (event.includes("retry_scheduled")) {
+    baseSeconds += 20;
+  }
+
+  return baseSeconds;
+}
+
+function formatCountdown(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.ceil(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${`${minutes}`.padStart(2, "0")}:${`${seconds}`.padStart(2, "0")}`;
+  }
+  return `${minutes}:${`${seconds}`.padStart(2, "0")}`;
+}
+
+function getRunningCountdownLabel(log: RunLog | null | undefined, nowMs: number, locale: SupportedLocale) {
+  if (!log) return null;
+
+  const estimatedDurationSeconds = estimateRunningLogDurationSeconds(log);
+  if (!estimatedDurationSeconds) return null;
+
+  const startedAtMs = log.timestamp ? new Date(log.timestamp).getTime() : Number.NaN;
+  if (Number.isNaN(startedAtMs)) return null;
+
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+  const remainingSeconds = estimatedDurationSeconds - elapsedSeconds;
+
+  if (remainingSeconds >= 0) {
+    switch (locale) {
+      case "zn":
+        return `预计剩余 ${formatCountdown(remainingSeconds)}`;
+      case "vn":
+        return `Còn khoảng ${formatCountdown(remainingSeconds)}`;
+      default:
+        return `ETA ${formatCountdown(remainingSeconds)}`;
+    }
+  }
+
+  switch (locale) {
+    case "zn":
+      return `超出预估 +${formatCountdown(Math.abs(remainingSeconds))}`;
+    case "vn":
+      return `Quá dự kiến +${formatCountdown(Math.abs(remainingSeconds))}`;
+    default:
+      return `Over ETA +${formatCountdown(Math.abs(remainingSeconds))}`;
+  }
+}
+
 function stageBadgeClass(status: AutomationStageStatus) {
   switch (status) {
     case "completed":
@@ -887,6 +1003,10 @@ export function WalletRunHistory({
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [confirmExportPassphrase, setConfirmExportPassphrase] = useState("");
   const [exportingWalletId, setExportingWalletId] = useState<string | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const summaryPanelRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [summaryPanelHeights, setSummaryPanelHeights] = useState<Record<string, number>>({});
   const [pollTick, setPollTick] = useState(0);
   const [openRunId, setOpenRunId] = useState<string | undefined>(undefined);
   const autoOpenedActiveRunIdRef = useRef<string | null>(null);
@@ -950,6 +1070,48 @@ export function WalletRunHistory({
   }, [runs]);
 
   const hasActiveRun = runs.some((run) => !isTerminalRunStatus(run.status));
+
+  useEffect(() => {
+    if (!hasActiveRun) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveRun]);
+
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      setSummaryPanelHeights((current) => {
+        let changed = false;
+        const next = { ...current };
+
+        for (const entry of entries) {
+          const runId = (entry.target as HTMLElement).dataset.runSummaryId;
+          if (!runId) continue;
+          const nextHeight = Math.ceil(entry.contentRect.height);
+          if (nextHeight > 0 && next[runId] !== nextHeight) {
+            next[runId] = nextHeight;
+            changed = true;
+          }
+        }
+
+        return changed ? next : current;
+      });
+    });
+
+    for (const element of Object.values(summaryPanelRefs.current)) {
+      if (element) {
+        observer.observe(element);
+      }
+    }
+
+    return () => observer.disconnect();
+  }, [runs, openRunId, locale]);
 
   const handleCopy = async (event: MouseEvent<HTMLButtonElement>, value: string | undefined, label: string) => {
     event.stopPropagation();
@@ -1040,6 +1202,75 @@ export function WalletRunHistory({
     }
   };
 
+  const handleDeleteRun = async (run: WalletRun) => {
+    if (!isTerminalRunStatus(run.status)) {
+      toast({
+        title: locale === "en" ? "Run is still active" : locale === "zn" ? "运行仍在进行中" : "Lượt chạy vẫn đang hoạt động",
+        description:
+          locale === "en"
+            ? "Wait for the run to finish before deleting its history."
+            : locale === "zn"
+              ? "请等待该运行结束后再删除其历史记录。"
+              : "Hãy đợi lượt chạy hoàn tất trước khi xóa lịch sử của nó.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      locale === "en"
+        ? `Delete run history for ${run.template_name}?`
+        : locale === "zn"
+          ? `要删除 ${run.template_name} 的运行记录吗？`
+          : `Xóa lịch sử chạy của ${run.template_name}?`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingRunId(run.id);
+    try {
+      const response = await fetch(`${API_URL}/api/wallets/runs/${run.id}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail ?? (locale === "en" ? "Failed to delete run history" : locale === "zn" ? "删除运行记录失败" : "Xóa lịch sử chạy thất bại"));
+      }
+
+      setRuns((current) => current.filter((item) => item.id !== run.id));
+      setOpenRunId((current) => (current === run.id ? undefined : current));
+      if (autoOpenedActiveRunIdRef.current === run.id) {
+        autoOpenedActiveRunIdRef.current = null;
+      }
+
+      toast({
+        title: locale === "en" ? "Run history deleted" : locale === "zn" ? "运行记录已删除" : "Đã xóa lịch sử chạy",
+        description:
+          locale === "en"
+            ? `${run.template_name} was removed from history.`
+            : locale === "zn"
+              ? `${run.template_name} 已从运行记录中移除。`
+              : `${run.template_name} đã được xóa khỏi lịch sử chạy.`,
+      });
+    } catch (deleteError) {
+      toast({
+        title: locale === "en" ? "Delete failed" : locale === "zn" ? "删除失败" : "Xóa thất bại",
+        description:
+          deleteError instanceof Error
+            ? deleteError.message
+            : locale === "en"
+              ? "Failed to delete run history"
+              : locale === "zn"
+                ? "删除运行记录失败"
+                : "Xóa lịch sử chạy thất bại",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingRunId(null);
+    }
+  };
+
   return (
     <div className="rounded-2xl border border-border/70 bg-background/70 p-5">
       <div className="mb-4">
@@ -1073,6 +1304,11 @@ export function WalletRunHistory({
             const latestLog = run.run_logs?.length ? run.run_logs[run.run_logs.length - 1] : null;
             const deploymentLogs = run.run_logs?.filter((log) => ["deployment", "distribution"].includes(log.stage ?? ""));
             const isRunLive = !isTerminalRunStatus(run.status);
+            const latestLogIndex = run.run_logs?.length ? run.run_logs.length - 1 : -1;
+            const activeLog = isRunLive && latestLogIndex >= 0 && shouldAnimateLogStatus(run.run_logs?.[latestLogIndex]?.status)
+              ? run.run_logs?.[latestLogIndex] ?? null
+              : null;
+            const activeLogCountdownLabel = getRunningCountdownLabel(activeLog, nowMs, locale);
             const runningStage = stageSummaries.find((stage) => stage.status === "running");
 
             return (
@@ -1112,6 +1348,29 @@ export function WalletRunHistory({
 
                 <AccordionContent className="px-4 pb-5">
                   <div className="space-y-5">
+                    <div className="flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                        onClick={() => handleDeleteRun(run)}
+                        disabled={deletingRunId === run.id}
+                        title={
+                          isTerminalRunStatus(run.status)
+                            ? undefined
+                            : locale === "en"
+                              ? "Finish the run before deleting its history."
+                              : locale === "zn"
+                                ? "请先等待运行结束，再删除其历史记录。"
+                                : "Hãy hoàn tất lượt chạy trước khi xóa lịch sử."
+                        }
+                      >
+                        {deletingRunId === run.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                        {locale === "en" ? "Delete history" : locale === "zn" ? "删除记录" : "Xóa lịch sử"}
+                      </Button>
+                    </div>
+
                     {run.error ? (
                       <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900">
                         <div className="flex items-start gap-2">
@@ -1168,12 +1427,19 @@ export function WalletRunHistory({
                         <div className="mt-6">
                           <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
                             <span>{locale === "en" ? "Automation progress" : locale === "zn" ? "自动化进度" : "Tiến độ tự động hóa"}</span>
-                            <div className="flex items-center gap-3">
+                            <div className="flex flex-wrap items-center justify-end gap-2">
                               {isRunLive ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-normal text-sky-700">
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  {runningStage ? `${runningStage.label} ${locale === "en" ? "live" : locale === "zn" ? "实时" : "trực tiếp"}` : locale === "en" ? "Polling live" : locale === "zn" ? "实时轮询中" : "Đang thăm dò trực tiếp"}
-                                </span>
+                                <>
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-normal text-sky-700">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    {runningStage ? `${runningStage.label} ${locale === "en" ? "live" : locale === "zn" ? "实时" : "trực tiếp"}` : locale === "en" ? "Polling live" : locale === "zn" ? "实时轮询中" : "Đang thăm dò trực tiếp"}
+                                  </span>
+                                  {activeLogCountdownLabel ? (
+                                    <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold tracking-normal text-sky-700">
+                                      {activeLogCountdownLabel}
+                                    </span>
+                                  ) : null}
+                                </>
                               ) : null}
                               <span>{progressPercent}%</span>
                             </div>
@@ -1366,12 +1632,20 @@ export function WalletRunHistory({
 
                         {run.run_logs?.length ? (
                           <div className="mt-4 rounded-2xl bg-background/40">
-                            <div className="max-h-[520px] space-y-4 overflow-y-auto px-1 py-1">
+                            <div
+                              className="space-y-4 px-1 py-1 xl:max-h-[var(--run-summary-height)] xl:overflow-y-auto"
+                              style={
+                                summaryPanelHeights[run.id]
+                                  ? ({ "--run-summary-height": `${summaryPanelHeights[run.id]}px` } as CSSProperties)
+                                  : undefined
+                              }
+                            >
                               {run.run_logs.map((log, index) => {
                                 const detailEntries = getLogDetailEntries(log.details, locale);
                                 const stageLabel = getLogHeadingLabel(log, locale);
                                 const hasMeta = Boolean(log.movement || log.wallet_address || detailEntries.length || log.tx_hash);
-                                const isLogActive = isRunLive && isRunningStatus(log.status);
+                                const isLogActive = isRunLive && index === latestLogIndex && shouldAnimateLogStatus(log.status);
+                                const countdownLabel = isLogActive ? getRunningCountdownLabel(log, nowMs, locale) : null;
 
                                 return (
                                   <div
@@ -1394,6 +1668,9 @@ export function WalletRunHistory({
                                         <p className="mt-2 text-sm font-semibold text-foreground">
                                           {getLocalizedLogMessage(log, locale)}
                                         </p>
+                                        {countdownLabel ? (
+                                          <p className="mt-2 text-xs font-semibold text-sky-700">{countdownLabel}</p>
+                                        ) : null}
                                       </div>
                                       <span className="shrink-0 text-xs text-muted-foreground">{formatTimestamp(log.timestamp, locale)}</span>
                                     </div>
@@ -1446,7 +1723,13 @@ export function WalletRunHistory({
                         )}
                       </div>
 
-                      <div className="space-y-4">
+                      <div
+                        ref={(element) => {
+                          summaryPanelRefs.current[run.id] = element;
+                        }}
+                        data-run-summary-id={run.id}
+                        className="self-start space-y-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-3 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.2)] xl:sticky xl:top-5"
+                      >
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
                           <p className="text-[11px] uppercase tracking-wide text-slate-500">{locale === "en" ? "Main wallet" : locale === "zn" ? "主钱包" : "Ví chính"}</p>
                           <p className="mt-1 break-all font-mono text-xs text-slate-700">{run.main_wallet_address}</p>
@@ -1504,7 +1787,11 @@ export function WalletRunHistory({
                                     {contract.deployment_attempts ? ` • ${locale === "en" ? "Attempts" : locale === "zn" ? "尝试次数" : "Lần thử"} ${contract.deployment_attempts}` : ""}
                                   </p>
                                   {contract.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-slate-700">{contract.tx_hash}</p> : null}
-                                  {contract.error ? <p className="mt-2 text-xs text-destructive">{contract.error}</p> : null}
+                                  {contract.error ? (
+                                    <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                                      {contract.error}
+                                    </div>
+                                  ) : null}
                                 </div>
                               ))}
                             </div>

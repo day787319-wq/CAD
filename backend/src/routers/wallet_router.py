@@ -5,6 +5,7 @@ from datetime import datetime
 from src.services.wallet_service import (
     create_wallet_run as create_wallet_run_service,
     delete_wallet as delete_wallet_service,
+    delete_wallet_run as delete_wallet_run_service,
     generate_sub_wallets as generate_sub_wallets_service,
     generate_main_wallet as generate_main_wallet_service,
     get_wallet_details as get_wallet_details_service,
@@ -163,6 +164,15 @@ async def execute_wallet_run_endpoint(request: WalletRunRequest, background_task
 async def list_wallet_runs_endpoint(main_wallet_id: str | None = None):
     try:
         return {"runs": list_wallet_runs_service(main_wallet_id=main_wallet_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/runs/{run_id}")
+async def delete_wallet_run_endpoint(run_id: str):
+    try:
+        return delete_wallet_run_service(run_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

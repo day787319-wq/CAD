@@ -233,9 +233,9 @@ function getDistributorAutomationSummary(template: Template, locale: SupportedLo
       }),
       description: hasSwapRoutes && (distributorAmount > 0 || distributorNativeEthAmount > 0)
         ? localeText(locale, {
-            en: `Deploy and fund distributor contracts after swaps and direct ${nativeSymbol}/${wrappedNativeSymbol} funding.`,
-            zn: `在兑换和直接 ${nativeSymbol}/${wrappedNativeSymbol} 注资后部署并注资分发合约。`,
-            vn: `Triển khai và cấp vốn cho hợp đồng phân phối sau khi swap và cấp ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp.`,
+            en: `Deploy distributor contracts after swaps, then fund direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet.`,
+            zn: `在兑换后部署分发合约，然后由主钱包注入直接 ${nativeSymbol}/${wrappedNativeSymbol}。`,
+            vn: `Triển khai hợp đồng phân phối sau bước swap, rồi cấp trực tiếp ${nativeSymbol}/${wrappedNativeSymbol} từ ví chính.`,
           })
         : hasSwapRoutes
           ? localeText(locale, {
@@ -244,10 +244,10 @@ function getDistributorAutomationSummary(template: Template, locale: SupportedLo
               vn: "Triển khai hợp đồng phân phối sau bước swap.",
             })
           : locale === "en"
-            ? `Distributor funding is ready with ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} and ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`
+            ? `Main-wallet distributor funding is ready with ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} and ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`
             : locale === "zn"
-              ? `分发合约注资已就绪：${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} 和 ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}。`
-              : `Cấp vốn cho hợp đồng phân phối đã sẵn sàng với ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} và ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`,
+              ? `主钱包分发合约注资已就绪：${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} 和 ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}。`
+              : `Cấp vốn từ ví chính cho hợp đồng phân phối đã sẵn sàng với ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} và ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`,
     };
   }
 
@@ -360,6 +360,14 @@ function buildGasEstimateRows(
       hint: preview.execution.funding_transaction_count > 0 ? `${nativeSymbol} transfers from the main wallet into each sub-wallet` : `No ${nativeSymbol} funding transfers in this plan`,
     },
     {
+      label: localeText(locale, { en: "main wrap gas", zn: "主钱包包装 gas", vn: "gas wrap ví chính" }),
+      value: estimateGasFeeDisplay(preview.execution.main_wallet_wrap_gas_units ?? 0, gasPrice, locale, nativeSymbol),
+      hint:
+        (preview.execution.main_wallet_wrap_transaction_count ?? 0) > 0
+          ? `Wrap ${wrappedNativeSymbol} on the main wallet before direct distributor funding`
+          : `No main-wallet ${wrappedNativeSymbol} wrap is required`,
+    },
+    {
       label: localeText(locale, { en: "top-up gas", zn: "补充 gas", vn: "gas nạp thêm" }),
       value: estimateGasFeeDisplay((preview.execution.top_up_transaction_count ?? 0) * ETH_TRANSFER_GAS_UNITS, gasPrice, locale, nativeSymbol),
       hint:
@@ -386,7 +394,7 @@ function buildGasEstimateRows(
     {
       label: localeText(locale, { en: "wrap gas", zn: "包装 gas", vn: "gas wrap" }),
       value: estimateGasFeeDisplay(preview.execution.wrap_transaction_count * WRAP_GAS_UNITS, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.wrap_transaction_count > 0 ? `Each sub-wallet wraps only the ${wrappedNativeSymbol} amount it needs locally` : `No local ${wrappedNativeSymbol} wrapping is required`,
+      hint: preview.execution.wrap_transaction_count > 0 ? `Each sub-wallet wraps only the ${wrappedNativeSymbol} it needs for local swap execution` : `No local ${wrappedNativeSymbol} wrapping is required`,
     },
     {
       label: localeText(locale, { en: "approve gas", zn: "授权 gas", vn: "gas phê duyệt" }),
@@ -406,12 +414,12 @@ function buildGasEstimateRows(
     {
       label: localeText(locale, { en: "distributor funding gas", zn: "合约注资 gas", vn: "gas cấp vốn hợp đồng" }),
       value: estimateGasFeeDisplay((preview.execution.contract_funding_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer swapped tokens, direct ${nativeSymbol}, or direct ${wrappedNativeSymbol} into each deployed distributor` : "No post-deploy distributor funding transfers are required",
+      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer swapped tokens from sub-wallets and direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet into each deployed distributor` : "No post-deploy distributor funding transfers are required",
     },
     {
       label: localeText(locale, { en: "total gas", zn: "总 gas", vn: "tổng gas" }),
       value: estimateGasFeeDisplay(totalGasUnits, gasPrice, locale, nativeSymbol),
-      hint: "Funding, projected top-up, local wrap, approval, swap, deployment, distributor funding, testing execute, and return sweep estimate",
+      hint: "Funding, main-wallet wrap, projected top-up, local wrap, approval, swap, deployment, distributor funding, testing execute, and return sweep estimate",
     },
   ];
 }
@@ -426,7 +434,7 @@ function buildAutomationSteps(
   const distributorAutomation = getDistributorAutomationSummary(template, locale);
   const autoAddedGasBuffer = toNumericValue(preview.per_contract.auto_added_gas_buffer_eth);
   const minimumUnwrappedEth = preview.per_contract.minimum_unwrapped_eth ?? preview.per_contract.gas_reserve_eth;
-  const directContractNativeEth = toNumericValue(preview.per_contract.direct_contract_native_eth ?? "0") ?? 0;
+  const mainWalletWethWrapped = toNumericValue(preview.funding.main_wallet_weth_wrapped ?? "0") ?? 0;
   const autoTopUp = preview.auto_top_up;
   const projectedTopUpReserve = toNumericValue(preview.funding.auto_top_up_eth_reserved);
   const availableEth = toNumericValue(preview.balances.available_eth);
@@ -468,12 +476,15 @@ function buildAutomationSteps(
     },
     {
       title: localeText(locale, { en: `Wrap to ${wrappedNativeSymbol}`, zn: `转换为 ${wrappedNativeSymbol}`, vn: `Wrap sang ${wrappedNativeSymbol}` }),
-      description: preview.execution.wrap_transaction_count > 0
-        ? directContractNativeEth > 0
-          ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas and direct funding.`
-          : `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas.`
-        : `No local ${wrappedNativeSymbol} wrap is needed.`,
-      tone: preview.execution.wrap_transaction_count > 0 ? "planned" : "optional",
+      description:
+        preview.execution.wrap_transaction_count > 0 && mainWalletWethWrapped > 0
+          ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} for swaps and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas. The main wallet also wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct distributor funding.`
+          : preview.execution.wrap_transaction_count > 0
+            ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas.`
+            : mainWalletWethWrapped > 0
+              ? `The main wallet wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct distributor funding.`
+              : `No ${wrappedNativeSymbol} wrap is needed.`,
+      tone: preview.execution.wrap_transaction_count > 0 || mainWalletWethWrapped > 0 ? "planned" : "optional",
     },
     {
       title: localeText(locale, { en: "Top-up", zn: "自动补充", vn: "Nạp thêm" }),
@@ -510,7 +521,7 @@ function buildAutomationSteps(
         ? localeText(locale, { en: "Deploy contracts", zn: "部署合约", vn: "Triển khai hợp đồng" })
         : distributorAutomation.title,
       description: distributorAutomation.enabled
-        ? `Deploy up to ${preview.execution.deployment_transaction_count} contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"} and send the planned funds to each one.`
+        ? `Deploy up to ${preview.execution.deployment_transaction_count} contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"} and send swapped tokens from sub-wallets plus any direct ${nativeSymbol}/${wrappedNativeSymbol} funding from the main wallet.`
         : distributorAutomation.description,
       tone: distributorAutomation.enabled ? "planned" : "optional",
     },
@@ -678,7 +689,6 @@ function buildConfiguredTemplateTotals(template: Template, contractCount: number
   const normalizedCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
   const nativePerContract =
     (toNumericValue(template.gas_reserve_eth_per_contract) ?? 0) +
-    (toNumericValue(template.direct_contract_eth_per_contract) ?? 0) +
     (toNumericValue(template.direct_contract_native_eth_per_contract) ?? 0);
   const wethPerContract =
     (toNumericValue(template.swap_budget_eth_per_contract) ?? 0) +
@@ -1441,7 +1451,6 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                                 <TemplateMetric label="Gas" value={`${formatAmount(template.gas_reserve_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
                                 <TemplateMetric label="Swap" value={`${formatAmount(template.swap_budget_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
-                                <TemplateMetric label={template.chain === "bnb" ? "Sub-wallet BNB" : "Sub-wallet ETH"} value={`${formatAmount(template.direct_contract_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
                                 <TemplateMetric label={template.chain === "bnb" ? "Contract BNB" : "Contract ETH"} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ${templateChainUi.nativeSymbol}`} />
                                 <TemplateMetric label={template.chain === "bnb" ? "Contract WBNB" : "Contract WETH"} value={`${formatAmount(template.direct_contract_weth_per_contract)} ${templateChainUi.wrappedNativeSymbol}`} />
                                 <TemplateMetric label={locale === "en" ? "Auto Top-Up" : locale === "zn" ? "自动补充" : "Nạp thêm tự động"} value={buildAutoTopUpSummary(template, locale)} />
@@ -1695,16 +1704,16 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   <div className="mt-4 space-y-4">
                                     <div className="grid gap-3">
                                       <div className="cad-panel-muted px-4 py-3">
-                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `Sub-wallet ${nativeSymbol} / contract funding` : locale === "zn" ? `子钱包 ${nativeSymbol} / 合约注资` : `${nativeSymbol} ví con / cấp vốn hợp đồng`}</p>
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? "Contract funding" : locale === "zn" ? "合约注资" : "Cấp vốn hợp đồng"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {locale === "en"
-                                            ? `${formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, nativeSymbol)} kept local • ${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} to distributor`
+                                            ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} to distributor`
                                             : locale === "zn"
-                                              ? `${formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, nativeSymbol)} 保留在本地 • ${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} 注入分发合约`
-                                              : `${formatCryptoMetric(selectedTemplate.direct_contract_eth_per_contract, nativeSymbol)} giữ cục bộ • ${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} vào hợp đồng phân phối`}
+                                              ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} 注入分发合约`
+                                              : `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} vào hợp đồng phân phối`}
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500">
-                                          {locale === "en" ? `Sub-wallet ${nativeSymbol} remains local. Direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} are transferred into ManagedTokenDistributor.` : locale === "zn" ? `子钱包 ${nativeSymbol} 保留在本地。直接合约 ${nativeSymbol} 和直接合约 ${wrappedNativeSymbol} 会转入 ManagedTokenDistributor。` : `${nativeSymbol} của ví con được giữ cục bộ. ${nativeSymbol} và ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng sẽ được chuyển vào ManagedTokenDistributor.`}
+                                          {locale === "en" ? `The main wallet transfers direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into ManagedTokenDistributor after deployment.` : locale === "zn" ? `部署后会由主钱包把直接合约 ${nativeSymbol} 和直接合约 ${wrappedNativeSymbol} 转入 ManagedTokenDistributor。` : `Sau khi triển khai, ví chính sẽ chuyển ${nativeSymbol} và ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng vào ManagedTokenDistributor.`}
                                         </p>
                                       </div>
                                       <div className="cad-panel-muted px-4 py-3">
@@ -1737,7 +1746,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       <div className="cad-panel-muted px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? "Local wrap" : locale === "zn" ? "本地包装" : "Wrap cục bộ"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
-                                          {(toNumericValue(selectedTemplate.swap_budget_eth_per_contract) ?? 0) > 0 || (toNumericValue(selectedTemplate.direct_contract_weth_per_contract) ?? 0) > 0
+                                          {(toNumericValue(selectedTemplate.swap_budget_eth_per_contract) ?? 0) > 0
                                             ? locale === "en" ? "Required by flow" : locale === "zn" ? "流程需要" : "Bắt buộc theo luồng"
                                             : locale === "en" ? "Not needed" : locale === "zn" ? "不需要" : "Không cần"}
                                         </p>
@@ -2066,6 +2075,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `Local ${wrappedNativeSymbol} wrap` : locale === "zn" ? `本地 ${wrappedNativeSymbol} 包装` : `Wrap ${wrappedNativeSymbol} cục bộ`}</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.weth_from_wrapped_eth, wrappedNativeSymbol)}</p>
+                      </div>
+                      <div className="cad-panel-muted px-4 py-3">
+                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `${wrappedNativeSymbol} from main wallet` : locale === "zn" ? `来自主钱包的 ${wrappedNativeSymbol}` : `${wrappedNativeSymbol} từ ví chính`}</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.weth_from_main_wallet, wrappedNativeSymbol)}</p>
                       </div>
                       <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `Estimated remaining ${nativeSymbol}` : locale === "zn" ? `预计剩余 ${nativeSymbol}` : `${nativeSymbol} còn lại dự kiến`}</p>

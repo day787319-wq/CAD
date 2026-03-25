@@ -30,9 +30,9 @@ const copy = {
     vn: "Một mẫu tương ứng một hợp đồng / một ví con",
   },
   introBody: {
-    en: "Define the ETH-first funding plan here: gas reserve, direct ETH, optional local-WETH distributor funding, and stablecoin swap budgets. A main wallet is not needed yet.",
-    zn: "在这里定义以 ETH 为核心的资金计划：Gas 预留、直接 ETH、可选的本地 WETH 合约资金以及稳定币兑换预算。此阶段还不需要主钱包。",
-    vn: "Xác định kế hoạch cấp vốn ưu tiên ETH tại đây: dự trữ gas, ETH trực tiếp, cấp vốn WETH cục bộ tùy chọn cho hợp đồng và ngân sách hoán đổi stablecoin. Chưa cần ví chính ở bước này.",
+    en: "Define the ETH-first funding plan here: gas reserve, direct contract funding, direct main-wallet WETH distributor funding, and stablecoin swap budgets. A main wallet is not needed yet.",
+    zn: "在这里定义以 ETH 为核心的资金计划：Gas 预留、直接合约注资、由主钱包提供的直接 WETH 分发合约资金以及稳定币兑换预算。此阶段还不需要主钱包。",
+    vn: "Xác định kế hoạch cấp vốn ưu tiên ETH tại đây: dự trữ gas, cấp vốn trực tiếp cho hợp đồng, cấp vốn WETH trực tiếp từ ví chính cho hợp đồng phân phối và ngân sách hoán đổi stablecoin. Chưa cần ví chính ở bước này.",
   },
   loading: { en: "Loading templates...", zn: "正在加载模板...", vn: "Đang tải mẫu..." },
   empty: {
@@ -59,7 +59,6 @@ const copy = {
   },
   gasReserve: { en: "Gas reserve", zn: "Gas 预留", vn: "Dự trữ gas" },
   swapBudget: { en: "Swap budget", zn: "兑换预算", vn: "Ngân sách swap" },
-  subWalletEth: { en: "Sub-wallet ETH", zn: "子钱包 ETH", vn: "ETH ví con" },
   contractEth: { en: "Contract ETH", zn: "合约 ETH", vn: "ETH hợp đồng" },
   contractWeth: { en: "Contract WETH", zn: "合约 WETH", vn: "WETH hợp đồng" },
   testJson: { en: "TEST JSON", zn: "测试 JSON", vn: "JSON KIỂM THỬ" },
@@ -255,7 +254,6 @@ export function TemplateLibraryStarter() {
                 <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <SummaryPill label={copy.gasReserve[locale]} value={`${formatAmount(template.gas_reserve_eth_per_contract)} ETH`} />
                   <SummaryPill label={copy.swapBudget[locale]} value={`${formatAmount(template.swap_budget_eth_per_contract)} ETH`} />
-                  <SummaryPill label={copy.subWalletEth[locale]} value={`${formatAmount(template.direct_contract_eth_per_contract)} ETH`} />
                   <SummaryPill label={copy.contractEth[locale]} value={`${formatAmount(template.direct_contract_native_eth_per_contract)} ETH`} />
                   <SummaryPill label={copy.contractWeth[locale]} value={`${formatAmount(template.direct_contract_weth_per_contract)} WETH`} />
                 </div>

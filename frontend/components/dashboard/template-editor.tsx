@@ -34,20 +34,6 @@ type TemplateEditorProps = {
   template?: Template | null;
   onSaved: (template: Template) => void;
 };
-
-function splitMicroUnits(total: number, parts: number) {
-  if (parts <= 0) return [];
-  const safeTotal = Number.isFinite(total) ? total : 0;
-  const totalUnits = Math.max(0, Math.round(safeTotal * 1_000_000));
-  const base = Math.floor(totalUnits / parts);
-  let remainder = totalUnits - base * parts;
-  return Array.from({ length: parts }, () => {
-    const next = base + (remainder > 0 ? 1 : 0);
-    remainder = Math.max(0, remainder - 1);
-    return (next / 1_000_000).toFixed(6);
-  });
-}
-
 function SectionCard({
   title,
   description,
@@ -73,6 +59,12 @@ const MARKET_REFRESH_INTERVAL_MS = 60_000;
 function toFiniteNumber(value: string | number | null | undefined) {
   const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function toAmountString(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
+  const normalized = Number(value.toFixed(6));
+  return normalized === 0 ? "0" : `${normalized}`;
 }
 
 function getUsdValue(amount: string | number | null | undefined, priceValue: string | null | undefined) {
@@ -131,10 +123,20 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   );
   const hasStablecoinSwap = form.stablecoin_distribution_mode !== "none";
   const topUpEnabled = form.auto_top_up_enabled;
-  const needsWeth = Number(form.swap_budget_eth_per_contract || "0") > 0 || Number(form.direct_contract_weth_per_contract || "0") > 0;
+  const needsWeth =
+    (form.stablecoin_distribution_mode === "manual_weth_amount"
+      ? form.stablecoin_allocations.some((allocation) => (toFiniteNumber(allocation.weth_amount_per_contract) ?? 0) > 0)
+      : Number(form.swap_budget_eth_per_contract || "0") > 0) ||
+    Number(form.direct_contract_weth_per_contract || "0") > 0;
   const topUpThresholdValue = toFiniteNumber(form.auto_top_up_threshold_eth) ?? 0;
   const topUpTargetValue = toFiniteNumber(form.auto_top_up_target_eth) ?? 0;
   const topUpHasSingleValue = topUpEnabled && topUpThresholdValue === topUpTargetValue;
+  const topUpTargetMustExceedThreshold = form.chain !== "bnb";
+  const topUpThresholdRuleViolated =
+    topUpEnabled &&
+    (topUpTargetMustExceedThreshold
+      ? topUpTargetValue <= topUpThresholdValue
+      : topUpTargetValue < topUpThresholdValue);
 
   const loadChainOptions = async (chain: TemplateChain) => {
     const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?chain=${encodeURIComponent(chain)}`, {
@@ -207,21 +209,54 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     () => displayStablecoins.filter((coin) => selectedStablecoinAddresses.has(coin.address.toLowerCase())),
     [displayStablecoins, selectedStablecoinAddresses],
   );
+  const manualExactSwapBudgetValue = useMemo(
+    () => form.stablecoin_allocations.reduce((sum, allocation) => sum + (toFiniteNumber(allocation.weth_amount_per_contract) ?? 0), 0),
+    [form.stablecoin_allocations],
+  );
+  const effectiveSwapBudgetString =
+    form.stablecoin_distribution_mode === "manual_weth_amount"
+      ? toAmountString(manualExactSwapBudgetValue)
+      : form.swap_budget_eth_per_contract;
   const distributionPreviewRows = useMemo(
-    () => getStablecoinDistributionRows(form),
-    [form],
+    () => getStablecoinDistributionRows({ ...form, swap_budget_eth_per_contract: effectiveSwapBudgetString }),
+    [effectiveSwapBudgetString, form],
   );
   const ethUsdLabel = useMemo(
     () => getUsdValue(form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd),
     [form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd],
   );
   const swapBudgetUsdLabel = useMemo(
-    () => getUsdValue(form.swap_budget_eth_per_contract, marketSnapshot?.weth_usd),
-    [form.swap_budget_eth_per_contract, marketSnapshot?.weth_usd],
+    () => getUsdValue(effectiveSwapBudgetString, marketSnapshot?.weth_usd),
+    [effectiveSwapBudgetString, marketSnapshot?.weth_usd],
   );
-  const directEthUsdLabel = useMemo(
-    () => getUsdValue(form.direct_contract_eth_per_contract, marketSnapshot?.eth_usd),
-    [form.direct_contract_eth_per_contract, marketSnapshot?.eth_usd],
+  const swapBudgetValue = toFiniteNumber(effectiveSwapBudgetString) ?? 0;
+  const manualDistributionAssignedValue = useMemo(() => {
+    if (form.stablecoin_distribution_mode === "manual_weth_amount") {
+      return manualExactSwapBudgetValue;
+    }
+    if (form.stablecoin_distribution_mode === "manual_percent") {
+      const percentTotal = form.stablecoin_allocations.reduce((sum, allocation) => sum + (toFiniteNumber(allocation.percent) ?? 0), 0);
+      return (swapBudgetValue * percentTotal) / 100;
+    }
+    return 0;
+  }, [form.stablecoin_allocations, form.stablecoin_distribution_mode, manualExactSwapBudgetValue, swapBudgetValue]);
+  const manualDistributionAssignedUsdLabel = useMemo(
+    () => getUsdValue(manualDistributionAssignedValue, marketSnapshot?.weth_usd),
+    [manualDistributionAssignedValue, marketSnapshot?.weth_usd],
+  );
+  const manualDistributionDeltaValue = swapBudgetValue - manualDistributionAssignedValue;
+  const manualDistributionRemainingValue = Math.max(manualDistributionDeltaValue, 0);
+  const manualDistributionOverValue = Math.max(-manualDistributionDeltaValue, 0);
+  const manualDistributionHasBudget = swapBudgetValue > 0.0000005;
+  const manualDistributionOverBudget = manualDistributionOverValue > 0.0000005;
+  const manualDistributionHasRemaining = !manualDistributionOverBudget && manualDistributionRemainingValue > 0.0000005;
+  const manualDistributionRemainingUsdLabel = useMemo(
+    () => getUsdValue(manualDistributionRemainingValue, marketSnapshot?.weth_usd),
+    [manualDistributionRemainingValue, marketSnapshot?.weth_usd],
+  );
+  const manualDistributionOverUsdLabel = useMemo(
+    () => getUsdValue(manualDistributionOverValue, marketSnapshot?.weth_usd),
+    [manualDistributionOverValue, marketSnapshot?.weth_usd],
   );
   const directContractNativeEthUsdLabel = useMemo(
     () => getUsdValue(form.direct_contract_native_eth_per_contract, marketSnapshot?.eth_usd),
@@ -316,41 +351,29 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   };
 
   const updateAllocation = (tokenAddress: string, field: "percent" | "weth_amount_per_contract", value: string) => {
-    setForm((current) => ({
-      ...current,
-      stablecoin_allocations: current.stablecoin_allocations.map((allocation) =>
-        allocation.token_address.toLowerCase() === tokenAddress.toLowerCase()
-          ? { ...allocation, [field]: value }
-          : allocation,
-      ),
-    }));
+    setForm((current) => {
+      return {
+        ...current,
+        stablecoin_allocations: current.stablecoin_allocations.map((allocation) =>
+          allocation.token_address.toLowerCase() === tokenAddress.toLowerCase()
+            ? { ...allocation, [field]: value }
+            : allocation,
+        ),
+      };
+    });
   };
 
-  const distributeEqually = () => {
+  const resetDistributionValues = () => {
     if (selectedStablecoins.length === 0) return;
 
-    if (form.stablecoin_distribution_mode === "manual_percent") {
-      const values = splitMicroUnits(100, selectedStablecoins.length);
-      setForm((current) => ({
-        ...current,
-        stablecoin_allocations: current.stablecoin_allocations.map((allocation, index) => ({
-          ...allocation,
-          percent: values[index],
-        })),
-      }));
-      return;
-    }
-
-    if (form.stablecoin_distribution_mode === "manual_weth_amount") {
-      const values = splitMicroUnits(Number(form.swap_budget_eth_per_contract || "0"), selectedStablecoins.length);
-      setForm((current) => ({
-        ...current,
-        stablecoin_allocations: current.stablecoin_allocations.map((allocation, index) => ({
-          ...allocation,
-          weth_amount_per_contract: values[index],
-        })),
-      }));
-    }
+    setForm((current) => ({
+      ...current,
+      stablecoin_allocations: current.stablecoin_allocations.map((allocation) => ({
+        ...allocation,
+        percent: null,
+        weth_amount_per_contract: null,
+      })),
+    }));
   };
 
   const addManualStablecoin = async () => {
@@ -430,8 +453,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         return_wallet_address: form.return_wallet_address || null,
         test_auto_execute_after_funding: form.test_auto_execute_after_funding,
         gas_reserve_eth_per_contract: form.gas_reserve_eth_per_contract,
-        swap_budget_eth_per_contract: form.swap_budget_eth_per_contract,
-        direct_contract_eth_per_contract: form.direct_contract_eth_per_contract,
+        swap_budget_eth_per_contract: effectiveSwapBudgetString,
+        direct_contract_eth_per_contract: "0",
         direct_contract_native_eth_per_contract: form.direct_contract_native_eth_per_contract,
         direct_contract_weth_per_contract: form.direct_contract_weth_per_contract,
         auto_top_up_enabled: form.auto_top_up_enabled,
@@ -549,14 +572,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 </label>
                 <Select value={form.chain} onValueChange={(value) => void handleChainChange(value as TemplateChain)} disabled={Boolean(template)}>
                   <SelectTrigger className="w-full border-border bg-card">
-                    <SelectValue placeholder={locale === "en" ? "Select chain" : locale === "zn" ? "选择链" : "Chọn chain"} />
+                    <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                      <span className="truncate text-sm font-medium text-foreground">{currentChain.label}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {currentChain.native_symbol} / {currentChain.wrapped_native_symbol}
+                      </span>
+                    </div>
                   </SelectTrigger>
                   <SelectContent>
                     {chainOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
-                        <span className="flex min-w-0 flex-col">
-                          <span className="text-sm font-medium text-foreground">{option.label}</span>
-                          <span className="text-xs text-muted-foreground">
+                        <span className="flex w-full min-w-0 items-center justify-between gap-3">
+                          <span className="truncate text-sm font-medium text-foreground">{option.label}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
                             {option.native_symbol} / {option.wrapped_native_symbol}
                           </span>
                         </span>
@@ -564,12 +592,6 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     ))}
                   </SelectContent>
                 </Select>
-                <div className="cad-panel-soft flex items-center justify-between gap-3 px-4 py-3 text-sm">
-                  <span className="font-medium text-foreground">{currentChain.label}</span>
-                  <span className="text-muted-foreground">
-                    {currentChain.native_symbol} / {currentChain.wrapped_native_symbol}
-                  </span>
-                </div>
                 <p className="text-xs text-muted-foreground">
                   {template
                     ? locale === "en"
@@ -691,44 +713,26 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title={locale === "en" ? `${nativeSymbol} Budget` : locale === "zn" ? `${nativeSymbol} 预算` : `Ngân sách ${nativeSymbol}`}
             description={locale === "en" ? "These values apply to one contract. The wallet flow multiplies them by the contract count later." : locale === "zn" ? "这些数值适用于单个合约，后续钱包流程会按合约数量进行倍增。" : "Các giá trị này áp dụng cho một hợp đồng. Luồng ví sẽ nhân chúng theo số lượng hợp đồng ở bước sau."}
           >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="gas-reserve" className="text-sm font-medium text-foreground">
-                  {locale === "en" ? `Gas reserve ${nativeSymbol}` : locale === "zn" ? `Gas 预留 ${nativeSymbol}` : `Dự phòng gas ${nativeSymbol}`}
-                </label>
-                <Input
-                  id="gas-reserve"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  value={form.gas_reserve_eth_per_contract}
-                  onChange={(event) => setForm((current) => ({ ...current, gas_reserve_eth_per_contract: event.target.value }))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  {locale === "en"
-                    ? `Optional baseline. Preview will automatically add extra unwrapped ${nativeSymbol} when local wrap, swap, deploy, or token-transfer gas needs more headroom.`
-                    : locale === "zn"
-                      ? `可选基础值。当本地包装、兑换、部署或代币转账 gas 需要更多余量时，预览会自动增加未包装的 ${nativeSymbol}。`
-                      : `Mức cơ sở tùy chọn. Bản xem trước sẽ tự động cộng thêm ${nativeSymbol} chưa wrap khi local wrap, swap, triển khai hoặc gas chuyển token cần thêm vùng đệm.`}
-                </p>
-                <LiveValueHint label="Live value" value={ethUsdLabel} />
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="swap-budget" className="text-sm font-medium text-foreground">
-                  {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
-                </label>
-                <Input
-                  id="swap-budget"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  value={form.swap_budget_eth_per_contract}
-                  onChange={(event) => setForm((current) => ({ ...current, swap_budget_eth_per_contract: event.target.value }))}
-                />
-                <p className="text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
-                <LiveValueHint label={`Live ${wrappedNativeSymbol} spend`} value={swapBudgetUsdLabel} />
-              </div>
+            <div className="space-y-2">
+              <label htmlFor="gas-reserve" className="text-sm font-medium text-foreground">
+                {locale === "en" ? `Gas reserve ${nativeSymbol}` : locale === "zn" ? `Gas 预留 ${nativeSymbol}` : `Dự phòng gas ${nativeSymbol}`}
+              </label>
+              <Input
+                id="gas-reserve"
+                type="number"
+                min="0"
+                step="0.0001"
+                value={form.gas_reserve_eth_per_contract}
+                onChange={(event) => setForm((current) => ({ ...current, gas_reserve_eth_per_contract: event.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                {locale === "en"
+                  ? `Optional baseline. Preview will automatically add extra unwrapped ${nativeSymbol} when local wrap, swap, deploy, or token-transfer gas needs more headroom.`
+                  : locale === "zn"
+                    ? `可选基础值。当本地包装、兑换、部署或代币转账 gas 需要更多余量时，预览会自动增加未包装的 ${nativeSymbol}。`
+                    : `Mức cơ sở tùy chọn. Bản xem trước sẽ tự động cộng thêm ${nativeSymbol} chưa wrap khi local wrap, swap, triển khai hoặc gas chuyển token cần thêm vùng đệm.`}
+              </p>
+              <LiveValueHint label="Live value" value={ethUsdLabel} />
             </div>
 
             <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
@@ -742,17 +746,17 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               <span>
                 <span className="block text-sm font-medium text-foreground">
                   {locale === "en"
-                    ? `Local sub-wallet wrapping is always used when ${wrappedNativeSymbol} is needed`
+                    ? `Local sub-wallet wrapping is used when swap routes need ${wrappedNativeSymbol}`
                     : locale === "zn"
-                      ? `当需要 ${wrappedNativeSymbol} 时，始终在子钱包内本地包装`
-                      : `Luôn wrap cục bộ trong ví con khi cần ${wrappedNativeSymbol}`}
+                      ? `当兑换路由需要 ${wrappedNativeSymbol} 时，会在子钱包内本地包装`
+                      : `Wrap cục bộ trong ví con được dùng khi tuyến swap cần ${wrappedNativeSymbol}`}
                 </span>
                 <span className="mt-1 block text-xs text-muted-foreground">
                   {locale === "en"
-                    ? `The current execution engine funds ${nativeSymbol} first, keeps gas unwrapped, and wraps the required ${wrappedNativeSymbol} amount inside each sub-wallet. Direct main-wallet ${wrappedNativeSymbol} funding is not available in this flow.`
+                    ? `The current execution engine still funds ${nativeSymbol} first, keeps gas unwrapped, and wraps swap-route ${wrappedNativeSymbol} inside each sub-wallet. Direct distributor ${wrappedNativeSymbol} funding is sourced from the main wallet after deployment.`
                     : locale === "zn"
-                      ? `当前执行引擎会先注入 ${nativeSymbol}，保留 gas 为未包装状态，并在每个子钱包内包装所需的 ${wrappedNativeSymbol}。此流程不支持主钱包直接注入 ${wrappedNativeSymbol}。`
-                      : `Luồng thực thi hiện tại sẽ cấp ${nativeSymbol} trước, giữ gas ở dạng chưa wrap và chỉ wrap lượng ${wrappedNativeSymbol} cần thiết trong từng ví con. Luồng này chưa hỗ trợ cấp ${wrappedNativeSymbol} trực tiếp từ ví chính.`}
+                      ? `当前执行引擎仍会先注入 ${nativeSymbol}、保留 gas 为未包装状态，并在每个子钱包内包装兑换路由所需的 ${wrappedNativeSymbol}。直接分发合约 ${wrappedNativeSymbol} 会在部署后由主钱包注入。`
+                      : `Luồng thực thi hiện tại vẫn cấp ${nativeSymbol} trước, giữ gas ở dạng chưa wrap và chỉ wrap ${wrappedNativeSymbol} cho tuyến swap trong từng ví con. Phần ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng phân phối sẽ được lấy từ ví chính sau khi triển khai.`}
                 </span>
               </span>
             </label>
@@ -838,6 +842,20 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <LiveValueHint label="Live value" value={topUpTargetUsdLabel} />
               </div>
             </div>
+
+            <div className={topUpThresholdRuleViolated ? "rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700" : "cad-panel-soft px-4 py-3 text-sm text-muted-foreground"}>
+              {locale === "en"
+                ? topUpTargetMustExceedThreshold
+                  ? `Note: Refill target ${nativeSymbol} > Trigger threshold ${nativeSymbol}.`
+                  : `Note: Refill target ${nativeSymbol} >= Trigger threshold ${nativeSymbol}.`
+                : locale === "zn"
+                  ? topUpTargetMustExceedThreshold
+                    ? `说明：补充目标 ${nativeSymbol} 必须大于触发阈值 ${nativeSymbol}。`
+                    : `说明：补充目标 ${nativeSymbol} 必须等于或高于触发阈值 ${nativeSymbol}。`
+                  : topUpTargetMustExceedThreshold
+                    ? `Lưu ý: Mục tiêu nạp lại ${nativeSymbol} phải lớn hơn ngưỡng kích hoạt ${nativeSymbol}.`
+                    : `Lưu ý: Mục tiêu nạp lại ${nativeSymbol} phải bằng hoặc lớn hơn ngưỡng kích hoạt ${nativeSymbol}.`}
+            </div>
           </SectionCard>
 
           <SectionCard
@@ -865,6 +883,51 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
             {form.stablecoin_distribution_mode !== "none" ? (
               <>
+                {form.stablecoin_distribution_mode !== "manual_weth_amount" ? (
+                  <div className="cad-panel-soft p-4">
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-end">
+                      <div className="space-y-2">
+                        <label htmlFor="swap-budget" className="text-sm font-medium text-foreground">
+                          {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
+                        </label>
+                        <Input
+                          id="swap-budget"
+                          type="number"
+                          min="0"
+                          step="0.0001"
+                          value={form.swap_budget_eth_per_contract}
+                          onChange={(event) => setForm((current) => ({ ...current, swap_budget_eth_per_contract: event.target.value }))}
+                        />
+                        <p className="text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
+                      </div>
+                      <div className="cad-panel-muted px-4 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${wrappedNativeSymbol} spend`}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                        <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="cad-panel-soft p-4">
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-end">
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium text-foreground">
+                          {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
+                        </p>
+                        <div className="cad-panel-muted px-4 py-3">
+                          <p className="text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
+                        </div>
+                      </div>
+                      <div className="cad-panel-muted px-4 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${wrappedNativeSymbol} spend`}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                        <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-foreground">
@@ -961,14 +1024,75 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-1 text-xs text-muted-foreground">
                           {form.stablecoin_distribution_mode === "manual_percent"
                             ? "Percentages must total exactly 100."
-                            : `Exact ${wrappedNativeSymbol} amounts must total the swap budget for one contract.`}
+                            : `Exact ${wrappedNativeSymbol} amounts define the per-contract swap total automatically.`}
                         </p>
                       </div>
-                      <Button type="button" variant="outline" onClick={distributeEqually}>
-                        <RefreshCw className="h-4 w-4" />
-                        Auto distribute
-                      </Button>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button type="button" variant="outline" onClick={resetDistributionValues}>
+                          <RefreshCw className="h-4 w-4" />
+                          {locale === "en" ? "Reset all token values" : locale === "zn" ? "重置所有代币数值" : "Đặt lại toàn bộ giá trị token"}
+                        </Button>
+                      </div>
                     </div>
+
+                    {form.stablecoin_distribution_mode === "manual_percent" ? (
+                      <>
+                        <div className="mb-4 grid gap-2 sm:grid-cols-3">
+                          <div className="cad-panel-muted px-4 py-3">
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap budget</p>
+                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                            <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
+                          </div>
+                          <div className="cad-panel-muted px-4 py-3">
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Assigned</p>
+                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(manualDistributionAssignedValue)} {wrappedNativeSymbol}</p>
+                            <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(manualDistributionAssignedUsdLabel)}</p>
+                          </div>
+                          <div className="cad-panel-muted px-4 py-3">
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              {manualDistributionOverValue > 0 ? "Over budget" : "Remaining"}
+                            </p>
+                            <p className="mt-1 text-sm font-semibold text-foreground">
+                              {formatAmount(manualDistributionOverValue > 0 ? manualDistributionOverValue : manualDistributionRemainingValue)} {wrappedNativeSymbol}
+                            </p>
+                            <p className="mt-1 text-[11px] font-medium text-sky-700">
+                              {formatUsd(manualDistributionOverValue > 0 ? manualDistributionOverUsdLabel : manualDistributionRemainingUsdLabel)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div
+                          className={`mb-4 rounded-xl px-4 py-3 text-sm ${
+                            !manualDistributionHasBudget
+                              ? "bg-slate-50 text-slate-700 ring-1 ring-slate-200"
+                              : manualDistributionOverBudget
+                              ? "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
+                              : manualDistributionHasRemaining
+                                ? "bg-amber-50 text-amber-800 ring-1 ring-amber-100"
+                                : "bg-sky-50 text-sky-900 ring-1 ring-sky-100"
+                          }`}
+                        >
+                          <p className="font-semibold">
+                            {!manualDistributionHasBudget
+                              ? `Swap budget is 0 ${wrappedNativeSymbol}.`
+                              : manualDistributionOverBudget
+                              ? `Over budget by ${formatAmount(manualDistributionOverValue)} ${wrappedNativeSymbol}.`
+                              : manualDistributionHasRemaining
+                                ? `${formatAmount(manualDistributionRemainingValue)} ${wrappedNativeSymbol} is still unassigned.`
+                                : `Swap budget matched. ${wrappedNativeSymbol} allocation is ready.`}
+                          </p>
+                          <p className="mt-1 text-xs">
+                            {!manualDistributionHasBudget
+                              ? `Set the swap budget above 0 ${wrappedNativeSymbol} before the token allocation can be ready.`
+                              : manualDistributionOverBudget
+                              ? "Lower one or more token amounts before saving."
+                              : manualDistributionHasRemaining
+                                ? "Add the remaining amount to one or more token rows, or use Auto distribute."
+                                : `Assigned token amounts now match the per-contract swap budget. Live value: ${formatUsd(manualDistributionAssignedUsdLabel)}`}
+                          </p>
+                        </div>
+                      </>
+                    ) : null}
 
                     <div className="space-y-3">
                       {selectedStablecoins.map((coin) => {
@@ -988,6 +1112,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                 type="number"
                                 min="0"
                                 step="0.000001"
+                                placeholder={
+                                  form.stablecoin_distribution_mode === "manual_percent"
+                                    ? "Percent share"
+                                    : `${wrappedNativeSymbol} per contract`
+                                }
                                 value={
                                   form.stablecoin_distribution_mode === "manual_percent"
                                     ? allocation.percent ?? ""
@@ -1004,16 +1133,24 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                 }
                               />
                               {form.stablecoin_distribution_mode === "manual_percent" ? (
-                                <LiveValueHint
-                                  label="Live budget slice"
-                                  value={getUsdValue(
-                                    ((toFiniteNumber(form.swap_budget_eth_per_contract) ?? 0) * (toFiniteNumber(allocation.percent) ?? 0)) / 100,
-                                    marketSnapshot?.weth_usd,
-                                  )}
-                                />
+                                <>
+                                  <p className="text-[11px] text-muted-foreground">Percent input.</p>
+                                  <LiveValueHint
+                                    label="Live budget slice"
+                                    value={getUsdValue(
+                                      ((toFiniteNumber(form.swap_budget_eth_per_contract) ?? 0) * (toFiniteNumber(allocation.percent) ?? 0)) / 100,
+                                      marketSnapshot?.weth_usd,
+                                    )}
+                                  />
+                                  {!manualDistributionHasBudget && (toFiniteNumber(allocation.percent) ?? 0) > 0 ? (
+                                    <p className="text-[11px] text-amber-700">
+                                      {`Budget is 0. Set swap budget > 0 ${wrappedNativeSymbol}.`}
+                                    </p>
+                                  ) : null}
+                                </>
                               ) : (
                                 <LiveValueHint
-                                  label={`Live ${wrappedNativeSymbol} spend`}
+                                  label="Live budget slice"
                                   value={getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd)}
                                 />
                               )}
@@ -1130,30 +1267,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
           <SectionCard
             title="Direct Funding"
-            description={`Keep extra ${nativeSymbol} in each sub-wallet, or fund ManagedTokenDistributor directly with ${nativeSymbol} and ${wrappedNativeSymbol}.`}
+            description={`Fund ManagedTokenDistributor directly with ${nativeSymbol} and ${wrappedNativeSymbol}.`}
           >
             <div className="cad-panel-soft px-4 py-3 text-sm text-foreground/80">
-              {`Sub-wallet ${nativeSymbol} stays local for gas headroom or native-side actions. Direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} are sent into ManagedTokenDistributor after deployment.`}
+              {`The main wallet sends direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into ManagedTokenDistributor after deployment.`}
             </div>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <div className="space-y-2">
-                <label htmlFor="direct-eth" className="text-sm font-medium text-foreground">
-                  {`Direct ${nativeSymbol} to sub-wallet`}
-                </label>
-                <Input
-                  id="direct-eth"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  value={form.direct_contract_eth_per_contract}
-                  onChange={(event) => setForm((current) => ({ ...current, direct_contract_eth_per_contract: event.target.value }))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  {`This ${nativeSymbol} stays unwrapped in the sub-wallet after funding. Use it for extra gas headroom or any native-side action in the run.`}
-                </p>
-                <LiveValueHint label="Live value" value={directEthUsdLabel} />
-              </div>
-
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="direct-contract-eth" className="text-sm font-medium text-foreground">
                   {`Direct ${nativeSymbol} distributor funding`}
@@ -1167,7 +1286,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_native_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {`Optional. After deployment, the sub-wallet sends this ${nativeSymbol} directly into ManagedTokenDistributor for a native-token execute path.`}
+                  {`Optional. After deployment, the main wallet sends this ${nativeSymbol} directly into ManagedTokenDistributor for a native-token execute path.`}
                 </p>
                 <LiveValueHint label="Live value" value={directContractNativeEthUsdLabel} />
               </div>
@@ -1185,7 +1304,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_weth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {`Optional. The sub-wallet wraps this amount locally after funding, then transfers it into a deployed ManagedTokenDistributor.`}
+                  {`Optional. After deployment, the main wallet provides this ${wrappedNativeSymbol} to ManagedTokenDistributor. Existing main-wallet ${wrappedNativeSymbol} is used first, and any shortfall is wrapped on the main wallet.`}
                 </p>
                 <LiveValueHint label="Live value" value={directWethUsdLabel} />
               </div>
@@ -1196,7 +1315,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             title={locale === "en" ? "Summary" : locale === "zn" ? "摘要" : "Tóm tắt"}
             description={locale === "en" ? "Per contract." : locale === "zn" ? "按单个合约计算。" : "Theo từng hợp đồng."}
           >
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
               <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Gas</p>
                 <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.gas_reserve_eth_per_contract)} {nativeSymbol}</p>
@@ -1204,13 +1323,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </div>
               <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.swap_budget_eth_per_contract)} {wrappedNativeSymbol}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
-              </div>
-              <div className="cad-panel-muted px-4 py-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Wallet ${nativeSymbol}`}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(form.direct_contract_eth_per_contract)} {nativeSymbol}</p>
-                <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(directEthUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Contract ${nativeSymbol}`}</p>
