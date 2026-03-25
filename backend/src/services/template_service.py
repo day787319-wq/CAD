@@ -14,12 +14,20 @@ from src.services.market_service import get_market_snapshot
 from src.services.template_chain_config import (
     DEFAULT_TEMPLATE_CHAIN,
     ETHEREUM_SWAP_TOKENS,
+    TEMPLATE_CHAIN_ARBITRUM,
+    TEMPLATE_CHAIN_AVALANCHE,
+    TEMPLATE_CHAIN_BASE,
     TEMPLATE_CHAIN_BNB,
     TEMPLATE_CHAIN_ETHEREUM,
+    TEMPLATE_CHAIN_OPTIMISM,
+    TEMPLATE_CHAIN_POLYGON,
     TEMPLATE_CHAIN_TOKEN_BY_ADDRESS,
     TEMPLATE_CHAIN_TOKEN_BY_SYMBOL,
+    TEMPLATE_CHAIN_XLAYER,
+    get_swap_backend_label,
     get_template_chain_choices,
     get_template_chain_config,
+    get_template_chain_swap_backends,
     get_template_chain_token,
     get_template_chain_tokens,
     normalize_template_chain,
@@ -60,6 +68,103 @@ def _format_decimal(value: Decimal | None):
     return format(value.normalize(), "f")
 
 
+BUILTIN_TEMPLATE_NOTES = (
+    "Curated token basket seeded from the provided chain addresses. "
+    "This template starts with a zero swap budget so it can be used immediately for gas-only flows. "
+    "Add a recipient and a positive budget when you want live routed swaps."
+)
+
+BUILTIN_TEMPLATE_DEFINITIONS = [
+    {
+        "id": "template_builtin_arbitrum_core_basket",
+        "name": "Arbitrum Core Basket",
+        "chain": TEMPLATE_CHAIN_ARBITRUM,
+        "allocation_symbols": ["USDC", "USDT0", "DAI"],
+    },
+    {
+        "id": "template_builtin_avalanche_core_basket",
+        "name": "Avalanche Core Basket",
+        "chain": TEMPLATE_CHAIN_AVALANCHE,
+        "allocation_symbols": ["USDC", "USDT", "DAI"],
+    },
+    {
+        "id": "template_builtin_base_core_basket",
+        "name": "Base Core Basket",
+        "chain": TEMPLATE_CHAIN_BASE,
+        "allocation_symbols": ["USDC", "DAI", "USDe"],
+    },
+    {
+        "id": "template_builtin_optimism_core_basket",
+        "name": "Optimism Core Basket",
+        "chain": TEMPLATE_CHAIN_OPTIMISM,
+        "allocation_symbols": ["USDC", "USDT", "DAI"],
+    },
+    {
+        "id": "template_builtin_polygon_core_basket",
+        "name": "Polygon Core Basket",
+        "chain": TEMPLATE_CHAIN_POLYGON,
+        "allocation_symbols": ["USDC", "USDT", "DAI"],
+    },
+    {
+        "id": "template_builtin_xlayer_core_basket",
+        "name": "X Layer Core Basket",
+        "chain": TEMPLATE_CHAIN_XLAYER,
+        "allocation_symbols": ["USDC", "USDT", "USDG"],
+    },
+]
+
+
+def _build_builtin_template_allocation(chain: str, symbol: str) -> dict:
+    token = get_template_chain_token(chain, symbol=symbol)
+    return {
+        "token_symbol": token["symbol"],
+        "token_address": token["address"],
+        "percent": None,
+        "weth_amount_per_contract": None,
+    }
+
+
+def _build_builtin_template(definition: dict) -> dict:
+    chain = normalize_template_chain(definition["chain"])
+    allocations = [
+        _build_builtin_template_allocation(chain, symbol)
+        for symbol in definition["allocation_symbols"]
+    ]
+    return {
+        "id": definition["id"],
+        "name": definition["name"],
+        "chain": chain,
+        "template_version": TEMPLATE_VERSION_V2,
+        "gas_reserve_eth_per_contract": "0.02",
+        "swap_budget_eth_per_contract": "0",
+        "direct_contract_eth_per_contract": "0",
+        "direct_contract_native_eth_per_contract": "0",
+        "direct_contract_weth_per_contract": "0",
+        "recipient_address": None,
+        "return_wallet_address": None,
+        "test_auto_execute_after_funding": False,
+        "slippage_percent": "0.5",
+        "fee_tier": None,
+        "auto_top_up_enabled": False,
+        "auto_top_up_threshold_eth": "0",
+        "auto_top_up_target_eth": "0",
+        "auto_wrap_eth_to_weth": True,
+        "stablecoin_distribution_mode": "equal",
+        "stablecoin_allocations": allocations,
+        "notes": BUILTIN_TEMPLATE_NOTES,
+        "is_active": True,
+        "source": DEFAULT_TEMPLATE_SOURCE,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def ensure_builtin_templates_seeded():
+    for definition in BUILTIN_TEMPLATE_DEFINITIONS:
+        if db.get_template(definition["id"]) is not None:
+            continue
+        db.upsert_template(_serialize_template_for_storage(_build_builtin_template(definition)))
+
+
 def _parse_decimal(value, field_name: str, *, allow_zero: bool = True) -> Decimal:
     try:
         parsed = Decimal(str(value))
@@ -82,7 +187,7 @@ def _parse_slippage_percent(value) -> Decimal:
 
 def _parse_fee_tier(value, chain: str | None = None) -> int | None:
     normalized_chain = normalize_template_chain(chain)
-    if normalized_chain != TEMPLATE_CHAIN_ETHEREUM:
+    if "uniswap_v3" not in get_template_chain_swap_backends(normalized_chain):
         return None
     if value in (None, "", "auto"):
         return None
@@ -215,16 +320,12 @@ def _parse_allocations(
         allocations.append(allocation)
 
     if distribution_mode == "equal":
-        if swap_budget_eth_per_contract <= 0:
-            raise ValueError("Swap budget must be greater than 0 when stablecoin swapping is enabled")
         return allocations
 
     if distribution_mode == "manual_percent":
         total_percent = sum(Decimal(allocation["percent"]) for allocation in allocations)
         if total_percent != Decimal("100"):
             raise ValueError("Stablecoin percentages must total exactly 100")
-        if swap_budget_eth_per_contract <= 0:
-            raise ValueError("Swap budget must be greater than 0 when stablecoin swapping is enabled")
         return allocations
 
     if distribution_mode == "manual_weth_amount":
@@ -270,10 +371,16 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         payload.get("direct_contract_weth_per_contract", "0"),
         "direct_contract_weth_per_contract",
     )
+    if swap_budget > 0 and not get_template_chain_swap_backends(chain):
+        raise ValueError(f"Token swap execution is not configured for {chain_config['label']} yet")
     recipient_address = _parse_optional_address(payload.get("recipient_address"), "recipient_address")
     return_wallet_address = _parse_optional_address(payload.get("return_wallet_address"), "return_wallet_address")
     test_auto_execute_after_funding = bool(payload.get("test_auto_execute_after_funding", False))
-    requires_recipient = direct_contract_native_eth > 0 or direct_weth > 0 or distribution_mode != "none"
+    requires_recipient = (
+        direct_contract_native_eth > 0
+        or direct_weth > 0
+        or (distribution_mode != "none" and swap_budget > 0)
+    )
     if requires_recipient and recipient_address is None:
         raise ValueError(
             f"recipient_address is required when token swaps or direct contract "
@@ -548,6 +655,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
     ]
     route_count = len(stablecoin_routes)
+    router_approval_count_per_wallet = len(get_template_chain_swap_backends(template.get("chain"))) if route_count > 0 else 0
     local_erc20_funding_targets_per_wallet = route_count
     main_wallet_erc20_funding_targets_per_wallet = 1 if direct_weth > 0 else 0
     main_wallet_native_eth_funding_targets_per_wallet = 1 if direct_contract_native_eth > 0 else 0
@@ -558,7 +666,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     deployment_targets_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
     required_weth_per_contract = swap_budget
     wrap_transaction_count = contract_count if required_weth_per_contract > 0 else 0
-    approval_transaction_count = contract_count if route_count > 0 else 0
+    approval_transaction_count = contract_count * router_approval_count_per_wallet
     swap_transaction_count = contract_count * route_count
     deployment_transaction_count = contract_count * deployment_targets_per_wallet if recipient_address else 0
     contract_funding_transaction_count = deployment_transaction_count if recipient_address else 0
@@ -576,7 +684,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     return_sweep_transaction_count = contract_count * return_sweep_transaction_count_per_wallet
 
     wrap_gas_units_per_wallet = WETH_DEPOSIT_GAS_LIMIT if required_weth_per_contract > 0 else 0
-    approval_gas_units_per_wallet = ERC20_APPROVE_GAS_LIMIT if route_count > 0 else 0
+    approval_gas_units_per_wallet = ERC20_APPROVE_GAS_LIMIT * router_approval_count_per_wallet
     swap_gas_units_per_wallet = UNISWAP_V3_SWAP_GAS_LIMIT * route_count
     deployment_gas_units_per_wallet = (
         MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT * deployment_targets_per_wallet
@@ -631,6 +739,7 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "erc20_funding_targets_per_wallet": erc20_funding_targets_per_wallet,
         "native_eth_funding_targets_per_wallet": native_eth_funding_targets_per_wallet,
         "required_weth_per_contract": required_weth_per_contract,
+        "router_approval_count_per_wallet": router_approval_count_per_wallet,
         "wrap_transaction_count": wrap_transaction_count,
         "approval_transaction_count": approval_transaction_count,
         "swap_transaction_count": swap_transaction_count,
@@ -654,6 +763,37 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "local_execution_gas_fee_eth_per_wallet": wei_to_decimal(local_execution_gas_fee_wei_per_wallet),
         "local_execution_gas_fee_eth_total": wei_to_decimal(local_execution_gas_fee_wei_total),
         "gas_price_wei": gas_price_wei,
+    }
+
+
+def _build_route_preflight_status(template: dict):
+    chain = template.get("chain") or DEFAULT_TEMPLATE_CHAIN
+    chain_config = get_template_chain_config(chain)
+    funded_routes = [
+        route
+        for route in build_template_stablecoin_routes(template, contract_count=1)
+        if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
+    ]
+    if not funded_routes:
+        return {"available": True, "errors": []}
+
+    errors = []
+    for route in funded_routes:
+        try:
+            quote_uniswap_swap(
+                chain_config["wrapped_native_symbol"],
+                route["token_address"],
+                route["per_contract_weth_amount"],
+                fee_tier=template.get("fee_tier"),
+                slippage_percent=template.get("slippage_percent"),
+                chain=chain,
+            )
+        except Exception as exc:
+            errors.append(f"{route['token_symbol']}: {exc}")
+
+    return {
+        "available": len(errors) == 0,
+        "errors": errors,
     }
 
 
@@ -911,19 +1051,25 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
 
 
 def get_template_options(chain: str | None = None):
+    ensure_builtin_templates_seeded()
     normalized_chain = normalize_template_chain(chain)
     chain_config = get_template_chain_config(normalized_chain)
-    if normalized_chain == TEMPLATE_CHAIN_BNB:
+    swap_backends = get_template_chain_swap_backends(normalized_chain)
+    primary_backend = swap_backends[0] if swap_backends else None
+    primary_backend_label = get_swap_backend_label(primary_backend)
+    fallback_backend_labels = [get_swap_backend_label(backend) for backend in swap_backends[1:]]
+    if not chain_config.get("quote_supported"):
         fee_tiers = [
             {
                 "value": None,
-                "label": "Auto route",
-                "description": "Use PancakeSwap routing on BNB Chain without a selectable V3 fee tier.",
+                "label": "Routing unavailable",
+                "description": f"Live swap routing is not configured for {chain_config['label']} yet.",
             }
         ]
         swap_settings_note = (
-            "Slippage sets your minimum received guardrail. BNB Chain swaps use PancakeSwap routing, "
-            "so fee tier stays on auto."
+            f"Token selection and pricing are available for {chain_config['label']}, "
+            "but live swap quoting and swap execution are not wired in this build yet. "
+            "Keep the swap budget at 0 for now."
         )
     else:
         fee_tiers = [
@@ -948,7 +1094,15 @@ def get_template_options(chain: str | None = None):
                 "description": "Use the 10000 fee tier pool for tokens that route there best.",
             },
         ]
-        swap_settings_note = "Slippage sets your minimum received guardrail. Fee tier can stay on auto unless you want to force a pool."
+        swap_settings_note = (
+            f"Primary routing uses {primary_backend_label}. "
+            + (
+                f"Fallback order: {', '.join(fallback_backend_labels)}. "
+                if fallback_backend_labels
+                else ""
+            )
+            + "Slippage sets your minimum received guardrail. Fee tier can stay on auto unless you want to force a V3 pool fee."
+        )
 
     return {
         "available_chains": get_template_chain_choices(),
@@ -956,6 +1110,10 @@ def get_template_options(chain: str | None = None):
         "native_symbol": chain_config["native_symbol"],
         "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
         "quote_supported": chain_config["quote_supported"],
+        "primary_swap_backend": primary_backend,
+        "primary_swap_backend_label": primary_backend_label,
+        "fallback_swap_backends": swap_backends[1:],
+        "fallback_swap_backend_labels": fallback_backend_labels,
         "stablecoins": get_template_chain_tokens(normalized_chain),
         "distribution_modes": [
             {
@@ -1040,6 +1198,7 @@ def get_template_editor_market_snapshot(chain: str | None = None):
 
 
 def list_templates():
+    ensure_builtin_templates_seeded()
     templates = []
     for record in db.list_templates():
         template = _deserialize_template_record(record)
@@ -1049,6 +1208,7 @@ def list_templates():
 
 
 def get_template(template_id: str):
+    ensure_builtin_templates_seeded()
     template = _deserialize_template_record(db.get_template(template_id))
     if not template or not template.get("is_active", True):
         return None
@@ -1202,6 +1362,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     contract_sync_network_fee_eth = Decimal(str(registry_sync_preview["fee_eth"] or "0"))
     top_up_transaction_count = int(execution_estimate.get("top_up_transaction_count") or 0)
     execute_transaction_count = int(execution_estimate.get("execute_transaction_count") or 0)
+    route_preflight = _build_route_preflight_status(template)
     top_up_network_fee_eth = Decimal(str(execution_estimate.get("top_up_network_fee_eth") or "0"))
     top_up_gas_units = ETH_TRANSFER_GAS_LIMIT * top_up_transaction_count
     return_sweep_transaction_count = int(execution_estimate.get("return_sweep_transaction_count") or 0)
@@ -1241,7 +1402,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         + return_sweep_transaction_count
         + main_wallet_wrap_transaction_count
     )
-    can_proceed = available_eth >= total_eth_required_with_fees and (not requires_recipient or bool(recipient_address))
+    can_proceed = (
+        available_eth >= total_eth_required_with_fees
+        and (not requires_recipient or bool(recipient_address))
+        and route_preflight["available"]
+    )
 
     shortfall_reason = None
     if requires_recipient and not recipient_address:
@@ -1268,6 +1433,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             f"Not enough {chain_config['native_symbol']} in the main wallet. "
             f"Need {_format_decimal(total_eth_required_with_fees - available_eth)} more {chain_config['native_symbol']} "
             "to fund the new subwallets, reserve any projected auto top-ups, and cover the main-wallet funding transaction fees."
+        )
+    elif not route_preflight["available"]:
+        shortfall_reason = (
+            f"Live swap routing is unavailable for {chain_config['label']} on: "
+            + "; ".join(route_preflight["errors"])
         )
 
     return {
@@ -1338,5 +1508,6 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "expected_action_count": contract_record_count,
             "message": registry_sync_preview["message"],
         },
+        "route_preflight": route_preflight,
         **cost_snapshot,
     }

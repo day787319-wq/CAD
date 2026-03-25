@@ -3,10 +3,38 @@ from copy import deepcopy
 
 TEMPLATE_CHAIN_ETHEREUM = "ethereum_mainnet"
 TEMPLATE_CHAIN_BNB = "bnb"
+TEMPLATE_CHAIN_ARBITRUM = "arbitrum"
+TEMPLATE_CHAIN_AVALANCHE = "avalanche"
+TEMPLATE_CHAIN_BASE = "base"
+TEMPLATE_CHAIN_OPTIMISM = "optimism"
+TEMPLATE_CHAIN_POLYGON = "polygon"
+TEMPLATE_CHAIN_XLAYER = "xlayer"
 DEFAULT_TEMPLATE_CHAIN = TEMPLATE_CHAIN_ETHEREUM
+
+SWAP_BACKEND_UNISWAP_V3 = "uniswap_v3"
+SWAP_BACKEND_PANCAKESWAP_V2 = "pancakeswap_v2"
+SWAP_BACKEND_LABELS = {
+    SWAP_BACKEND_UNISWAP_V3: "Uniswap V3",
+    SWAP_BACKEND_PANCAKESWAP_V2: "PancakeSwap V2",
+}
 
 ETHEREUM_WRAPPED_NATIVE_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 BNB_WRAPPED_NATIVE_ADDRESS = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+ARBITRUM_WRAPPED_NATIVE_ADDRESS = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
+AVALANCHE_WRAPPED_NATIVE_ADDRESS = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"
+BASE_WRAPPED_NATIVE_ADDRESS = "0x4200000000000000000000000000000000000006"
+OPTIMISM_WRAPPED_NATIVE_ADDRESS = "0x4200000000000000000000000000000000000006"
+POLYGON_WRAPPED_NATIVE_ADDRESS = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"
+XLAYER_WRAPPED_NATIVE_ADDRESS = "0xe538905cf8410324e03a5a23c1c177a474d59b2b"
+
+
+def _token(symbol: str, address: str, decimals: int | None = None, name: str | None = None) -> dict:
+    return {
+        "symbol": symbol,
+        "name": name or symbol,
+        "address": address,
+        "decimals": decimals,
+    }
 
 ETHEREUM_SWAP_TOKENS = [
     {
@@ -224,6 +252,168 @@ BNB_SWAP_TOKENS = [
     {"symbol": "TONCOIN", "name": "Toncoin", "address": "0x76A797A59Ba2C17726896976B7B3747BfD1d220f"},
 ]
 
+ARBITRUM_SWAP_TOKENS = [
+    _token("ARB", "0x912ce59144191c1204e64559fe8253a0e49e6548", 18),
+    _token("BUIDL", "0xa6525ae43edcd03dc08e775774dcabd3bb925872", 6),
+    _token("cbBTC", "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf", 8),
+    _token("DAI", "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18),
+    _token("DOT", "0x8d010bf9c26881788b4e6bf5fd1bdc358c8f90b8", 18),
+    _token("ENA", "0x58538e6a46e07434d7e7375bc268d3cb839c0133", 18),
+    _token("EUTBL", "0xcbeb19549054cc0a6257a77736fc78c367216ce7", 5),
+    _token("LINK", "0xf97f4df75117a78c1a5a0dbb814af92458539fb4", 18),
+    _token("MORPHO", "0x40bd670a58238e6e230c430bbb5ce6ec0d40df48", 18),
+    _token("PEPE", "0x25d887ce7a35172c62febfd67a1856f20faebb00", 18),
+    _token("PYUSD", "0x46850ad61c2b7d64d08c9c754f45254596696984", 6),
+    _token("RAIN", "0x25118290e6a5f4139381d072181157035864099d", 18),
+    _token("SolvBTC", "0x3647c54c4c2c65bc7a2d63c0da2809b399dbbdc0", 18),
+    _token("sUSDe", "0x211cc4dd073734da055fbf44a2b4667d5e5fe5d2", 18),
+    _token("sUSDS", "0xddb46999f8891663a8f2828d25298f70416d7610", 18),
+    _token("syrupUSDC", "0x41ca7586cc1311807b4605fbb748a3b8862b42b5", 6),
+    _token("UNI", "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0", 18),
+    _token("USDC", "0xaf88d065e77c8cc2239327c5edb3a432268e5831", 6),
+    _token("USDC.e", "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8", 6),
+    _token("USDD", "0x680447595e8b7b3aa1b43beb9f6098c79ac2ab3f", 18),
+    _token("USDe", "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18),
+    _token("USDS", "0x6491c05a82219b8d1479057361ff1654749b876b", 18),
+    _token("USDT0", "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", 6),
+    _token("USDY", "0x35e050d3c0ec2d29d269a8ecea763a183bdf9a9d", 18),
+    _token("WBTC", "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f", 8),
+    _token("WETH", "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", 18),
+    _token("wM", "0x437cc33344a0b27a429f795ff6b469c72698b291", 6),
+    _token("wstETH", "0x5979D7b546E38E414F7E9822514be443A4800529", 18),
+]
+
+AVALANCHE_SWAP_TOKENS = [
+    _token("aAvaWETH", "0xe50fA9b3c56FfB159cB0FCA61F5c9D750e8128c8", 18),
+    _token("ARENA", "0xB8d7710f7d8349A506b75dD184F05777c82dAd0C", 18),
+    _token("avUSD", "0x24dE8771bC5DdB3362Db529Fc3358F2df3A0E346", 18),
+    _token("BTC.b", "0x152b9d0FdC40C096757F570A51E494bd4b943E50", 8),
+    _token("DAI", "0xd586E7F844cEa2F87f50152665BCbc2C279D8d70", 18),
+    _token("JOE", "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd", 18),
+    _token("NXPC", "0x5E0E90E268BC247Cc850c789A0DB0d5c7621fb59", 18),
+    _token("PNIC", "0x4f3c5C53279536fFcfe8bCafb78E612E933D53c6", 18),
+    _token("SAVAX", "0x2b2c81e08f1af8835a78bb2a90ae924ace0ea4be", 18),
+    _token("stAVAX", "0xA25EaF2906FA1a3a13EdAc9B9657108Af7B703e3", 18),
+    _token("USDC", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", 6),
+    _token("USDC.e", "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664", 6),
+    _token("USDT", "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", 6),
+    _token("WAVAX", "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7", 18),
+    _token("WBTC", "0x50b7545627a5162F82A992c33b87aDc75187B218", 8),
+    _token("WETH.e", "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB", 18),
+    _token("XAVA", "0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4", 18),
+]
+
+BASE_SWAP_TOKENS = [
+    _token("AAVE", "0x63706e401c06ac8513145b7687a14804d17f814b", 18),
+    _token("BDX", "0x6ad12e761b438bea3ea09f6c6266556bb24c2181", 9),
+    _token("cbBTC", "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf", 8),
+    _token("clBTC", "0x8d2757ea27aabf172da4cca4e5474c76016e3dc5", 18),
+    _token("DAI", "0x50c5725949a6f0c72e6c4a641f24049a917db0cb", 18),
+    _token("DOT", "0x8d010bf9c26881788b4e6bf5fd1bdc358c8f90b8", 18),
+    _token("ENA", "0x58538e6a46e07434d7e7375bc268d3cb839c0133", 18),
+    _token("LBTC", "0xecac9c5f704e954931349da37f60e39f515c11c1", 8),
+    _token("LsETH", "0xb29749498954a3a821ec37bde86e386df3ce30b6", 18),
+    _token("MORPHO", "0xbaa5cc21fd487b8fcc2f632f3f4e8d37262a0842", 18),
+    _token("rETH", "0xb6fe221fe9eef5aba221c348ba20a1bf5e73624c", 18),
+    _token("SOL", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82", 9),
+    _token("SolvBTC", "0x3b86ad95859b6ab773f55f8d94b4b9d443ee931f", 18),
+    _token("sUSDe", "0x211cc4dd073734da055fbf44a2b4667d5e5fe5d2", 18),
+    _token("sUSDS", "0x5875eee11cf8398102fdad704c9e96607675467a", 18),
+    _token("syrupUSDC", "0x660975730059246a68521a3e2fbd4740173100f5", 6),
+    _token("USD0", "0x758a3e0b1f842c9306b783f8a4078c6c8c03a270", 18),
+    _token("USDC", "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6),
+    _token("USDe", "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18),
+    _token("USDS", "0x820c137fa70c8691f0e44dc420a5e53c168921dc", 18),
+    _token("WBTC", "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c", 8),
+    _token("WETH", "0x4200000000000000000000000000000000000006", 18),
+    _token("wstETH", "0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452", 18),
+]
+
+OPTIMISM_SWAP_TOKENS = [
+    _token("BUIDL", "0xa1cdab15bba75a80df4089cafba013e376957cf5", 6),
+    _token("crvUSD", "0xc52d7f23a2e460248db6ee192cb23dd12bddcbf6", 18),
+    _token("DAI", "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18),
+    _token("EXTRA", "0x2dad3a13ef0c6366220f989157009e501e7938f8", 18),
+    _token("ezETH", "0x2416092f143378750bb29b79ed961ab195cceea5", 18),
+    _token("FRAX", "0x2e3d870790dc77a83dd1d18184acc7439a53f475", 18),
+    _token("frxETH", "0x6806411765af15bddd26f8f544a34cc40cb9838b", 18),
+    _token("IB", "0x00a35fd824c717879bf370e70ac6868b95870dfb", 18),
+    _token("LINK", "0x350a791bfc2c21f9ed5d10980dad2e2638ffa7f6", 18),
+    _token("MIM", "0xb153fb3d196a8eb25522705560ac152eeec57901", 18),
+    _token("MONEY", "0x69420f9e38a4e60a62224c489be4bf7a94402496", 18),
+    _token("mooBIFI", "0xc55e93c62874d8100dbd2dfe307edc1036ad5434", 18),
+    _token("OP", "0x4200000000000000000000000000000000000042", 18),
+    _token("OVER", "0xedf38688b27036816a50185caa430d5479e1c63e", 18),
+    _token("PENDLE", "0xbc7b1ff1c6989f006a1185318ed4e7b5796e66e1", 18),
+    _token("sfrxETH", "0x3ec3849c33291a9ef4c5db86de593eb4a37fde45", 18),
+    _token("SNX", "0x8700daec35af8ff88c16bdf0418774cb3d7599b4", 18),
+    _token("STG", "0x296f55f8fb28e498b858d0bcda06d955b2cb3f97", 18),
+    _token("sUSD", "0x8c6f28f2f1a3c87f0f938b96d27520d9751ec8d9", 18),
+    _token("TAROT", "0x1f514a61bcde34f94bc39731235690ab9da737f7", 18),
+    _token("tBTC", "0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40", 18),
+    _token("USDC", "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6),
+    _token("USDC.e", "0x7f5c764cbc14f9669b88837ca1490cca17c31607", 6),
+    _token("USDT", "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6),
+    _token("VELO", "0x3c8b650257cfb5f272f799f5e2b4e65093a11a05", 18),
+    _token("WBTC", "0x68f180fcce6836688e9084f035309e29bf0a2095", 8),
+    _token("WETH", "0x4200000000000000000000000000000000000006", 18),
+    _token("WLD", "0xdc6ff44d5d932cbd77b52e5612ba0529dc6226f1", 18),
+    _token("wstETH", "0x1f32b1c2345538c0c6f582fcb022739c4a194ebb", 18),
+    _token("ZRO", "0x6985884c4392d348587b19cb9eaaf157f13271cd", 18),
+]
+
+POLYGON_SWAP_TOKENS = [
+    _token("AAVE", "0xd6df932a45c0f255f85145f286ea0b292b21c90b", 18),
+    _token("aPolWETH", "0xe50fa9b3c56ffb159cb0fca61f5c9d750e8128c8", 18),
+    _token("AVAX", "0x2c89bbc92bd86f8075d1decc58c7f4e0107f286b", 18),
+    _token("BNB", "0x3ba4c387f786bfee076a58914f5bd38d668b42c3", 18),
+    _token("BUIDL", "0x2893Ef551B6dD69F661Ac00F11D93E5Dc5Dc0e99", 6),
+    _token("DAI", "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063", 18),
+    _token("EUTBL", "0xa0769f7a8fc65e47de93797b4e21c073c117fc80", 18),
+    _token("LINK677", "0xb0897686c545045afc77cf20ec7a532e3120e0f1", 18, "Chainlink Service LINK"),
+    _token("LINK", "0x53e0bca35ec356bd5dddfebbd1fc0fd03fabad39", 18),
+    _token("NEXO", "0x41b3966b4ff7b427969ddf5da3627d6aeae9a48e", 18),
+    _token("rETH", "0x0266f4f08d82372cf0fcbccc0ff74309089c74d1", 18),
+    _token("SHIB", "0x6f8a06447ff6fcf75d803135a7de15ce88c1d4ec", 18),
+    _token("SOL", "0xd93f7e271cb87c23aaa73edc008a79646d1f9912", 9),
+    _token("tBTC", "0x236aa50979d5f3de3bd1eeb40e81137f22ab794b", 18),
+    _token("TUSD", "0x2e1ad108ff1d8c782fcbbb89aad783ac49586756", 18),
+    _token("UNI", "0xb33eaad8d922b1083446dc23f610c2567fb5180f", 18),
+    _token("USDC", "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", 6),
+    _token("USDC.e", "0x2791bca1f2de4661ed88a30c99a7a9449aa84174", 6),
+    _token("USDD", "0xffa4d863c96e743a2e1513824ea006b8d0353c57", 18),
+    _token("USDT", "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6),
+    _token("WBTC", "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6", 8),
+    _token("WETH", "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619", 18),
+    _token("ZRO", "0x6985884c4392d348587b19cb9eaaf157f13271cd", 18),
+]
+
+XLAYER_SWAP_TOKENS = [
+    _token("USDG", "0x4ae46a509f6b1d9056937ba4500cb143933d2dc8", 6, "Global Dollar"),
+    _token("USDT0", "0x779ded0c9e1022225f8e0630b35a9b54be713736", 6),
+    _token("USDC", "0x74b7f16337b8972027f6196a17a631ac6de26d22", 6),
+    _token("USDT", "0x1e4a5963abfd975d8c9021ce480b42188849d41d", 6),
+    _token("WOKB", "0xe538905cf8410324e03a5a23c1c177a474d59b2b", 18),
+    _token("xBTC", "0xb7c00000bcdeef966b20b3d884b98e64d2b06b4f", 8),
+    _token("XSHIB", "0xe8e8a1df1e26277a2875a0bda912ab9f19843a53", 18),
+    _token("WETH", "0x5a77f1443d16ee5761d310e38b62f77f726bc71c", 18),
+    _token("xETH", "0xe7b000003a45145decf8a28fc755ad5ec5ea025a", 18),
+    _token("xSOL", "0x505000008de8748dbd4422ff4687a4fc9beba15b", 9),
+]
+
+TEMPLATE_CHAIN_ALIASES = {
+    "ethereum": TEMPLATE_CHAIN_ETHEREUM,
+    "mainnet": TEMPLATE_CHAIN_ETHEREUM,
+    "eth": TEMPLATE_CHAIN_ETHEREUM,
+    "bsc": TEMPLATE_CHAIN_BNB,
+    "arb": TEMPLATE_CHAIN_ARBITRUM,
+    "avax": TEMPLATE_CHAIN_AVALANCHE,
+    "op": TEMPLATE_CHAIN_OPTIMISM,
+    "matic": TEMPLATE_CHAIN_POLYGON,
+    "pol": TEMPLATE_CHAIN_POLYGON,
+    "x_layer": TEMPLATE_CHAIN_XLAYER,
+}
+
 TEMPLATE_CHAIN_CONFIG = {
     TEMPLATE_CHAIN_ETHEREUM: {
         "value": TEMPLATE_CHAIN_ETHEREUM,
@@ -234,9 +424,10 @@ TEMPLATE_CHAIN_CONFIG = {
         "coingecko_asset_platform": "ethereum",
         "coingecko_native_coin_id": "ethereum",
         "quote_supported": True,
-        "swap_protocol": "uniswap_v3",
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
         "fee_tiers": [500, 3000, 10000],
-        "route_intermediary_symbols": [],
+        "route_intermediary_symbols": ["USDC", "USDT", "DAI"],
         "tokens": ETHEREUM_SWAP_TOKENS,
     },
     TEMPLATE_CHAIN_BNB: {
@@ -248,10 +439,101 @@ TEMPLATE_CHAIN_CONFIG = {
         "coingecko_asset_platform": "binance-smart-chain",
         "coingecko_native_coin_id": "binancecoin",
         "quote_supported": True,
-        "swap_protocol": "pancakeswap_v2",
-        "fee_tiers": [],
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3, SWAP_BACKEND_PANCAKESWAP_V2],
+        "fee_tiers": [500, 3000, 10000],
         "route_intermediary_symbols": ["BSC-USD", "USDC", "DAI"],
         "tokens": BNB_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_ARBITRUM: {
+        "value": TEMPLATE_CHAIN_ARBITRUM,
+        "label": "Arbitrum",
+        "native_symbol": "ETH",
+        "wrapped_native_symbol": "WETH",
+        "wrapped_native_address": ARBITRUM_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "arbitrum-one",
+        "coingecko_native_coin_id": "ethereum",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "USDT0", "DAI"],
+        "tokens": ARBITRUM_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_AVALANCHE: {
+        "value": TEMPLATE_CHAIN_AVALANCHE,
+        "label": "Avalanche",
+        "native_symbol": "AVAX",
+        "wrapped_native_symbol": "WAVAX",
+        "wrapped_native_address": AVALANCHE_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "avalanche",
+        "coingecko_native_coin_id": "avalanche-2",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "USDT", "DAI"],
+        "tokens": AVALANCHE_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_BASE: {
+        "value": TEMPLATE_CHAIN_BASE,
+        "label": "Base",
+        "native_symbol": "ETH",
+        "wrapped_native_symbol": "WETH",
+        "wrapped_native_address": BASE_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "base",
+        "coingecko_native_coin_id": "ethereum",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "DAI", "USDe"],
+        "tokens": BASE_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_OPTIMISM: {
+        "value": TEMPLATE_CHAIN_OPTIMISM,
+        "label": "Optimism",
+        "native_symbol": "ETH",
+        "wrapped_native_symbol": "WETH",
+        "wrapped_native_address": OPTIMISM_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "optimistic-ethereum",
+        "coingecko_native_coin_id": "ethereum",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "USDT", "DAI"],
+        "tokens": OPTIMISM_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_POLYGON: {
+        "value": TEMPLATE_CHAIN_POLYGON,
+        "label": "Polygon",
+        "native_symbol": "POL",
+        "wrapped_native_symbol": "WPOL",
+        "wrapped_native_address": POLYGON_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "polygon-pos",
+        "coingecko_native_coin_id": "polygon-ecosystem-token",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "USDT", "DAI"],
+        "tokens": POLYGON_SWAP_TOKENS,
+    },
+    TEMPLATE_CHAIN_XLAYER: {
+        "value": TEMPLATE_CHAIN_XLAYER,
+        "label": "X Layer",
+        "native_symbol": "OKB",
+        "wrapped_native_symbol": "WOKB",
+        "wrapped_native_address": XLAYER_WRAPPED_NATIVE_ADDRESS,
+        "coingecko_asset_platform": "x-layer",
+        "coingecko_native_coin_id": "okb",
+        "quote_supported": True,
+        "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
+        "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
+        "fee_tiers": [500, 3000, 10000],
+        "route_intermediary_symbols": ["USDC", "USDT", "USDG"],
+        "tokens": XLAYER_SWAP_TOKENS,
     },
 }
 
@@ -266,7 +548,8 @@ TEMPLATE_CHAIN_TOKEN_BY_SYMBOL = {
 
 
 def normalize_template_chain(value: str | None) -> str:
-    normalized = (value or DEFAULT_TEMPLATE_CHAIN).strip().lower()
+    normalized = (value or DEFAULT_TEMPLATE_CHAIN).strip().lower().replace("-", "_").replace(" ", "_")
+    normalized = TEMPLATE_CHAIN_ALIASES.get(normalized, normalized)
     if normalized in TEMPLATE_CHAIN_CONFIG:
         return normalized
     raise ValueError("Unsupported template chain")
@@ -275,6 +558,21 @@ def normalize_template_chain(value: str | None) -> str:
 def get_template_chain_config(chain: str | None = None) -> dict:
     normalized = normalize_template_chain(chain)
     return TEMPLATE_CHAIN_CONFIG[normalized]
+
+
+def get_template_chain_swap_backends(chain: str | None = None) -> list[str]:
+    config = get_template_chain_config(chain)
+    backends = config.get("swap_backends")
+    if backends:
+        return list(backends)
+    protocol = config.get("swap_protocol")
+    return [protocol] if protocol else []
+
+
+def get_swap_backend_label(backend: str | None) -> str | None:
+    if not backend:
+        return None
+    return SWAP_BACKEND_LABELS.get(backend, backend)
 
 
 def get_template_chain_choices() -> list[dict]:
@@ -286,6 +584,15 @@ def get_template_chain_choices() -> list[dict]:
             "wrapped_native_symbol": config["wrapped_native_symbol"],
             "quote_supported": config["quote_supported"],
             "swap_protocol": config.get("swap_protocol"),
+            "primary_swap_backend": get_template_chain_swap_backends(key)[0] if get_template_chain_swap_backends(key) else None,
+            "primary_swap_backend_label": get_swap_backend_label(
+                get_template_chain_swap_backends(key)[0] if get_template_chain_swap_backends(key) else None
+            ),
+            "fallback_swap_backends": get_template_chain_swap_backends(key)[1:],
+            "fallback_swap_backend_labels": [
+                get_swap_backend_label(backend)
+                for backend in get_template_chain_swap_backends(key)[1:]
+            ],
         }
         for key, config in TEMPLATE_CHAIN_CONFIG.items()
     ]

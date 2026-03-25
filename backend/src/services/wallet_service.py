@@ -23,9 +23,18 @@ from dotenv import load_dotenv
 
 from src.config.database import db
 from src.services.template_chain_config import (
+    SWAP_BACKEND_PANCAKESWAP_V2,
+    SWAP_BACKEND_UNISWAP_V3,
+    TEMPLATE_CHAIN_ARBITRUM,
+    TEMPLATE_CHAIN_AVALANCHE,
+    TEMPLATE_CHAIN_BASE,
     TEMPLATE_CHAIN_BNB,
     TEMPLATE_CHAIN_ETHEREUM,
+    TEMPLATE_CHAIN_OPTIMISM,
+    TEMPLATE_CHAIN_POLYGON,
+    TEMPLATE_CHAIN_XLAYER,
     get_template_chain_config,
+    get_template_chain_swap_backends,
     normalize_template_chain,
 )
 
@@ -35,18 +44,50 @@ Account.enable_unaudited_hdwallet_features()
 
 WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'  # Mainnet WETH
 NATIVE_ETH_SENTINEL_ADDRESS = "0x0000000000000000000000000000000000000000"
-UNISWAP_V3_QUOTER_ADDRESS = '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'
-UNISWAP_V3_ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564'
-PANCAKESWAP_V2_ROUTER_ADDRESS = '0x10ED43C718714eb63d5aA57B78B54704E256024E'
 UNISWAP_FEE_TIERS = [500, 3000, 10000]
+UNISWAP_V3_ROUTER_ADDRESSES = {
+    TEMPLATE_CHAIN_ETHEREUM: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    TEMPLATE_CHAIN_BNB: "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2",
+    TEMPLATE_CHAIN_ARBITRUM: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    TEMPLATE_CHAIN_AVALANCHE: "0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE",
+    TEMPLATE_CHAIN_BASE: "0x2626664c2603336E57B271c5C0b26F421741e481",
+    TEMPLATE_CHAIN_OPTIMISM: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    TEMPLATE_CHAIN_POLYGON: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    TEMPLATE_CHAIN_XLAYER: "0xfe31f71c1b106eac32f1a19239c9a9a72ddfb900",
+}
+UNISWAP_V3_QUOTER_V2_ADDRESSES = {
+    TEMPLATE_CHAIN_ETHEREUM: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    TEMPLATE_CHAIN_BNB: "0x78D78E420Da98ad378D7799bE8f4AF69033EB077",
+    TEMPLATE_CHAIN_ARBITRUM: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    TEMPLATE_CHAIN_AVALANCHE: "0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F",
+    TEMPLATE_CHAIN_BASE: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+    TEMPLATE_CHAIN_OPTIMISM: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    TEMPLATE_CHAIN_POLYGON: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    TEMPLATE_CHAIN_XLAYER: "0x2d01411773c8c24805306e89a41f7855c3c4fe65",
+}
+PANCAKESWAP_V2_ROUTER_ADDRESSES = {
+    TEMPLATE_CHAIN_BNB: "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+}
 TOKEN_SHEET_NAMESPACE = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 CHAIN_RPC_ENV_CANDIDATES = {
     TEMPLATE_CHAIN_ETHEREUM: ["ETHEREUM_RPC_URL"],
     TEMPLATE_CHAIN_BNB: ["BNB_RPC_URL", "BSC_RPC_URL"],
+    TEMPLATE_CHAIN_ARBITRUM: ["ARB_RPC_URL", "ARBITRUM_RPC_URL"],
+    TEMPLATE_CHAIN_AVALANCHE: ["AVAX_RPC_URL", "AVALANCHE_RPC_URL"],
+    TEMPLATE_CHAIN_BASE: ["BASE_RPC_URL"],
+    TEMPLATE_CHAIN_OPTIMISM: ["OP_RPC_URL", "OPTIMISM_RPC_URL"],
+    TEMPLATE_CHAIN_POLYGON: ["POLYGON_RPC_URL"],
+    TEMPLATE_CHAIN_XLAYER: ["XLAYER_RPC_URL"],
 }
 CHAIN_TRUSTWALLET_SLUG = {
     TEMPLATE_CHAIN_ETHEREUM: "ethereum",
     TEMPLATE_CHAIN_BNB: "smartchain",
+    TEMPLATE_CHAIN_ARBITRUM: "arbitrum",
+    TEMPLATE_CHAIN_AVALANCHE: "avalanchec",
+    TEMPLATE_CHAIN_BASE: "base",
+    TEMPLATE_CHAIN_OPTIMISM: "optimism",
+    TEMPLATE_CHAIN_POLYGON: "polygon",
+    TEMPLATE_CHAIN_XLAYER: "xlayer",
 }
 WALLET_SUMMARY_TOKEN_SYMBOLS = {}
 WETH_ABI = [
@@ -154,14 +195,16 @@ ERC20_METADATA_ABI = [
 UNISWAP_QUOTER_ABI = [
     {
         "inputs": [
-            {"internalType": "address", "name": "tokenIn", "type": "address"},
-            {"internalType": "address", "name": "tokenOut", "type": "address"},
-            {"internalType": "uint24", "name": "fee", "type": "uint24"},
+            {"internalType": "bytes", "name": "path", "type": "bytes"},
             {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-            {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
         ],
-        "name": "quoteExactInputSingle",
-        "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
+        "name": "quoteExactInput",
+        "outputs": [
+            {"internalType": "uint256", "name": "amountOut", "type": "uint256"},
+            {"internalType": "uint160[]", "name": "sqrtPriceX96AfterList", "type": "uint160[]"},
+            {"internalType": "uint32[]", "name": "initializedTicksCrossedList", "type": "uint32[]"},
+            {"internalType": "uint256", "name": "gasEstimate", "type": "uint256"},
+        ],
         "stateMutability": "nonpayable",
         "type": "function"
     }
@@ -171,21 +214,17 @@ UNISWAP_V3_ROUTER_ABI = [
         "inputs": [
             {
                 "components": [
-                    {"internalType": "address", "name": "tokenIn", "type": "address"},
-                    {"internalType": "address", "name": "tokenOut", "type": "address"},
-                    {"internalType": "uint24", "name": "fee", "type": "uint24"},
+                    {"internalType": "bytes", "name": "path", "type": "bytes"},
                     {"internalType": "address", "name": "recipient", "type": "address"},
-                    {"internalType": "uint256", "name": "deadline", "type": "uint256"},
                     {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
                     {"internalType": "uint256", "name": "amountOutMinimum", "type": "uint256"},
-                    {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
                 ],
-                "internalType": "struct ISwapRouter.ExactInputSingleParams",
+                "internalType": "struct IV3SwapRouter.ExactInputParams",
                 "name": "params",
                 "type": "tuple"
             }
         ],
-        "name": "exactInputSingle",
+        "name": "exactInput",
         "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
         "stateMutability": "payable",
         "type": "function"
@@ -640,31 +679,147 @@ def get_chain_runtime_config(chain: str | None = None) -> dict:
     }
 
 
-def get_swap_runtime_config(chain: str | None = None) -> dict:
+def get_swap_runtime_config(chain: str | None = None, backend: str | None = None) -> dict:
+    runtimes = get_swap_runtime_configs(chain)
+    if backend is None:
+        return runtimes[0]
+    for runtime in runtimes:
+        if runtime["protocol"] == backend:
+            return runtime
     normalized_chain = normalize_template_chain(chain)
     chain_config = get_template_chain_config(normalized_chain)
-    protocol = chain_config.get("swap_protocol")
-    if protocol == "uniswap_v3":
-        return {
-            "protocol": protocol,
-            "router_address": Web3.to_checksum_address(UNISWAP_V3_ROUTER_ADDRESS),
-            "router_abi": UNISWAP_V3_ROUTER_ABI,
-            "quoter_address": Web3.to_checksum_address(UNISWAP_V3_QUOTER_ADDRESS),
-            "quoter_abi": UNISWAP_QUOTER_ABI,
-            "supported_fee_tiers": UNISWAP_FEE_TIERS,
-            "route_intermediary_symbols": [],
-        }
-    if protocol == "pancakeswap_v2":
-        return {
-            "protocol": protocol,
-            "router_address": Web3.to_checksum_address(PANCAKESWAP_V2_ROUTER_ADDRESS),
-            "router_abi": PANCAKESWAP_V2_ROUTER_ABI,
-            "quoter_address": None,
-            "quoter_abi": None,
-            "supported_fee_tiers": [],
-            "route_intermediary_symbols": chain_config.get("route_intermediary_symbols", []),
-        }
-    raise ValueError(f"Swap routing is not configured for {chain_config['label']}")
+    raise ValueError(f"{backend} routing is not configured for {chain_config['label']}")
+
+
+def get_swap_runtime_configs(chain: str | None = None) -> list[dict]:
+    normalized_chain = normalize_template_chain(chain)
+    chain_config = get_template_chain_config(normalized_chain)
+    runtimes = []
+    for backend in get_template_chain_swap_backends(normalized_chain):
+        if backend == SWAP_BACKEND_UNISWAP_V3:
+            router_address = UNISWAP_V3_ROUTER_ADDRESSES.get(normalized_chain)
+            quoter_address = UNISWAP_V3_QUOTER_V2_ADDRESSES.get(normalized_chain)
+            if not router_address or not quoter_address:
+                raise ValueError(f"Uniswap V3 routing is not configured for {chain_config['label']}")
+            runtimes.append(
+                {
+                    "protocol": backend,
+                    "router_address": Web3.to_checksum_address(router_address),
+                    "router_abi": UNISWAP_V3_ROUTER_ABI,
+                    "quoter_address": Web3.to_checksum_address(quoter_address),
+                    "quoter_abi": UNISWAP_QUOTER_ABI,
+                    "supported_fee_tiers": chain_config.get("fee_tiers") or UNISWAP_FEE_TIERS,
+                    "route_intermediary_symbols": chain_config.get("route_intermediary_symbols", []),
+                }
+            )
+            continue
+        if backend == SWAP_BACKEND_PANCAKESWAP_V2:
+            router_address = PANCAKESWAP_V2_ROUTER_ADDRESSES.get(normalized_chain)
+            if not router_address:
+                raise ValueError(f"PancakeSwap routing is not configured for {chain_config['label']}")
+            runtimes.append(
+                {
+                    "protocol": backend,
+                    "router_address": Web3.to_checksum_address(router_address),
+                    "router_abi": PANCAKESWAP_V2_ROUTER_ABI,
+                    "quoter_address": None,
+                    "quoter_abi": None,
+                    "supported_fee_tiers": [],
+                    "route_intermediary_symbols": chain_config.get("route_intermediary_symbols", []),
+                }
+            )
+
+    if not runtimes:
+        raise ValueError(f"Swap routing is not configured for {chain_config['label']}")
+    return runtimes
+
+
+def _find_chain_token_by_symbol(chain: str, symbol: str) -> dict | None:
+    target = (symbol or "").strip().upper()
+    if not target:
+        return None
+    chain_config = get_template_chain_config(chain)
+    for token in chain_config["tokens"]:
+        if token.get("symbol", "").upper() == target:
+            return token
+    return None
+
+
+def _encode_uniswap_v3_path(path_addresses: list[str], path_fee_tiers: list[int]) -> bytes:
+    if len(path_addresses) < 2:
+        raise ValueError("A Uniswap V3 path needs at least two tokens")
+    if len(path_fee_tiers) != len(path_addresses) - 1:
+        raise ValueError("Uniswap V3 path fee tier count must match the hop count")
+
+    encoded = bytearray()
+    for index, address in enumerate(path_addresses):
+        encoded.extend(bytes.fromhex(Web3.to_checksum_address(address)[2:]))
+        if index < len(path_fee_tiers):
+            encoded.extend(int(path_fee_tiers[index]).to_bytes(3, "big"))
+    return bytes(encoded)
+
+
+def _build_uniswap_v3_route_candidates(
+    chain: str,
+    token_in: dict,
+    token_out: dict,
+    fee_tier: int | None,
+    supported_fee_tiers: list[int],
+    route_intermediary_symbols: list[str],
+) -> list[dict]:
+    token_in_address = Web3.to_checksum_address(token_in["address"])
+    token_out_address = Web3.to_checksum_address(token_out["address"])
+    selected_fee_tiers = [int(fee_tier)] if fee_tier is not None else [int(value) for value in supported_fee_tiers]
+
+    seen_routes: set[tuple[str, ...]] = set()
+    candidates: list[dict] = []
+
+    def add_candidate(path_symbols: list[str], path_addresses: list[str], path_fee_tiers: list[int], route_type: str):
+        key = tuple([address.lower() for address in path_addresses] + [str(value) for value in path_fee_tiers])
+        if key in seen_routes:
+            return
+        seen_routes.add(key)
+        candidates.append(
+            {
+                "route_type": route_type,
+                "path_symbols": path_symbols,
+                "path_addresses": [Web3.to_checksum_address(address) for address in path_addresses],
+                "path_fee_tiers": [int(value) for value in path_fee_tiers],
+            }
+        )
+
+    for direct_fee_tier in selected_fee_tiers:
+        add_candidate(
+            [token_in["symbol"], token_out["symbol"]],
+            [token_in_address, token_out_address],
+            [direct_fee_tier],
+            "direct",
+        )
+
+    for intermediary_symbol in route_intermediary_symbols:
+        intermediary = _find_chain_token_by_symbol(chain, intermediary_symbol)
+        if not intermediary:
+            continue
+        intermediary_address = Web3.to_checksum_address(intermediary["address"])
+        if intermediary_address.lower() in {token_in_address.lower(), token_out_address.lower()}:
+            continue
+        if fee_tier is not None:
+            fee_pairs = [(int(fee_tier), int(fee_tier))]
+        else:
+            fee_pairs = [
+                (first_fee_tier, second_fee_tier)
+                for first_fee_tier in selected_fee_tiers
+                for second_fee_tier in selected_fee_tiers
+            ]
+        for first_fee_tier, second_fee_tier in fee_pairs:
+            add_candidate(
+                [token_in["symbol"], intermediary.get("symbol") or intermediary_symbol, token_out["symbol"]],
+                [token_in_address, intermediary_address, token_out_address],
+                [first_fee_tier, second_fee_tier],
+                "multihop",
+            )
+
+    return candidates
 
 
 def _build_v2_swap_paths(chain: str, token_in_address: str, token_out_address: str) -> list[list[str]]:
@@ -702,12 +857,7 @@ def get_web3(chain: str | None = None) -> Web3 | None:
 
 
 def ensure_supported_template_chain(template: dict):
-    template_chain = normalize_template_chain(template.get("chain"))
-    if template_chain in {TEMPLATE_CHAIN_ETHEREUM, TEMPLATE_CHAIN_BNB}:
-        return
-
-    chain_config = get_template_chain_config(template_chain)
-    raise ValueError(f"Wallet automation is not enabled for {chain_config['label']} yet.")
+    get_template_chain_config(template.get("chain"))
 
 
 def get_weth_balance(address: str, web3_client: Web3 | None = None, *, chain: str | None = None) -> float | None:
@@ -1566,10 +1716,15 @@ def build_swap_result(
     *,
     tx_hash: str | None,
     amount_in: str | None,
+    backend: str | None,
     fee_tier: int | None,
     min_amount_out: str | None,
     amount_out_units: int,
     token_decimals: int,
+    route_type: str | None,
+    path_symbols: list[str] | None,
+    path_addresses: list[str] | None,
+    path_fee_tiers: list[int] | None,
     source: str | None,
     nonce: int | None = None,
     gas_price_wei: int | None = None,
@@ -1580,11 +1735,16 @@ def build_swap_result(
     return {
         "tx_hash": tx_hash,
         "status": "confirmed",
+        "backend": backend,
         "fee_tier": fee_tier,
         "amount_in": amount_in,
         "min_amount_out": min_amount_out,
         "amount_out": format_decimal(token_units_to_decimal(amount_out_units, token_decimals)),
         "amount_out_units": amount_out_units,
+        "route_type": route_type,
+        "path_symbols": path_symbols,
+        "path_addresses": path_addresses,
+        "path_fee_tiers": path_fee_tiers,
         "gas_used": gas_used,
         "block_number": block_number,
         "source": source,
@@ -1822,10 +1982,15 @@ def recover_swap_after_timeout(
                 return build_swap_result(
                     tx_hash=tx_hash,
                     amount_in=(swap_details or {}).get("amount_in"),
+                    backend=(swap_details or {}).get("backend"),
                     fee_tier=(swap_details or {}).get("fee_tier"),
                     min_amount_out=(swap_details or {}).get("min_amount_out"),
                     amount_out_units=amount_out_units,
                     token_decimals=token_decimals,
+                    route_type=(swap_details or {}).get("route_type"),
+                    path_symbols=(swap_details or {}).get("path_symbols"),
+                    path_addresses=(swap_details or {}).get("path_addresses"),
+                    path_fee_tiers=(swap_details or {}).get("path_fee_tiers"),
                     source=(swap_details or {}).get("source"),
                     nonce=nonce,
                     gas_price_wei=gas_price_wei,
@@ -1839,10 +2004,15 @@ def recover_swap_after_timeout(
             return build_swap_result(
                 tx_hash=tx_hash,
                 amount_in=(swap_details or {}).get("amount_in"),
+                backend=(swap_details or {}).get("backend"),
                 fee_tier=(swap_details or {}).get("fee_tier"),
                 min_amount_out=(swap_details or {}).get("min_amount_out"),
                 amount_out_units=amount_out_units,
                 token_decimals=token_decimals,
+                route_type=(swap_details or {}).get("route_type"),
+                path_symbols=(swap_details or {}).get("path_symbols"),
+                path_addresses=(swap_details or {}).get("path_addresses"),
+                path_fee_tiers=(swap_details or {}).get("path_fee_tiers"),
                 source=(swap_details or {}).get("source"),
                 nonce=nonce,
                 gas_price_wei=gas_price_wei,
@@ -2089,17 +2259,16 @@ def swap_weth_to_token_from_wallet(
     amount_in: Decimal,
     fee_tier: int | None,
     slippage_percent: str | float | Decimal | None,
+    prepared_quote: dict | None = None,
     nonce: int,
     gas_price_wei: int | None = None,
     gas_limit: int = UNISWAP_V3_SWAP_GAS_LIMIT,
 ) -> dict:
     runtime = get_chain_runtime_config(chain)
-    swap_runtime = get_swap_runtime_config(runtime["chain"])
     owner = Web3.to_checksum_address(wallet_address)
     token_out_checksum = Web3.to_checksum_address(token_out["address"])
     token_contract = web3_client.eth.contract(address=token_out_checksum, abi=ERC20_ABI)
-    router_contract = web3_client.eth.contract(address=swap_runtime["router_address"], abi=swap_runtime["router_abi"])
-    quote = quote_uniswap_swap(
+    quote = prepared_quote or quote_uniswap_swap(
         runtime["wrapped_native_symbol"],
         token_out["address"],
         format_decimal(amount_in),
@@ -2107,36 +2276,41 @@ def swap_weth_to_token_from_wallet(
         slippage_percent=slippage_percent,
         chain=runtime["chain"],
     )
+    swap_runtime = get_swap_runtime_config(runtime["chain"], backend=quote.get("backend"))
+    router_contract = web3_client.eth.contract(address=swap_runtime["router_address"], abi=swap_runtime["router_abi"])
     amount_in_units = decimal_to_wei(amount_in)
     min_amount_out_units = decimal_to_token_units(Decimal(str(quote["min_amount_out"])), int(token_out["decimals"]))
     balance_before = token_contract.functions.balanceOf(owner).call()
     swap_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
     swap_details = {
+        "backend": quote.get("backend"),
         "fee_tier": int(quote["fee_tier"]) if quote.get("fee_tier") is not None else None,
         "amount_in": format_decimal(amount_in),
         "min_amount_out": quote["min_amount_out"],
+        "route_type": quote.get("route_type"),
+        "path_symbols": quote.get("path_symbols"),
+        "path_addresses": quote.get("path_addresses"),
+        "path_fee_tiers": quote.get("path_fee_tiers"),
         "source": quote.get("source"),
         "token_decimals": int(token_out["decimals"]),
         "balance_before": int(balance_before),
     }
     deadline = int(datetime.utcnow().timestamp()) + 900
-    if swap_runtime["protocol"] == "uniswap_v3":
+    if swap_runtime["protocol"] == SWAP_BACKEND_UNISWAP_V3:
+        path_addresses = quote.get("path_addresses") or [runtime["wrapped_native_address"], token_out_checksum]
+        path_fee_tiers = quote.get("path_fee_tiers") or ([int(quote["fee_tier"])] if quote.get("fee_tier") is not None else [])
         params = (
-            runtime["wrapped_native_address"],
-            token_out_checksum,
-            int(quote["fee_tier"]),
+            _encode_uniswap_v3_path(path_addresses, path_fee_tiers),
             owner,
-            deadline,
             amount_in_units,
             min_amount_out_units,
-            0,
         )
         try:
-            estimated_gas = router_contract.functions.exactInputSingle(params).estimate_gas({"from": owner})
+            estimated_gas = router_contract.functions.exactInput(params).estimate_gas({"from": owner})
         except Exception:
             estimated_gas = gas_limit
 
-        tx = router_contract.functions.exactInputSingle(params).build_transaction(
+        tx = router_contract.functions.exactInput(params).build_transaction(
             build_transaction_envelope(
                 web3_client,
                 owner,
@@ -2146,7 +2320,13 @@ def swap_weth_to_token_from_wallet(
             )
         )
     else:
-        path = [Web3.to_checksum_address(address) for address in (quote.get("path") or [runtime["wrapped_native_address"], token_out_checksum])]
+        path = [
+            Web3.to_checksum_address(address)
+            for address in (
+                quote.get("path_addresses")
+                or [runtime["wrapped_native_address"], token_out_checksum]
+            )
+        ]
         try:
             estimated_gas = router_contract.functions.swapExactTokensForTokens(
                 amount_in_units,
@@ -2202,10 +2382,15 @@ def swap_weth_to_token_from_wallet(
     return build_swap_result(
         tx_hash=tx_hash,
         amount_in=swap_details["amount_in"],
+        backend=swap_details["backend"],
         fee_tier=swap_details["fee_tier"],
         min_amount_out=swap_details["min_amount_out"],
         amount_out_units=amount_out_units,
         token_decimals=int(token_out["decimals"]),
+        route_type=swap_details["route_type"],
+        path_symbols=swap_details["path_symbols"],
+        path_addresses=swap_details["path_addresses"],
+        path_fee_tiers=swap_details["path_fee_tiers"],
         source=swap_details["source"],
         nonce=nonce,
         gas_price_wei=swap_gas_price_wei,
@@ -2253,7 +2438,6 @@ def quote_uniswap_swap(
 ):
     normalized_chain = normalize_template_chain(chain)
     chain_config = get_template_chain_config(normalized_chain)
-    swap_runtime = get_swap_runtime_config(normalized_chain)
     token_in = resolve_token(token_in_identifier, normalized_chain)
     token_out = resolve_token(token_out_identifier, normalized_chain)
     token_in_key = token_in['symbol'].upper().strip()
@@ -2287,87 +2471,119 @@ def quote_uniswap_swap(
 
     if token_in_key == token_out_key:
         return {
+            'backend': None,
             'token_in': token_in['symbol'],
             'token_out': token_out['symbol'],
             'amount_in': str(amount_decimal),
             'amount_out': str(amount_decimal),
             'min_amount_out': str(amount_decimal),
             'fee_tier': None,
+            'route_type': 'same_token',
+            'path_symbols': [token_in['symbol']],
+            'path_addresses': [Web3.to_checksum_address(token_in['address'])],
+            'path_fee_tiers': [],
             'source': 'same-token',
             'slippage_percent': format(slippage_decimal.normalize(), 'f'),
         }
 
     if token_in['address'].lower() == token_out['address'].lower():
         return {
+            'backend': None,
             'token_in': token_in['symbol'],
             'token_out': token_out['symbol'],
             'amount_in': str(amount_decimal),
             'amount_out': str(amount_decimal),
             'min_amount_out': str(amount_decimal),
             'fee_tier': None,
+            'route_type': 'same_address',
+            'path_symbols': [token_in['symbol']],
+            'path_addresses': [Web3.to_checksum_address(token_in['address'])],
+            'path_fee_tiers': [],
             'source': 'wrapped-native',
             'slippage_percent': format(slippage_decimal.normalize(), 'f'),
         }
 
     best_quote = None
-    if swap_runtime["protocol"] == "uniswap_v3":
-        quoter = web3_client.eth.contract(
-            address=swap_runtime["quoter_address"],
-            abi=swap_runtime["quoter_abi"],
-        )
-
-        if fee_tier is not None and fee_tier not in swap_runtime["supported_fee_tiers"]:
+    swap_runtimes = get_swap_runtime_configs(normalized_chain)
+    if fee_tier is not None:
+        primary_runtime = swap_runtimes[0]
+        if (
+            primary_runtime["protocol"] == SWAP_BACKEND_UNISWAP_V3
+            and fee_tier not in primary_runtime["supported_fee_tiers"]
+        ):
             raise ValueError("Unsupported fee tier")
 
-        fee_tiers = [fee_tier] if fee_tier is not None else swap_runtime["supported_fee_tiers"]
-        for current_fee_tier in fee_tiers:
-            try:
-                amount_out_units = quoter.functions.quoteExactInputSingle(
-                    Web3.to_checksum_address(token_in['address']),
-                    Web3.to_checksum_address(token_out['address']),
-                    current_fee_tier,
-                    amount_in_units,
-                    0,
-                ).call()
-            except Exception:
-                continue
+    for runtime_index, swap_runtime in enumerate(swap_runtimes):
+        runtime_quote = None
+        if swap_runtime["protocol"] == SWAP_BACKEND_UNISWAP_V3:
+            quoter = web3_client.eth.contract(
+                address=swap_runtime["quoter_address"],
+                abi=swap_runtime["quoter_abi"],
+            )
+            for candidate in _build_uniswap_v3_route_candidates(
+                normalized_chain,
+                token_in,
+                token_out,
+                fee_tier,
+                swap_runtime["supported_fee_tiers"],
+                swap_runtime["route_intermediary_symbols"],
+            ):
+                try:
+                    quote_response = quoter.functions.quoteExactInput(
+                        _encode_uniswap_v3_path(candidate["path_addresses"], candidate["path_fee_tiers"]),
+                        amount_in_units,
+                    ).call()
+                except Exception:
+                    continue
 
-            if best_quote is None or amount_out_units > best_quote['amount_out_units']:
+                amount_out_units = int(quote_response[0] if isinstance(quote_response, (list, tuple)) else quote_response)
+                if amount_out_units <= 0:
+                    continue
+
                 amount_out_decimal = Decimal(amount_out_units) / (Decimal(10) ** token_out['decimals'])
                 min_amount_out_decimal = amount_out_decimal * (Decimal('1') - (slippage_decimal / Decimal('100')))
-                best_quote = {
+                quote_payload = {
+                    'backend': swap_runtime["protocol"],
                     'token_in': token_in['symbol'],
                     'token_out': token_out['symbol'],
                     'amount_in': str(amount_decimal.normalize()),
                     'amount_out': format(amount_out_decimal.normalize(), 'f'),
                     'min_amount_out': format(min_amount_out_decimal.normalize(), 'f'),
                     'amount_out_units': amount_out_units,
-                    'fee_tier': current_fee_tier,
-                    'source': 'uniswap-v3-quoter',
+                    'fee_tier': candidate["path_fee_tiers"][0] if len(set(candidate["path_fee_tiers"])) == 1 else None,
+                    'route_type': candidate["route_type"],
+                    'path_symbols': candidate["path_symbols"],
+                    'path_addresses': candidate["path_addresses"],
+                    'path_fee_tiers': candidate["path_fee_tiers"],
+                    'source': 'uniswap-v3-quoter-v2',
                     'slippage_percent': format(slippage_decimal.normalize(), 'f'),
                 }
-    elif swap_runtime["protocol"] == "pancakeswap_v2":
-        router = web3_client.eth.contract(
-            address=swap_runtime["router_address"],
-            abi=swap_runtime["router_abi"],
-        )
+                if runtime_quote is None or amount_out_units > runtime_quote['amount_out_units']:
+                    runtime_quote = quote_payload
+        elif swap_runtime["protocol"] == SWAP_BACKEND_PANCAKESWAP_V2:
+            router = web3_client.eth.contract(
+                address=swap_runtime["router_address"],
+                abi=swap_runtime["router_abi"],
+            )
 
-        for path in _build_v2_swap_paths(normalized_chain, token_in["address"], token_out["address"]):
-            try:
-                amounts = router.functions.getAmountsOut(amount_in_units, path).call()
-            except Exception:
-                continue
+            for path in _build_v2_swap_paths(normalized_chain, token_in["address"], token_out["address"]):
+                try:
+                    amounts = router.functions.getAmountsOut(amount_in_units, path).call()
+                except Exception:
+                    continue
 
-            if not amounts:
-                continue
-            amount_out_units = int(amounts[-1])
-            if amount_out_units <= 0:
-                continue
+                if not amounts:
+                    continue
+                amount_out_units = int(amounts[-1])
+                if amount_out_units <= 0:
+                    continue
 
-            if best_quote is None or amount_out_units > best_quote['amount_out_units']:
+                path_addresses = [Web3.to_checksum_address(address) for address in path]
+                path_symbols = [resolve_token(address, normalized_chain)["symbol"] for address in path_addresses]
                 amount_out_decimal = Decimal(amount_out_units) / (Decimal(10) ** token_out['decimals'])
                 min_amount_out_decimal = amount_out_decimal * (Decimal('1') - (slippage_decimal / Decimal('100')))
-                best_quote = {
+                quote_payload = {
+                    'backend': swap_runtime["protocol"],
                     'token_in': token_in['symbol'],
                     'token_out': token_out['symbol'],
                     'amount_in': str(amount_decimal.normalize()),
@@ -2375,10 +2591,21 @@ def quote_uniswap_swap(
                     'min_amount_out': format(min_amount_out_decimal.normalize(), 'f'),
                     'amount_out_units': amount_out_units,
                     'fee_tier': None,
+                    'route_type': 'direct' if len(path_addresses) == 2 else 'multihop',
+                    'path_symbols': path_symbols,
+                    'path_addresses': path_addresses,
+                    'path_fee_tiers': [],
                     'source': 'pancakeswap-v2-router',
                     'slippage_percent': format(slippage_decimal.normalize(), 'f'),
-                    'path': path,
                 }
+                if runtime_quote is None or amount_out_units > runtime_quote['amount_out_units']:
+                    runtime_quote = quote_payload
+
+        if runtime_quote is not None:
+            best_quote = runtime_quote
+            if runtime_index > 0:
+                best_quote["route_type"] = "secondary_backend"
+            break
 
     if not best_quote:
         raise ValueError(f"No swap route found for this token pair on {chain_config['label']}")
@@ -2447,7 +2674,12 @@ def quote_wallet_batch_swap(
             'amount_in': quote['amount_in'],
             'amount_out': quote['amount_out'],
             'min_amount_out': quote['min_amount_out'],
+            'backend': quote.get('backend'),
             'fee_tier': quote['fee_tier'],
+            'route_type': quote.get('route_type'),
+            'path_symbols': quote.get('path_symbols'),
+            'path_addresses': quote.get('path_addresses'),
+            'path_fee_tiers': quote.get('path_fee_tiers'),
         })
 
     if not quoted_wallets:
@@ -2475,7 +2707,7 @@ def quote_wallet_batch_swap(
         'fee_tier': fee_tier if fee_tier is not None else (next(iter(used_fee_tiers)) if len(used_fee_tiers) == 1 else None),
         'fee_tiers': sorted(used_fee_tiers),
         'slippage_percent': format(Decimal(str(slippage_percent or 0)).normalize(), 'f'),
-        'source': 'uniswap-v3-batch-quoter',
+        'source': 'multi-backend-batch-quoter',
         'quoted_wallets': quoted_wallets,
     }
 
@@ -2712,11 +2944,9 @@ def create_wallet_run(main_id: str, template_id: str, count: int = 1):
     ensure_supported_template_chain(template)
     template_chain = normalize_template_chain(template.get("chain"))
     chain_config = get_template_chain_config(template_chain)
-    swap_runtime = get_swap_runtime_config(template_chain)
     native_symbol = chain_config["native_symbol"]
     wrapped_native_symbol = chain_config["wrapped_native_symbol"]
     wrapped_native_address = Web3.to_checksum_address(chain_config["wrapped_native_address"])
-    swap_router_address = swap_runtime["router_address"]
 
     preview = preview_template(main_id, template_id, count)
     if not preview.get("can_proceed"):
@@ -2848,15 +3078,15 @@ def execute_wallet_run(
     ensure_supported_template_chain(template)
     template_chain = normalize_template_chain(template.get("chain"))
     chain_config = get_template_chain_config(template_chain)
-    swap_runtime = get_swap_runtime_config(template_chain)
     native_symbol = chain_config["native_symbol"]
     wrapped_native_symbol = chain_config["wrapped_native_symbol"]
     wrapped_native_address = Web3.to_checksum_address(chain_config["wrapped_native_address"])
-    swap_router_address = swap_runtime["router_address"]
 
     preview = preview_template(main_id, template_id, count)
     if not preview.get("can_proceed"):
         raise ValueError(preview.get("shortfall_reason") or "This main wallet cannot support the selected template right now.")
+    swap_route_count = int(preview["execution"].get("route_count") or 0)
+    swap_runtimes = get_swap_runtime_configs(template_chain) if swap_route_count > 0 else []
 
     per_wallet_eth = parse_decimal_amount(preview["per_contract"]["required_eth"], "required_eth")
     per_wallet_wrap_weth = parse_decimal_amount(preview["per_contract"]["required_weth"], "required_weth")
@@ -4186,189 +4416,10 @@ def execute_wallet_run(
                             },
                         )
 
-                approval_ready = not stablecoin_routes and not abort_wallet_execution
-                if stablecoin_routes and not abort_wallet_execution:
-                    try:
-                        approval_receipt = None
-                        approval_gas_price_wei = int(web3_client.eth.gas_price)
-                        last_approval_error: WalletTransactionError | None = None
-                        max_approval_attempts = TOKEN_APPROVAL_MAX_ATTEMPTS
-                        approval_attempt_used = 0
-                        approval_amount_units = decimal_to_wei(swap_budget_per_wallet)
-
-                        for approval_attempt in range(1, max_approval_attempts + 1):
-                            approval_attempt_used = approval_attempt
-                            if approval_attempt > 1:
-                                record_run_log(
-                                    stage="approval",
-                                    event="weth_router_approval_retry_started",
-                                    status="started",
-                                    message=(
-                                        f"Retrying {wrapped_native_symbol} router approval for subwallet {item['address']} "
-                                        f"(attempt {approval_attempt}/{max_approval_attempts})."
-                                    ),
-                                    tx_hash=last_approval_error.tx_hash if last_approval_error else None,
-                                    wallet_id=item["wallet_id"],
-                                    wallet_address=item["address"],
-                                    details={
-                                        "spender": swap_router_address,
-                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
-                                        "attempt": approval_attempt,
-                                        "max_attempts": max_approval_attempts,
-                                        "gas_price_wei": approval_gas_price_wei,
-                                        "previous_error": str(last_approval_error) if last_approval_error else None,
-                                    },
-                                )
-
-                            try:
-                                approval_receipt = approve_token_from_wallet(
-                                    web3_client,
-                                    token_address=wrapped_native_address,
-                                    wallet_address=sub_wallet["address"],
-                                    private_key=sub_wallet["private_key"],
-                                    spender_address=swap_router_address,
-                                    amount_units=approval_amount_units,
-                                    nonce=subwallet_nonce,
-                                    gas_price_wei=approval_gas_price_wei,
-                                )
-                                break
-                            except WalletTransactionError as exc:
-                                last_approval_error = exc
-                                if exc.retryable:
-                                    approval_receipt = recover_approval_after_timeout(
-                                        web3_client,
-                                        token_address=wrapped_native_address,
-                                        owner_address=sub_wallet["address"],
-                                        spender_address=swap_router_address,
-                                        amount_units=approval_amount_units,
-                                        tx_hash=exc.tx_hash,
-                                        nonce=subwallet_nonce,
-                                        gas_price_wei=exc.gas_price_wei,
-                                    )
-                                    if approval_receipt:
-                                        record_run_log(
-                                            stage="approval",
-                                            event="weth_router_approval_recovered_after_timeout",
-                                            status="confirmed",
-                                            message=(
-                                                f"{wrapped_native_symbol} router approval for subwallet {item['address']} "
-                                                f"was recovered after the receipt timeout."
-                                            ),
-                                            tx_hash=exc.tx_hash,
-                                            wallet_id=item["wallet_id"],
-                                            wallet_address=item["address"],
-                                            details={
-                                                "spender": swap_router_address,
-                                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
-                                                "attempt": approval_attempt,
-                                                "max_attempts": max_approval_attempts,
-                                                "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
-                                            },
-                                        )
-                                        break
-
-                                    if approval_attempt < max_approval_attempts:
-                                        approval_gas_price_wei = get_bumped_gas_price_wei(
-                                            web3_client,
-                                            exc.gas_price_wei,
-                                            multiplier=TOKEN_APPROVAL_GAS_PRICE_BUMP_MULTIPLIER,
-                                        )
-                                        record_run_log(
-                                            stage="approval",
-                                            event="weth_router_approval_retry_scheduled",
-                                            status="started",
-                                            message=(
-                                                f"Approval attempt {approval_attempt}/{max_approval_attempts} for subwallet {item['address']} "
-                                                f"timed out. Retrying with a higher gas price."
-                                            ),
-                                            tx_hash=exc.tx_hash,
-                                            wallet_id=item["wallet_id"],
-                                            wallet_address=item["address"],
-                                            details={
-                                                "spender": swap_router_address,
-                                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
-                                                "attempt": approval_attempt,
-                                                "max_attempts": max_approval_attempts,
-                                                "replacement_nonce": subwallet_nonce,
-                                                "next_gas_price_wei": approval_gas_price_wei,
-                                            },
-                                        )
-                                        continue
-                                raise
-
-                        if not approval_receipt:
-                            raise last_approval_error or RuntimeError(f"{wrapped_native_symbol} router approval did not produce a confirmation")
-
-                        item["approval_transactions"].append(
-                            {
-                                "token_symbol": wrapped_native_symbol,
-                                "token_address": wrapped_native_address,
-                                "spender_address": swap_router_address,
-                                "amount": format_decimal(swap_budget_per_wallet),
-                                "attempts": approval_attempt_used,
-                                **approval_receipt,
-                            }
-                        )
-                        item["status"] = "approved"
-                        approval_success_count += 1
-                        approval_ready = True
-                        record_run_log(
-                            stage="approval",
-                            event="weth_router_approval_confirmed",
-                            status="confirmed",
-                            message=f"Approved {wrapped_native_symbol} router allowance for subwallet {item['address']}.",
-                            tx_hash=approval_receipt["tx_hash"],
-                            wallet_id=item["wallet_id"],
-                            wallet_address=item["address"],
-                            details={
-                                "spender": swap_router_address,
-                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
-                                "attempt": approval_attempt_used,
-                                "max_attempts": max_approval_attempts,
-                                "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
-                            },
-                        )
-                        subwallet_nonce += 1
-                    except Exception as exc:
-                        approval_failure_count += 1
-                        subwallet_errors.append(str(exc))
-                        failed_tx_hash = exc.tx_hash if isinstance(exc, WalletTransactionError) else None
-                        item["approval_transactions"].append(
-                            {
-                                "token_symbol": wrapped_native_symbol,
-                                "token_address": wrapped_native_address,
-                                "spender_address": swap_router_address,
-                                "amount": format_decimal(swap_budget_per_wallet),
-                                "tx_hash": failed_tx_hash,
-                                "status": "failed",
-                                "error": str(exc),
-                            }
-                        )
-                        record_run_log(
-                            stage="approval",
-                            event="weth_router_approval_failed",
-                            status="failed",
-                            message=f"{wrapped_native_symbol} router approval failed for subwallet {item['address']}: {exc}",
-                            wallet_id=item["wallet_id"],
-                            wallet_address=item["address"],
-                            tx_hash=failed_tx_hash,
-                            details={
-                                "spender": swap_router_address,
-                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
-                            },
-                        )
+                approval_ready = not abort_wallet_execution
+                approved_swap_backends: set[str] = set()
 
                 successful_swap_outputs: list[dict] = []
-                if stablecoin_routes and not approval_ready and not abort_wallet_execution:
-                    record_run_log(
-                        stage="swap",
-                        event="stablecoin_swaps_skipped",
-                        status="skipped",
-                        message=f"Skipped token swaps for subwallet {item['address']} because {wrapped_native_symbol} approval did not complete.",
-                        wallet_id=item["wallet_id"],
-                        wallet_address=item["address"],
-                    )
-
                 if approval_ready and not abort_wallet_execution:
                     for route_index, route in enumerate(stablecoin_routes):
                         amount_in = parse_decimal_amount(
@@ -4432,6 +4483,243 @@ def execute_wallet_run(
                             )
                             break
 
+                        prepared_quote = None
+                        quote_backend = None
+                        if not abort_wallet_execution:
+                            try:
+                                prepared_quote = quote_uniswap_swap(
+                                    wrapped_native_symbol,
+                                    token_out["address"],
+                                    format_decimal(amount_in),
+                                    fee_tier=template.get("fee_tier"),
+                                    slippage_percent=template.get("slippage_percent"),
+                                    chain=template_chain,
+                                )
+                                quote_backend = prepared_quote.get("backend")
+                            except Exception as exc:
+                                swap_failure_count += 1
+                                subwallet_errors.append(str(exc))
+                                item["swap_transactions"].append(
+                                    {
+                                        "backend": None,
+                                        "route_type": None,
+                                        "path_symbols": None,
+                                        "path_addresses": None,
+                                        "path_fee_tiers": None,
+                                        "token_symbol": token_out["symbol"],
+                                        "token_address": token_out["address"],
+                                        "amount_in": format_decimal(amount_in),
+                                        "amount_out": None,
+                                        "min_amount_out": None,
+                                        "fee_tier": template.get("fee_tier"),
+                                        "tx_hash": None,
+                                        "status": "failed",
+                                        "error": str(exc),
+                                    }
+                                )
+                                record_run_log(
+                                    stage="swap",
+                                    event="stablecoin_swap_failed",
+                                    status="failed",
+                                    message=f"Stablecoin swap into {token_out['symbol']} failed for subwallet {item['address']}: {exc}",
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    details={
+                                        "token_in": wrapped_native_symbol,
+                                        "token_out": token_out["symbol"],
+                                        "amount_in_wrapped_native": format_decimal(amount_in),
+                                    },
+                                )
+                                continue
+
+                        if quote_backend and quote_backend not in approved_swap_backends and not abort_wallet_execution:
+                            swap_runtime = get_swap_runtime_config(template_chain, backend=quote_backend)
+                            spender_address = swap_runtime["router_address"]
+                            approval_receipt = None
+                            approval_gas_price_wei = int(web3_client.eth.gas_price)
+                            last_approval_error: WalletTransactionError | None = None
+                            max_approval_attempts = TOKEN_APPROVAL_MAX_ATTEMPTS
+                            approval_attempt_used = 0
+                            approval_amount_units = decimal_to_wei(swap_budget_per_wallet)
+
+                            try:
+                                for approval_attempt in range(1, max_approval_attempts + 1):
+                                    approval_attempt_used = approval_attempt
+                                    if approval_attempt > 1:
+                                        record_run_log(
+                                            stage="approval",
+                                            event="weth_router_approval_retry_started",
+                                            status="started",
+                                            message=(
+                                                f"Retrying {wrapped_native_symbol} router approval for subwallet {item['address']} "
+                                                f"on {quote_backend} (attempt {approval_attempt}/{max_approval_attempts})."
+                                            ),
+                                            tx_hash=last_approval_error.tx_hash if last_approval_error else None,
+                                            wallet_id=item["wallet_id"],
+                                            wallet_address=item["address"],
+                                            details={
+                                                "backend": quote_backend,
+                                                "spender": spender_address,
+                                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                "attempt": approval_attempt,
+                                                "max_attempts": max_approval_attempts,
+                                                "gas_price_wei": approval_gas_price_wei,
+                                                "previous_error": str(last_approval_error) if last_approval_error else None,
+                                            },
+                                        )
+
+                                    try:
+                                        approval_receipt = approve_token_from_wallet(
+                                            web3_client,
+                                            token_address=wrapped_native_address,
+                                            wallet_address=sub_wallet["address"],
+                                            private_key=sub_wallet["private_key"],
+                                            spender_address=spender_address,
+                                            amount_units=approval_amount_units,
+                                            nonce=subwallet_nonce,
+                                            gas_price_wei=approval_gas_price_wei,
+                                        )
+                                        break
+                                    except WalletTransactionError as exc:
+                                        last_approval_error = exc
+                                        if exc.retryable:
+                                            approval_receipt = recover_approval_after_timeout(
+                                                web3_client,
+                                                token_address=wrapped_native_address,
+                                                owner_address=sub_wallet["address"],
+                                                spender_address=spender_address,
+                                                amount_units=approval_amount_units,
+                                                tx_hash=exc.tx_hash,
+                                                nonce=subwallet_nonce,
+                                                gas_price_wei=exc.gas_price_wei,
+                                            )
+                                            if approval_receipt:
+                                                record_run_log(
+                                                    stage="approval",
+                                                    event="weth_router_approval_recovered_after_timeout",
+                                                    status="confirmed",
+                                                    message=(
+                                                        f"{wrapped_native_symbol} router approval for subwallet {item['address']} "
+                                                        f"on {quote_backend} was recovered after the receipt timeout."
+                                                    ),
+                                                    tx_hash=exc.tx_hash,
+                                                    wallet_id=item["wallet_id"],
+                                                    wallet_address=item["address"],
+                                                    details={
+                                                        "backend": quote_backend,
+                                                        "spender": spender_address,
+                                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                        "attempt": approval_attempt,
+                                                        "max_attempts": max_approval_attempts,
+                                                        "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
+                                                    },
+                                                )
+                                                break
+
+                                            if approval_attempt < max_approval_attempts:
+                                                approval_gas_price_wei = get_bumped_gas_price_wei(
+                                                    web3_client,
+                                                    exc.gas_price_wei,
+                                                    multiplier=TOKEN_APPROVAL_GAS_PRICE_BUMP_MULTIPLIER,
+                                                )
+                                                record_run_log(
+                                                    stage="approval",
+                                                    event="weth_router_approval_retry_scheduled",
+                                                    status="started",
+                                                    message=(
+                                                        f"Approval attempt {approval_attempt}/{max_approval_attempts} for subwallet {item['address']} "
+                                                        f"on {quote_backend} timed out. Retrying with a higher gas price."
+                                                    ),
+                                                    tx_hash=exc.tx_hash,
+                                                    wallet_id=item["wallet_id"],
+                                                    wallet_address=item["address"],
+                                                    details={
+                                                        "backend": quote_backend,
+                                                        "spender": spender_address,
+                                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                        "attempt": approval_attempt,
+                                                        "max_attempts": max_approval_attempts,
+                                                        "replacement_nonce": subwallet_nonce,
+                                                        "next_gas_price_wei": approval_gas_price_wei,
+                                                    },
+                                                )
+                                                continue
+                                        raise
+
+                                if not approval_receipt:
+                                    raise last_approval_error or RuntimeError(
+                                        f"{wrapped_native_symbol} router approval did not produce a confirmation"
+                                    )
+
+                                item["approval_transactions"].append(
+                                    {
+                                        "backend": quote_backend,
+                                        "token_symbol": wrapped_native_symbol,
+                                        "token_address": wrapped_native_address,
+                                        "spender_address": spender_address,
+                                        "amount": format_decimal(swap_budget_per_wallet),
+                                        "attempts": approval_attempt_used,
+                                        **approval_receipt,
+                                    }
+                                )
+                                approval_success_count += 1
+                                approved_swap_backends.add(quote_backend)
+                                record_run_log(
+                                    stage="approval",
+                                    event="weth_router_approval_confirmed",
+                                    status="confirmed",
+                                    message=(
+                                        f"Approved {wrapped_native_symbol} router allowance for subwallet {item['address']} "
+                                        f"on {quote_backend}."
+                                    ),
+                                    tx_hash=approval_receipt["tx_hash"],
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    details={
+                                        "backend": quote_backend,
+                                        "spender": spender_address,
+                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                        "attempt": approval_attempt_used,
+                                        "max_attempts": max_approval_attempts,
+                                        "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
+                                    },
+                                )
+                                subwallet_nonce += 1
+                                item["status"] = "approved"
+                            except Exception as exc:
+                                approval_failure_count += 1
+                                subwallet_errors.append(str(exc))
+                                failed_tx_hash = exc.tx_hash if isinstance(exc, WalletTransactionError) else None
+                                item["approval_transactions"].append(
+                                    {
+                                        "backend": quote_backend,
+                                        "token_symbol": wrapped_native_symbol,
+                                        "token_address": wrapped_native_address,
+                                        "spender_address": spender_address,
+                                        "amount": format_decimal(swap_budget_per_wallet),
+                                        "tx_hash": failed_tx_hash,
+                                        "status": "failed",
+                                        "error": str(exc),
+                                    }
+                                )
+                                record_run_log(
+                                    stage="approval",
+                                    event="weth_router_approval_failed",
+                                    status="failed",
+                                    message=f"{wrapped_native_symbol} router approval failed for subwallet {item['address']}: {exc}",
+                                    wallet_id=item["wallet_id"],
+                                    wallet_address=item["address"],
+                                    tx_hash=failed_tx_hash,
+                                    details={
+                                        "backend": quote_backend,
+                                        "spender": spender_address,
+                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                    },
+                                )
+                                abort_wallet_execution = True
+                                approval_ready = False
+                                break
+
                         try:
                             swap_receipt = None
                             swap_gas_price_wei = int(web3_client.eth.gas_price)
@@ -4474,6 +4762,7 @@ def execute_wallet_run(
                                         amount_in=amount_in,
                                         fee_tier=template.get("fee_tier"),
                                         slippage_percent=template.get("slippage_percent"),
+                                        prepared_quote=prepared_quote,
                                         nonce=subwallet_nonce,
                                         gas_price_wei=swap_gas_price_wei,
                                     )
@@ -4550,6 +4839,11 @@ def execute_wallet_run(
                             amount_out = parse_decimal_amount(swap_receipt["amount_out"] or "0", "amount_out")
                             item["swap_transactions"].append(
                                 {
+                                    "backend": swap_receipt.get("backend"),
+                                    "route_type": swap_receipt.get("route_type"),
+                                    "path_symbols": swap_receipt.get("path_symbols"),
+                                    "path_addresses": swap_receipt.get("path_addresses"),
+                                    "path_fee_tiers": swap_receipt.get("path_fee_tiers"),
                                     "token_symbol": token_out["symbol"],
                                     "token_address": token_out["address"],
                                     "amount_in": format_decimal(amount_in),
@@ -4582,6 +4876,10 @@ def execute_wallet_run(
                                     "to_address": item["address"],
                                 },
                                 details={
+                                    "backend": swap_receipt.get("backend"),
+                                    "route_type": swap_receipt.get("route_type"),
+                                    "path_symbols": swap_receipt.get("path_symbols"),
+                                    "path_fee_tiers": swap_receipt.get("path_fee_tiers"),
                                     "token_in": wrapped_native_symbol,
                                     "token_out": token_out["symbol"],
                                     "amount_in_wrapped_native": format_decimal(amount_in),
@@ -4620,6 +4918,11 @@ def execute_wallet_run(
                             failed_tx_hash = exc.tx_hash if isinstance(exc, WalletTransactionError) else None
                             item["swap_transactions"].append(
                                 {
+                                    "backend": None,
+                                    "route_type": None,
+                                    "path_symbols": None,
+                                    "path_addresses": None,
+                                    "path_fee_tiers": None,
                                     "token_symbol": token_out["symbol"],
                                     "token_address": token_out["address"],
                                     "amount_in": format_decimal(amount_in),
