@@ -192,7 +192,6 @@ const WRAP_GAS_UNITS = 120_000;
 const ETH_TRANSFER_GAS_UNITS = 21_000;
 const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
-const TOKEN_TRANSFER_GAS_UNITS = 90_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
 
 type AutomationStepTone = "ready" | "planned" | "attention" | "optional";
@@ -1587,10 +1586,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 </div>
                                 <div className="cad-panel-muted flex min-h-[88px] flex-col justify-center px-4 py-3">
                                   <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                                    {locale === "en" ? "Recipient" : locale === "zn" ? "接收地址" : "Người nhận"}
+                                    {locale === "en" ? "Testing Recipient" : locale === "zn" ? "测试接收地址" : "Người nhận thử nghiệm"}
                                   </p>
                                   <p className="mt-1 break-all font-mono text-xs text-slate-700">
-                                    {selectedTemplate.recipient_address ?? (locale === "en" ? "Not set" : locale === "zn" ? "未设置" : "Chưa thiết lập")}
+                                    {(selectedTemplate.testing_recipient_address ?? selectedTemplate.recipient_address) ?? (locale === "en" ? "Not set" : locale === "zn" ? "未设置" : "Chưa thiết lập")}
                                   </p>
                                   {selectedDistributorAutomation ? (
                                     <p className="mt-2 text-xs text-slate-500">{selectedDistributorAutomation.description}</p>
@@ -1749,7 +1748,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                               : `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} vào hợp đồng phân phối`}
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500">
-                                          {locale === "en" ? `The main wallet transfers direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into ManagedTokenDistributor after deployment.` : locale === "zn" ? `部署后会由主钱包把直接合约 ${nativeSymbol} 和直接合约 ${wrappedNativeSymbol} 转入 ManagedTokenDistributor。` : `Sau khi triển khai, ví chính sẽ chuyển ${nativeSymbol} và ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng vào ManagedTokenDistributor.`}
+                                          {locale === "en" ? `The main wallet transfers direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into BatchTreasuryDistributor after deployment.` : locale === "zn" ? `部署后会由主钱包把直接合约 ${nativeSymbol} 和直接合约 ${wrappedNativeSymbol} 转入 BatchTreasuryDistributor。` : `Sau khi triển khai, ví chính sẽ chuyển ${nativeSymbol} và ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng vào BatchTreasuryDistributor.`}
                                         </p>
                                       </div>
                                       <div className="cad-panel-muted px-4 py-3">
@@ -1760,10 +1759,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         ) : null}
                                       </div>
                                       <div className="rounded-2xl bg-amber-50 px-4 py-3">
-                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">{locale === "en" ? "Testing execute" : locale === "zn" ? "测试执行" : "Chạy thử"}</p>
+                                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">{locale === "en" ? "Testing Batch Send" : locale === "zn" ? "测试批量发送" : "Batch send thử nghiệm"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">{buildTestingExecuteSummary(selectedTemplate, locale)}</p>
                                         {selectedTemplate.test_auto_execute_after_funding ? (
-                                          <p className="mt-1 text-xs text-amber-800">{locale === "en" ? "Testing only. Each funded distributor will immediately call execute()." : locale === "zn" ? "仅测试。每个已注资的分发合约都会立即调用 execute()。" : "Chỉ để thử nghiệm. Mỗi hợp đồng phân phối được cấp vốn sẽ gọi execute() ngay lập tức."}</p>
+                                          <p className="mt-1 text-xs text-amber-800">{locale === "en" ? "Testing only. Each funded batch treasury will immediately call batchSend()." : locale === "zn" ? "仅测试。每个已注资的批量金库合约都会立即调用 batchSend()。" : "Chỉ để thử nghiệm. Mỗi batch treasury được cấp vốn sẽ gọi batchSend() ngay lập tức."}</p>
                                         ) : null}
                                       </div>
                                       <div className="cad-panel-muted px-4 py-3">

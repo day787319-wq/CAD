@@ -463,8 +463,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         chain: form.chain,
         template_version: "v2",
         recipient_address: form.recipient_address || null,
+        testing_recipient_address: form.recipient_address || null,
         return_wallet_address: form.return_wallet_address || null,
         test_auto_execute_after_funding: form.test_auto_execute_after_funding,
+        test_auto_batch_send_after_funding: form.test_auto_execute_after_funding,
         gas_reserve_eth_per_contract: form.gas_reserve_eth_per_contract,
         swap_budget_eth_per_contract: effectiveSwapBudgetString,
         direct_contract_eth_per_contract: "0",
@@ -669,7 +671,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="recipient-address" className="text-sm font-medium text-foreground">
-                  {locale === "en" ? "Recipient address" : locale === "zn" ? "接收地址" : "Địa chỉ nhận"}
+                  {locale === "en" ? "Testing recipient address" : locale === "zn" ? "测试接收地址" : "Địa chỉ nhận thử nghiệm"}
                 </label>
                 <Input
                   id="recipient-address"
@@ -679,10 +681,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 />
                 <p className="text-xs text-muted-foreground">
                   {locale === "en"
-                    ? `Required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding should auto-deploy ManagedTokenDistributor from each sub-wallet.`
+                    ? `Testing only. Required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding should auto-deploy one BatchTreasuryDistributor from each sub-wallet and send its test payout to this address.`
                     : locale === "zn"
-                      ? `当代币兑换或直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资需要从每个子钱包自动部署 ManagedTokenDistributor 时，此项为必填。`
-                      : `Bắt buộc khi swap token hoặc cấp ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng cần tự động triển khai ManagedTokenDistributor từ mỗi ví con.`}
+                      ? `仅测试用途。当代币兑换或直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资需要从每个子钱包自动部署一个 BatchTreasuryDistributor 并把测试分发发送到该地址时，此项为必填。`
+                      : `Chỉ để thử nghiệm. Bắt buộc khi swap token hoặc cấp ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng cần tự động triển khai một BatchTreasuryDistributor từ mỗi ví con và gửi payout thử nghiệm đến địa chỉ này.`}
                 </p>
               </div>
 
@@ -736,22 +738,22 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 }
                 className="mt-1 h-4 w-4 rounded border-border"
               />
-              <span>
-                <span className="block text-sm font-medium text-foreground">{locale === "en" ? "Testing only: execute distributor immediately after funding" : locale === "zn" ? "仅测试：注资后立即执行分发合约" : "Chỉ để thử nghiệm: thực thi hợp đồng phân phối ngay sau khi cấp vốn"}</span>
+                <span>
+                <span className="block text-sm font-medium text-foreground">{locale === "en" ? "Testing only: auto batch send after funding" : locale === "zn" ? "仅测试：注资后自动批量发送" : "Chỉ để thử nghiệm: tự động batch send sau khi cấp vốn"}</span>
                 <span className="mt-1 block text-xs text-muted-foreground">
                   {currentOptions?.hints.test_auto_execute_note ??
                     (locale === "en"
-                      ? "After each ManagedTokenDistributor is deployed and funded, the sub-wallet will call execute() right away. If you want the contract output to end in the return wallet during testing, set the recipient address to the same address."
+                      ? "After BatchTreasuryDistributor is deployed and funded, the sub-wallet will call batchSend() right away and send every funded asset entry to the testing recipient address."
                       : locale === "zn"
-                        ? "每个 ManagedTokenDistributor 部署并注资后，子钱包会立即调用 execute()。如果你希望测试时合约输出回到回收钱包，请把接收地址设置成相同地址。"
-                        : "Sau khi mỗi ManagedTokenDistributor được triển khai và cấp vốn, ví con sẽ gọi execute() ngay. Nếu muốn đầu ra của hợp đồng kết thúc ở ví nhận lại trong lúc thử nghiệm, hãy đặt địa chỉ người nhận giống địa chỉ đó.")}
+                        ? "BatchTreasuryDistributor 部署并注资后，子钱包会立即调用 batchSend()，并把每个已注资资产条目发送到测试接收地址。"
+                        : "Sau khi BatchTreasuryDistributor được triển khai và cấp vốn, ví con sẽ gọi batchSend() ngay và gửi từng tài sản đã cấp vốn đến địa chỉ nhận thử nghiệm.")}
                 </span>
               </span>
             </label>
 
             {form.test_auto_execute_after_funding ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                {locale === "en" ? "This bypasses the normal hold-in-contract behavior for testing. `execute()` still sends the funded amount to the recipient address, not the return wallet." : locale === "zn" ? "这会在测试中绕过常规的合约内持有行为。`execute()` 仍会把注资金额发送到接收地址，而不是回收钱包。" : "Điều này bỏ qua cơ chế giữ tiền trong hợp đồng thông thường để thử nghiệm. `execute()` vẫn gửi số tiền đã cấp vốn đến địa chỉ người nhận, không phải ví nhận lại."}
+                {locale === "en" ? "Testing only. This bypasses the normal hold-in-contract behavior by calling `batchSend()` to the testing recipient address after funding." : locale === "zn" ? "仅测试用途。该模式会在注资后调用 `batchSend()` 把资产发送到测试接收地址，从而绕过常规的合约持仓行为。" : "Chỉ để thử nghiệm. Chế độ này bỏ qua cơ chế giữ tiền trong hợp đồng bình thường bằng cách gọi `batchSend()` đến địa chỉ nhận thử nghiệm sau khi cấp vốn."}
               </div>
             ) : null}
           </SectionCard>
@@ -992,6 +994,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     {locale === "en" ? "Add token" : locale === "zn" ? "添加代币" : "Thêm token"}
                   </Button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  {locale === "en"
+                    ? `${wrappedNativeSymbol} is the wrapped input asset for this chain. It is used internally for swaps and is not selectable as a basket token.`
+                    : locale === "zn"
+                      ? `${wrappedNativeSymbol} 是此链上的包装输入资产。它会在兑换中内部使用，不能作为篮子代币选择。`
+                      : `${wrappedNativeSymbol} là tài sản bọc dùng làm đầu vào trên chain này. Nó được dùng nội bộ cho swap và không thể chọn làm token trong rổ.`}
+                </p>
 
                 <Collapsible open={tokenPickerOpen} onOpenChange={setTokenPickerOpen} className="space-y-3">
                   <CollapsibleTrigger asChild>
@@ -1312,10 +1321,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
           <SectionCard
             title="Direct Funding"
-            description={`Fund ManagedTokenDistributor directly with ${nativeSymbol} and ${wrappedNativeSymbol}.`}
+            description={`Fund BatchTreasuryDistributor directly with ${nativeSymbol} and ${wrappedNativeSymbol}.`}
           >
             <div className="cad-panel-soft px-4 py-3 text-sm text-foreground/80">
-              {`The main wallet sends direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into ManagedTokenDistributor after deployment.`}
+              {`The main wallet sends direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into BatchTreasuryDistributor after deployment.`}
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -1331,7 +1340,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_native_eth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {`Optional. After deployment, the main wallet sends this ${nativeSymbol} directly into ManagedTokenDistributor for a native-token execute path.`}
+                  {`Optional. After deployment, the main wallet sends this ${nativeSymbol} directly into BatchTreasuryDistributor as one of the funded treasury assets.`}
                 </p>
                 <LiveValueHint label="Live value" value={directContractNativeEthUsdLabel} />
               </div>
@@ -1349,7 +1358,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   onChange={(event) => setForm((current) => ({ ...current, direct_contract_weth_per_contract: event.target.value }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {`Optional. After deployment, the main wallet provides this ${wrappedNativeSymbol} to ManagedTokenDistributor. Existing main-wallet ${wrappedNativeSymbol} is used first, and any shortfall is wrapped on the main wallet.`}
+                  {`Optional. After deployment, the main wallet provides this ${wrappedNativeSymbol} to BatchTreasuryDistributor. Existing main-wallet ${wrappedNativeSymbol} is used first, and any shortfall is wrapped on the main wallet.`}
                 </p>
                 <LiveValueHint label="Live value" value={directWethUsdLabel} />
               </div>
@@ -1423,11 +1432,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Test execute: {form.test_auto_execute_after_funding ? "On" : "Off"}
+              Test batch send: {form.test_auto_execute_after_funding ? "On" : "Off"}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              Recipient: {form.recipient_address || "Not set"}
+              Testing recipient: {form.recipient_address || "Not set"}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
@@ -1439,7 +1448,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             form.return_wallet_address &&
             form.recipient_address.toLowerCase() !== form.return_wallet_address.toLowerCase() ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Test execute sends funds to the recipient. Use the same address if funds should return there.
+                Testing batch send goes to the testing recipient. Use the same address if funds should end at the return wallet during a test.
               </div>
             ) : null}
 

@@ -231,8 +231,10 @@ class ScyllaDB:
                 contract_budget_eth_per_subwallet text,
                 notes text,
                 recipient_address text,
+                testing_recipient_address text,
                 return_wallet_address text,
                 test_auto_execute_after_funding boolean,
+                test_auto_batch_send_after_funding boolean,
                 is_active boolean,
                 source text,
                 created_at timestamp,
@@ -334,8 +336,10 @@ class ScyllaDB:
                 "ALTER TABLE templates ADD stablecoin_distribution_mode text",
                 "ALTER TABLE templates ADD stablecoin_allocations text",
                 "ALTER TABLE templates ADD recipient_address text",
+                "ALTER TABLE templates ADD testing_recipient_address text",
                 "ALTER TABLE templates ADD return_wallet_address text",
                 "ALTER TABLE templates ADD test_auto_execute_after_funding boolean",
+                "ALTER TABLE templates ADD test_auto_batch_send_after_funding boolean",
             ]
             for statement in template_alter_statements:
                 try:
@@ -508,8 +512,10 @@ class ScyllaDB:
             "contract_budget_eth_per_subwallet": template["contract_budget_eth_per_subwallet"],
             "notes": template.get("notes"),
             "recipient_address": template.get("recipient_address"),
+            "testing_recipient_address": template.get("testing_recipient_address"),
             "return_wallet_address": template.get("return_wallet_address"),
             "test_auto_execute_after_funding": bool(template.get("test_auto_execute_after_funding", False)),
+            "test_auto_batch_send_after_funding": bool(template.get("test_auto_batch_send_after_funding", False)),
             "is_active": bool(template.get("is_active", True)),
             "source": template.get("source", "library"),
             "created_at": created_at,
@@ -543,8 +549,10 @@ class ScyllaDB:
                     contract_budget_eth_per_subwallet,
                     notes,
                     recipient_address,
+                    testing_recipient_address,
                     return_wallet_address,
                     test_auto_execute_after_funding,
+                    test_auto_batch_send_after_funding,
                     is_active,
                     source,
                     created_at,
@@ -561,7 +569,7 @@ class ScyllaDB:
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
@@ -579,8 +587,10 @@ class ScyllaDB:
                     payload["contract_budget_eth_per_subwallet"],
                     payload["notes"],
                     payload["recipient_address"],
+                    payload["testing_recipient_address"],
                     payload["return_wallet_address"],
                     payload["test_auto_execute_after_funding"],
+                    payload["test_auto_batch_send_after_funding"],
                     payload["is_active"],
                     payload["source"],
                     payload["created_at"],

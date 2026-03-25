@@ -11,6 +11,7 @@ ARTIFACT_PATHS = {
     "SubWalletRegistry": ARTIFACTS_DIR / "SubWalletRegistry.sol" / "SubWalletRegistry.json",
     "TokenConfigRegistry": ARTIFACTS_DIR / "TokenConfigRegistry.sol" / "TokenConfigRegistry.json",
     "ManagedTokenDistributor": ARTIFACTS_DIR / "ManagedTokenDistributor.sol" / "ManagedTokenDistributor.json",
+    "BatchTreasuryDistributor": ARTIFACTS_DIR / "BatchTreasuryDistributor.sol" / "BatchTreasuryDistributor.json",
 }
 
 
@@ -19,8 +20,8 @@ def load_contract_artifact(contract_name: str) -> dict:
     artifact_path = ARTIFACT_PATHS.get(contract_name)
     if artifact_path is None:
         raise ValueError(f"Unsupported contract artifact: {contract_name}")
-    if contract_name == "ManagedTokenDistributor":
-        generated_artifact_path = GENERATED_ARTIFACTS_DIR / "ManagedTokenDistributor.json"
+    if contract_name in {"ManagedTokenDistributor", "BatchTreasuryDistributor"}:
+        generated_artifact_path = GENERATED_ARTIFACTS_DIR / f"{contract_name}.json"
         if generated_artifact_path.exists():
             artifact_path = generated_artifact_path
     if not artifact_path.exists():
@@ -75,7 +76,7 @@ def get_registry_integration_status():
     main_enabled = _artifact_available("MainWalletRegistry")
     sub_enabled = _artifact_available("SubWalletRegistry")
     token_enabled = _artifact_available("TokenConfigRegistry")
-    distributor_enabled = _artifact_available("ManagedTokenDistributor")
+    distributor_enabled = _artifact_available("BatchTreasuryDistributor")
     enabled = main_enabled or sub_enabled or token_enabled or distributor_enabled
 
     if enabled:
@@ -144,9 +145,11 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
     distributor_native_eth_amount = template.get("direct_contract_native_eth_per_contract") or "0"
     distributor_amount = template.get("direct_contract_weth_per_contract") or "0"
     swap_budget = template.get("swap_budget_eth_per_contract") or "0"
-    distributor_recipient = template.get("recipient_address")
+    distributor_recipient = template.get("testing_recipient_address") or template.get("recipient_address")
     return_wallet_address = template.get("return_wallet_address")
-    test_auto_execute_after_funding = bool(template.get("test_auto_execute_after_funding", False))
+    test_auto_execute_after_funding = bool(
+        template.get("test_auto_batch_send_after_funding", template.get("test_auto_execute_after_funding", False))
+    )
     distributor_native_eth_amount_configured = _is_positive_amount(distributor_native_eth_amount)
     distributor_amount_configured = _is_positive_amount(distributor_amount)
     has_swap_routes = (
@@ -192,8 +195,8 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
         "status": "mapped" if status["token_config_registry_enabled"] else "unavailable",
     }
     managed_token_distributor = {
-        "contract_name": "ManagedTokenDistributor",
-        "artifact_path": load_contract_artifact("ManagedTokenDistributor")["artifact_path"] if status["managed_token_distributor_enabled"] else None,
+        "contract_name": "BatchTreasuryDistributor",
+        "artifact_path": load_contract_artifact("BatchTreasuryDistributor")["artifact_path"] if status["managed_token_distributor_enabled"] else None,
         "status": (
             "deployment_configured"
             if status["managed_token_distributor_enabled"] and distributor_recipient and distributor_flow_configured
@@ -206,19 +209,21 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
             else "unavailable"
         ),
         "message": (
-            "ManagedTokenDistributor auto deployment is ready. Each sub-wallet will deploy after any local wrap and configured swap outputs are available, and direct ETH/WETH can then be funded from the main wallet."
+            "BatchTreasuryDistributor testing deployment is ready. Each sub-wallet will deploy one contract after any local wrap and configured swap outputs are available, then fund all successful assets into that contract."
             if status["managed_token_distributor_enabled"] and distributor_recipient and distributor_flow_configured
-            else "Set recipient_address to enable ManagedTokenDistributor auto deployment."
+            else "Set testing_recipient_address to enable BatchTreasuryDistributor testing deployment."
             if status["managed_token_distributor_enabled"] and distributor_flow_configured and not distributor_recipient
-            else "This template only funds sub-wallet ETH right now. Add a positive stablecoin swap budget with allocations or set direct contract ETH/WETH above 0 to enable ManagedTokenDistributor auto deployment."
+            else "This template only funds sub-wallet gas right now. Add a positive token swap budget with allocations or set direct contract native/wrapped funding above 0 to enable BatchTreasuryDistributor testing deployment."
             if status["managed_token_distributor_enabled"] and distributor_recipient and not distributor_flow_configured
-            else "Set recipient_address and add either a positive stablecoin swap budget with allocations or direct contract ETH/WETH above 0 to enable ManagedTokenDistributor auto deployment."
+            else "Set testing_recipient_address and add either a positive token swap budget with allocations or direct contract native/wrapped funding above 0 to enable BatchTreasuryDistributor testing deployment."
             if status["managed_token_distributor_enabled"]
-            else "ManagedTokenDistributor artifact unavailable."
+            else "BatchTreasuryDistributor artifact unavailable."
         ),
         "recipient_address": distributor_recipient,
+        "testing_recipient_address": distributor_recipient,
         "return_wallet_address": return_wallet_address,
         "test_auto_execute_after_funding": test_auto_execute_after_funding,
+        "test_auto_batch_send_after_funding": test_auto_execute_after_funding,
         "native_eth_amount": distributor_native_eth_amount,
         "amount": distributor_amount,
         "has_swap_routes": has_swap_routes,

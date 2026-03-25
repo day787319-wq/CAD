@@ -598,18 +598,64 @@ def get_template_chain_choices() -> list[dict]:
     ]
 
 
-def get_template_chain_tokens(chain: str | None = None) -> list[dict]:
-    return deepcopy(get_template_chain_config(chain)["tokens"])
+def is_wrapped_native_template_token(
+    chain: str | None = None,
+    *,
+    address: str | None = None,
+    symbol: str | None = None,
+) -> bool:
+    config = get_template_chain_config(chain)
+    normalized_address = (address or "").strip().lower()
+    normalized_symbol = (symbol or "").strip().upper()
+    return (
+        (normalized_address and normalized_address == config["wrapped_native_address"].lower())
+        or (normalized_symbol and normalized_symbol == config["wrapped_native_symbol"].upper())
+    )
 
 
-def get_template_chain_token(chain: str | None = None, *, address: str | None = None, symbol: str | None = None) -> dict:
+def get_template_chain_tokens(chain: str | None = None, *, include_wrapped_native: bool = False) -> list[dict]:
+    tokens = deepcopy(get_template_chain_config(chain)["tokens"])
+    if include_wrapped_native:
+        return tokens
+    return [
+        token
+        for token in tokens
+        if not is_wrapped_native_template_token(
+            chain,
+            address=token.get("address"),
+            symbol=token.get("symbol"),
+        )
+    ]
+
+
+def get_template_chain_token(
+    chain: str | None = None,
+    *,
+    address: str | None = None,
+    symbol: str | None = None,
+    include_wrapped_native: bool = False,
+) -> dict:
     normalized_chain = normalize_template_chain(chain)
     if address:
         token = TEMPLATE_CHAIN_TOKEN_BY_ADDRESS[normalized_chain].get(address.strip().lower())
-        if token:
+        if token and (
+            include_wrapped_native
+            or not is_wrapped_native_template_token(
+                normalized_chain,
+                address=token.get("address"),
+                symbol=token.get("symbol"),
+            )
+        ):
             return deepcopy(token)
     if symbol:
         token = TEMPLATE_CHAIN_TOKEN_BY_SYMBOL[normalized_chain].get(symbol.strip().upper())
-        if token:
+        if token and (
+            include_wrapped_native
+            or not is_wrapped_native_template_token(
+                normalized_chain,
+                address=token.get("address"),
+                symbol=token.get("symbol"),
+            )
+        ):
             return deepcopy(token)
     raise ValueError("Unsupported swap token")

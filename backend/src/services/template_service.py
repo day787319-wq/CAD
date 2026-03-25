@@ -30,6 +30,7 @@ from src.services.template_chain_config import (
     get_template_chain_swap_backends,
     get_template_chain_token,
     get_template_chain_tokens,
+    is_wrapped_native_template_token,
     normalize_template_chain,
 )
 from src.services.wallet_service import (
@@ -66,6 +67,19 @@ def _format_decimal(value: Decimal | None):
     if value == 0:
         return "0"
     return format(value.normalize(), "f")
+
+
+def _get_testing_recipient_address(template: dict) -> str | None:
+    return template.get("testing_recipient_address") or template.get("recipient_address")
+
+
+def _get_test_auto_batch_send_enabled(template: dict) -> bool:
+    return bool(
+        template.get(
+            "test_auto_batch_send_after_funding",
+            template.get("test_auto_execute_after_funding", False),
+        )
+    )
 
 
 BUILTIN_TEMPLATE_NOTES = (
@@ -141,8 +155,10 @@ def _build_builtin_template(definition: dict) -> dict:
         "direct_contract_native_eth_per_contract": "0",
         "direct_contract_weth_per_contract": "0",
         "recipient_address": None,
+        "testing_recipient_address": None,
         "return_wallet_address": None,
         "test_auto_execute_after_funding": False,
+        "test_auto_batch_send_after_funding": False,
         "slippage_percent": "0.5",
         "fee_tier": None,
         "auto_top_up_enabled": False,
@@ -241,11 +257,23 @@ def _normalize_stablecoin(
     address: str | None = None,
     symbol: str | None = None,
 ):
+    chain_config = get_template_chain_config(chain)
+    if is_wrapped_native_template_token(chain, address=address, symbol=symbol):
+        raise ValueError(
+            f"{chain_config['wrapped_native_symbol']} is the wrapped input asset on {chain_config['label']}. "
+            f"Do not add it as a swap target. Use swap_budget_eth_per_contract or direct_contract_weth_per_contract instead."
+        )
     try:
         return get_template_chain_token(chain, address=address, symbol=symbol)
     except ValueError:
         if address and Web3.is_address(address):
-            return resolve_token(address, chain)
+            token = resolve_token(address, chain)
+            if is_wrapped_native_template_token(chain, address=token["address"], symbol=token["symbol"]):
+                raise ValueError(
+                    f"{chain_config['wrapped_native_symbol']} is the wrapped input asset on {chain_config['label']}. "
+                    f"Do not add it as a swap target. Use swap_budget_eth_per_contract or direct_contract_weth_per_contract instead."
+                )
+            return token
         raise
 
 
@@ -255,7 +283,19 @@ def resolve_template_token(address: str, chain: str | None = None):
     if not Web3.is_address(normalized_address):
         raise ValueError("token_address must be a valid EVM address")
 
+    chain_config = get_template_chain_config(normalized_chain)
+    if is_wrapped_native_template_token(normalized_chain, address=normalized_address):
+        raise ValueError(
+            f"{chain_config['wrapped_native_symbol']} is reserved for wrapping on {chain_config['label']}. "
+            "It cannot be added as a swap target."
+        )
+
     token = resolve_token(normalized_address, normalized_chain)
+    if is_wrapped_native_template_token(normalized_chain, address=token["address"], symbol=token["symbol"]):
+        raise ValueError(
+            f"{chain_config['wrapped_native_symbol']} is reserved for wrapping on {chain_config['label']}. "
+            "It cannot be added as a swap target."
+        )
     return {
         "symbol": token["symbol"],
         "name": token["name"],
@@ -373,21 +413,29 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
     )
     if swap_budget > 0 and not get_template_chain_swap_backends(chain):
         raise ValueError(f"Token swap execution is not configured for {chain_config['label']} yet")
-    recipient_address = _parse_optional_address(payload.get("recipient_address"), "recipient_address")
+    testing_recipient_address = _parse_optional_address(
+        payload.get("testing_recipient_address") or payload.get("recipient_address"),
+        "testing_recipient_address",
+    )
     return_wallet_address = _parse_optional_address(payload.get("return_wallet_address"), "return_wallet_address")
-    test_auto_execute_after_funding = bool(payload.get("test_auto_execute_after_funding", False))
+    test_auto_execute_after_funding = bool(
+        payload.get(
+            "test_auto_batch_send_after_funding",
+            payload.get("test_auto_execute_after_funding", False),
+        )
+    )
     requires_recipient = (
         direct_contract_native_eth > 0
         or direct_weth > 0
         or (distribution_mode != "none" and swap_budget > 0)
     )
-    if requires_recipient and recipient_address is None:
+    if requires_recipient and testing_recipient_address is None:
         raise ValueError(
-            f"recipient_address is required when token swaps or direct contract "
+            f"testing_recipient_address is required when token swaps or direct contract "
             f"{chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} funding are enabled"
         )
-    if test_auto_execute_after_funding and recipient_address is None:
-        raise ValueError("recipient_address is required when test_auto_execute_after_funding is enabled")
+    if test_auto_execute_after_funding and testing_recipient_address is None:
+        raise ValueError("testing_recipient_address is required when test_auto_batch_send_after_funding is enabled")
     slippage_percent = _parse_slippage_percent(payload.get("slippage_percent", "0.5"))
     fee_tier = _parse_fee_tier(payload.get("fee_tier"), chain)
     auto_top_up = _parse_auto_top_up_settings(payload, chain)
@@ -409,9 +457,11 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         "direct_contract_eth_per_contract": _format_decimal(direct_eth),
         "direct_contract_native_eth_per_contract": _format_decimal(direct_contract_native_eth),
         "direct_contract_weth_per_contract": _format_decimal(direct_weth),
-        "recipient_address": recipient_address,
+        "recipient_address": testing_recipient_address,
+        "testing_recipient_address": testing_recipient_address,
         "return_wallet_address": return_wallet_address,
         "test_auto_execute_after_funding": test_auto_execute_after_funding,
+        "test_auto_batch_send_after_funding": test_auto_execute_after_funding,
         "slippage_percent": _format_decimal(slippage_percent),
         "fee_tier": fee_tier,
         "auto_top_up_enabled": auto_top_up["enabled"],
@@ -446,9 +496,11 @@ def _serialize_template_for_storage(template: dict):
         "gas_reserve_eth_per_subwallet": template["gas_reserve_eth_per_contract"],
         "contract_budget_eth_per_subwallet": template["direct_contract_eth_per_contract"],
         "notes": template.get("notes"),
-        "recipient_address": template.get("recipient_address"),
+        "recipient_address": template.get("testing_recipient_address") or template.get("recipient_address"),
+        "testing_recipient_address": template.get("testing_recipient_address") or template.get("recipient_address"),
         "return_wallet_address": template.get("return_wallet_address"),
-        "test_auto_execute_after_funding": template.get("test_auto_execute_after_funding", False),
+        "test_auto_execute_after_funding": _get_test_auto_batch_send_enabled(template),
+        "test_auto_batch_send_after_funding": _get_test_auto_batch_send_enabled(template),
         "is_active": template.get("is_active", True),
         "source": template.get("source") or DEFAULT_TEMPLATE_SOURCE,
         "created_at": template["created_at"],
@@ -495,9 +547,15 @@ def _deserialize_template_record(record: dict | None):
         "auto_top_up_enabled": bool(record.get("auto_top_up_enabled", False)),
         "auto_top_up_threshold_eth": record.get("auto_top_up_threshold_eth") or "0",
         "auto_top_up_target_eth": record.get("auto_top_up_target_eth") or "0",
-        "recipient_address": record.get("recipient_address"),
+        "recipient_address": record.get("testing_recipient_address") or record.get("recipient_address"),
+        "testing_recipient_address": record.get("testing_recipient_address") or record.get("recipient_address"),
         "return_wallet_address": record.get("return_wallet_address"),
-        "test_auto_execute_after_funding": bool(record.get("test_auto_execute_after_funding", False)),
+        "test_auto_execute_after_funding": bool(
+            record.get("test_auto_batch_send_after_funding", record.get("test_auto_execute_after_funding", False))
+        ),
+        "test_auto_batch_send_after_funding": bool(
+            record.get("test_auto_batch_send_after_funding", record.get("test_auto_execute_after_funding", False))
+        ),
         "slippage_percent": record.get("slippage_percent") or "0.5",
         "fee_tier": record.get("fee_tier"),
         "auto_wrap_eth_to_weth": True,
@@ -646,9 +704,9 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
     direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
     direct_weth = Decimal(str(template["direct_contract_weth_per_contract"]))
-    recipient_address = template.get("recipient_address")
+    recipient_address = _get_testing_recipient_address(template)
     return_wallet_address = template.get("return_wallet_address")
-    test_auto_execute_after_funding = bool(template.get("test_auto_execute_after_funding", False))
+    test_auto_execute_after_funding = _get_test_auto_batch_send_enabled(template)
     stablecoin_routes = [
         route
         for route in build_template_stablecoin_routes(template, contract_count=1)
@@ -663,14 +721,14 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         local_erc20_funding_targets_per_wallet + main_wallet_erc20_funding_targets_per_wallet
     )
     native_eth_funding_targets_per_wallet = main_wallet_native_eth_funding_targets_per_wallet
-    deployment_targets_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
+    funded_asset_count_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
     required_weth_per_contract = swap_budget
     wrap_transaction_count = contract_count if required_weth_per_contract > 0 else 0
     approval_transaction_count = contract_count * router_approval_count_per_wallet
     swap_transaction_count = contract_count * route_count
-    deployment_transaction_count = contract_count * deployment_targets_per_wallet if recipient_address else 0
-    contract_funding_transaction_count = deployment_transaction_count if recipient_address else 0
-    execute_transaction_count = deployment_transaction_count if recipient_address and test_auto_execute_after_funding else 0
+    deployment_transaction_count = contract_count if recipient_address and funded_asset_count_per_wallet > 0 else 0
+    contract_funding_transaction_count = contract_count * funded_asset_count_per_wallet if recipient_address else 0
+    execute_transaction_count = contract_count if recipient_address and test_auto_execute_after_funding and funded_asset_count_per_wallet > 0 else 0
     return_sweep_token_transfer_count_per_wallet = (
         route_count + (1 if swap_budget > 0 else 0)
         if return_wallet_address
@@ -687,8 +745,8 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     approval_gas_units_per_wallet = ERC20_APPROVE_GAS_LIMIT * router_approval_count_per_wallet
     swap_gas_units_per_wallet = UNISWAP_V3_SWAP_GAS_LIMIT * route_count
     deployment_gas_units_per_wallet = (
-        MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT * deployment_targets_per_wallet
-        if recipient_address
+        MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT
+        if recipient_address and funded_asset_count_per_wallet > 0
         else 0
     )
     local_contract_funding_gas_units_per_wallet = (
@@ -706,8 +764,8 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         local_contract_funding_gas_units_per_wallet + main_wallet_direct_funding_gas_units_per_wallet
     )
     execute_gas_units_per_wallet = (
-        MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT * deployment_targets_per_wallet
-        if recipient_address and test_auto_execute_after_funding
+        (120000 + (ERC20_TRANSFER_GAS_LIMIT * funded_asset_count_per_wallet))
+        if recipient_address and test_auto_execute_after_funding and funded_asset_count_per_wallet > 0
         else 0
     )
     return_sweep_gas_units_per_wallet = (
@@ -732,7 +790,8 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     return {
         "stablecoin_routes": stablecoin_routes,
         "route_count": route_count,
-        "deployment_targets_per_wallet": deployment_targets_per_wallet,
+        "deployment_targets_per_wallet": funded_asset_count_per_wallet,
+        "funded_asset_count_per_wallet": funded_asset_count_per_wallet,
         "local_erc20_funding_targets_per_wallet": local_erc20_funding_targets_per_wallet,
         "main_wallet_erc20_funding_targets_per_wallet": main_wallet_erc20_funding_targets_per_wallet,
         "main_wallet_native_eth_funding_targets_per_wallet": main_wallet_native_eth_funding_targets_per_wallet,
@@ -976,7 +1035,9 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         "slippage_percent": template["slippage_percent"],
         "fee_tier": template.get("fee_tier"),
         "return_wallet_address": template.get("return_wallet_address"),
-        "test_auto_execute_after_funding": bool(template.get("test_auto_execute_after_funding", False)),
+        "testing_recipient_address": _get_testing_recipient_address(template),
+        "test_auto_execute_after_funding": _get_test_auto_batch_send_enabled(template),
+        "test_auto_batch_send_after_funding": _get_test_auto_batch_send_enabled(template),
         "auto_top_up": auto_top_up,
         "per_contract": {
             "gas_reserve_eth": _format_decimal(gas_reserve),
@@ -1147,8 +1208,10 @@ def get_template_options(chain: str | None = None):
             "chain": normalized_chain,
             "template_version": TEMPLATE_VERSION_V2,
             "recipient_address": None,
+            "testing_recipient_address": None,
             "return_wallet_address": None,
             "test_auto_execute_after_funding": False,
+            "test_auto_batch_send_after_funding": False,
             "gas_reserve_eth_per_contract": "0.02",
             "swap_budget_eth_per_contract": "0",
             "direct_contract_eth_per_contract": "0",
@@ -1177,9 +1240,9 @@ def get_template_options(chain: str | None = None):
             ),
             "return_wallet_note": (
                 f"If set, the run sweeps leftover {chain_config['native_symbol']}, {chain_config['wrapped_native_symbol']}, "
-                f"and supported token balances from each sub-wallet into this address after execution. Distributor contracts also store it as the destination for future excess or rescue transfers."
+                f"and supported token balances from each sub-wallet into this address after execution. This is a sub-wallet cleanup destination, not the testing payout target."
             ),
-            "test_auto_execute_note": "Testing only. After a distributor is deployed and funded, the sub-wallet immediately calls execute(). If you want the contract output to land in the return wallet during a test, set recipient_address to the same address.",
+            "test_auto_execute_note": "Testing only. After BatchTreasuryDistributor is deployed and funded, the sub-wallet immediately calls batchSend() and sends every funded asset entry to testing_recipient_address.",
         },
         "contract_sync": get_registry_integration_status(),
     }
@@ -1316,7 +1379,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     local_execution_gas_fee_eth_per_wallet = Decimal(str(cost_snapshot["per_contract"]["local_execution_gas_fee_eth"]))
     local_execution_gas_fee_eth_total = Decimal(str(cost_snapshot["totals"]["local_execution_gas_fee_eth_total"]))
     projected_auto_top_up_eth_total = Decimal(str(cost_snapshot["totals"].get("projected_auto_top_up_eth_total") or "0"))
-    recipient_address = template.get("recipient_address")
+    recipient_address = _get_testing_recipient_address(template)
     execution_estimate = cost_snapshot["execution_estimate"]
     deployment_contracts_per_wallet = int(execution_estimate["deployment_targets_per_wallet"])
     requires_recipient = deployment_contracts_per_wallet > 0
@@ -1332,8 +1395,8 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     wrap_transaction_count = int(execution_estimate["wrap_transaction_count"])
     approval_transaction_count = int(execution_estimate["approval_transaction_count"])
     swap_transaction_count = int(execution_estimate["swap_transaction_count"])
-    deployment_transaction_count = contract_count * deployment_contracts_per_wallet if recipient_address else 0
-    contract_funding_transaction_count = deployment_transaction_count if recipient_address else 0
+    deployment_transaction_count = int(execution_estimate["deployment_transaction_count"])
+    contract_funding_transaction_count = int(execution_estimate["contract_funding_transaction_count"])
     main_wallet_wrap_transaction_count = 1 if main_wallet_weth_wrapped > 0 else 0
     funding_gas_units = ETH_TRANSFER_GAS_LIMIT * funding_transaction_count
     main_wallet_wrap_gas_units = WETH_DEPOSIT_GAS_LIMIT * main_wallet_wrap_transaction_count
@@ -1411,7 +1474,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     shortfall_reason = None
     if requires_recipient and not recipient_address:
         shortfall_reason = (
-            "recipient_address is required for templates that swap into managed distributor contracts "
+            "testing_recipient_address is required for templates that swap into BatchTreasuryDistributor "
             f"or fund direct contract {chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} distributors."
         )
     elif available_eth < required_eth_total:
@@ -1444,8 +1507,10 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "template_id": template["id"],
         "wallet_id": wallet_id,
         "contract_count": contract_count,
+        "testing_recipient_address": recipient_address,
         "return_wallet_address": template.get("return_wallet_address"),
-        "test_auto_execute_after_funding": bool(template.get("test_auto_execute_after_funding", False)),
+        "test_auto_execute_after_funding": _get_test_auto_batch_send_enabled(template),
+        "test_auto_batch_send_after_funding": _get_test_auto_batch_send_enabled(template),
         "can_proceed": can_proceed,
         "shortfall_reason": shortfall_reason,
         "balances": {

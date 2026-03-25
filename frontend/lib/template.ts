@@ -17,7 +17,6 @@ const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
 const TOKEN_TRANSFER_GAS_UNITS = 90_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
-const DISTRIBUTOR_EXECUTE_GAS_UNITS = 180_000;
 
 export type StablecoinOption = {
   symbol: string;
@@ -113,8 +112,10 @@ export type Template = {
   chain: TemplateChain;
   template_version: "v2";
   recipient_address?: string | null;
+  testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding: boolean;
+  test_auto_batch_send_after_funding?: boolean;
   gas_reserve_eth_per_contract: string;
   swap_budget_eth_per_contract: string;
   direct_contract_eth_per_contract: string;
@@ -169,8 +170,10 @@ export type TemplateOptions = {
     chain: TemplateChain;
     template_version: "v2";
     recipient_address?: string | null;
+    testing_recipient_address?: string | null;
     return_wallet_address?: string | null;
     test_auto_execute_after_funding: boolean;
+    test_auto_batch_send_after_funding?: boolean;
     gas_reserve_eth_per_contract: string;
     swap_budget_eth_per_contract: string;
     direct_contract_eth_per_contract: string;
@@ -239,8 +242,10 @@ export type TemplatePreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding?: boolean;
+  test_auto_batch_send_after_funding?: boolean;
   slippage_percent: string;
   fee_tier: number | null;
   can_proceed: boolean;
@@ -306,8 +311,10 @@ export type TemplateWalletSupportPreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding?: boolean;
+  test_auto_batch_send_after_funding?: boolean;
   slippage_percent: string;
   fee_tier: number | null;
   can_proceed: boolean;
@@ -645,9 +652,9 @@ export function defaultTemplateForm(options: TemplateOptions | null): TemplateEd
   return {
     name: "",
     chain: options?.defaults.chain ?? "ethereum_mainnet",
-    recipient_address: options?.defaults.recipient_address ?? "",
+    recipient_address: options?.defaults.testing_recipient_address ?? options?.defaults.recipient_address ?? "",
     return_wallet_address: options?.defaults.return_wallet_address ?? "",
-    test_auto_execute_after_funding: options?.defaults.test_auto_execute_after_funding ?? false,
+    test_auto_execute_after_funding: options?.defaults.test_auto_batch_send_after_funding ?? options?.defaults.test_auto_execute_after_funding ?? false,
     gas_reserve_eth_per_contract: options?.defaults.gas_reserve_eth_per_contract ?? "0.02",
     swap_budget_eth_per_contract: options?.defaults.swap_budget_eth_per_contract ?? "0",
     direct_contract_eth_per_contract: "0",
@@ -669,9 +676,9 @@ export function templateToForm(template: Template): TemplateEditorForm {
   return {
     name: template.name,
     chain: template.chain,
-    recipient_address: template.recipient_address ?? "",
+    recipient_address: template.testing_recipient_address ?? template.recipient_address ?? "",
     return_wallet_address: template.return_wallet_address ?? "",
-    test_auto_execute_after_funding: template.test_auto_execute_after_funding,
+    test_auto_execute_after_funding: template.test_auto_batch_send_after_funding ?? template.test_auto_execute_after_funding,
     gas_reserve_eth_per_contract: template.gas_reserve_eth_per_contract,
     swap_budget_eth_per_contract: template.swap_budget_eth_per_contract,
     direct_contract_eth_per_contract: "0",
@@ -709,7 +716,8 @@ export function buildTemplateWalletSupportPreview(input: {
   const directContractNativeEth = toFiniteNumber(template.direct_contract_native_eth_per_contract) ?? 0;
   const directWeth = toFiniteNumber(template.direct_contract_weth_per_contract) ?? 0;
   const returnWalletConfigured = Boolean(template.return_wallet_address);
-  const testAutoExecuteAfterFunding = template.test_auto_execute_after_funding;
+  const testAutoExecuteAfterFunding = template.test_auto_batch_send_after_funding ?? template.test_auto_execute_after_funding;
+  const testingRecipientAddress = template.testing_recipient_address ?? template.recipient_address;
   const autoTopUpEnabled = template.auto_top_up_enabled;
   const autoTopUpThreshold = toFiniteNumber(template.auto_top_up_threshold_eth) ?? 0;
   const autoTopUpTarget = toFiniteNumber(template.auto_top_up_target_eth) ?? 0;
@@ -730,9 +738,9 @@ export function buildTemplateWalletSupportPreview(input: {
   const mainWalletNativeFundingTargetsPerWallet = directContractNativeEth > 0 ? 1 : 0;
   const tokenFundingTargetsPerWallet = localTokenFundingTargetsPerWallet + mainWalletTokenFundingTargetsPerWallet;
   const nativeFundingTargetsPerWallet = mainWalletNativeFundingTargetsPerWallet;
-  const deploymentContractsPerWallet = tokenFundingTargetsPerWallet + nativeFundingTargetsPerWallet;
-  const requiresRecipient = deploymentContractsPerWallet > 0;
-  const deploymentEnabled = requiresRecipient && Boolean(template.recipient_address);
+  const fundedAssetCountPerWallet = tokenFundingTargetsPerWallet + nativeFundingTargetsPerWallet;
+  const requiresRecipient = fundedAssetCountPerWallet > 0;
+  const deploymentEnabled = requiresRecipient && Boolean(testingRecipientAddress);
   const configuredUnwrappedEthPerContract = gasReserve;
   const requiredWethPerContract = swapBudget;
   const returnSweepTokenTransferCountPerWallet = returnWalletConfigured ? routeCount + (swapBudget > 0 ? 1 : 0) : 0;
@@ -740,9 +748,9 @@ export function buildTemplateWalletSupportPreview(input: {
   const wrapTransactionCount = requiredWethPerContract > 0 ? contractCount : 0;
   const approvalTransactionCount = routeCount > 0 ? contractCount : 0;
   const swapTransactionCount = contractCount * routeCount;
-  const deploymentTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
-  const contractFundingTransactionCount = deploymentEnabled ? contractCount * deploymentContractsPerWallet : 0;
-  const executeTransactionCount = deploymentEnabled && testAutoExecuteAfterFunding ? contractCount * deploymentContractsPerWallet : 0;
+  const deploymentTransactionCount = deploymentEnabled ? contractCount : 0;
+  const contractFundingTransactionCount = deploymentEnabled ? contractCount * fundedAssetCountPerWallet : 0;
+  const executeTransactionCount = deploymentEnabled && testAutoExecuteAfterFunding ? contractCount : 0;
 
   const availableEth = wallet.eth_balance ?? 0;
   const availableWeth = wallet.weth_balance ?? 0;
@@ -755,7 +763,7 @@ export function buildTemplateWalletSupportPreview(input: {
   const gasPriceEth = gasPriceGwei === null ? 0 : gasPriceGwei / 1_000_000_000;
   const deploymentGasUnitsPerWallet =
     deploymentEnabled
-      ? deploymentContractsPerWallet * DISTRIBUTOR_DEPLOY_GAS_UNITS
+      ? DISTRIBUTOR_DEPLOY_GAS_UNITS
       : 0;
   const localContractFundingGasUnitsPerWallet =
     deploymentEnabled ? localTokenFundingTargetsPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0;
@@ -770,7 +778,7 @@ export function buildTemplateWalletSupportPreview(input: {
     routeCount * SWAP_GAS_UNITS +
     deploymentGasUnitsPerWallet +
     localContractFundingGasUnitsPerWallet +
-    (deploymentEnabled && testAutoExecuteAfterFunding ? deploymentContractsPerWallet * DISTRIBUTOR_EXECUTE_GAS_UNITS : 0) +
+    (deploymentEnabled && testAutoExecuteAfterFunding ? 120_000 + fundedAssetCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0) +
     (returnWalletConfigured ? ETH_TRANSFER_GAS_UNITS + returnSweepTokenTransferCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0);
   const localExecutionGasFeePerWalletEth = localExecutionGasUnitsPerWallet * gasPriceEth;
   const minimumUnwrappedEthPerContract = Math.max(configuredUnwrappedEthPerContract, localExecutionGasFeePerWalletEth);
@@ -827,11 +835,11 @@ export function buildTemplateWalletSupportPreview(input: {
   const remainingEthAfterFunding = availableEth - totalEthDeducted;
   const remainingEthAfterRun = availableEth - totalEthRequiredWithFees;
   const remainingWethAfterFunding = Math.max(availableWeth - wethFromExistingMainWallet, 0);
-  const canProceed = availableEth >= totalEthRequiredWithFees && (!requiresRecipient || Boolean(template.recipient_address));
+  const canProceed = availableEth >= totalEthRequiredWithFees && (!requiresRecipient || Boolean(testingRecipientAddress));
 
   let shortfallReason: string | null = null;
-  if (requiresRecipient && !template.recipient_address) {
-    shortfallReason = `recipient_address is required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} are enabled.`;
+  if (requiresRecipient && !testingRecipientAddress) {
+    shortfallReason = `testing_recipient_address is required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} are enabled.`;
   } else if (availableEth < requiredEthTotal) {
     shortfallReason =
       `Not enough ${nativeSymbol} in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ${nativeSymbol} ` +
@@ -850,8 +858,10 @@ export function buildTemplateWalletSupportPreview(input: {
     template_id: template.id,
     wallet_id: wallet.id,
     contract_count: contractCount,
+    testing_recipient_address: testingRecipientAddress ?? null,
     return_wallet_address: template.return_wallet_address ?? null,
-    test_auto_execute_after_funding: template.test_auto_execute_after_funding,
+    test_auto_execute_after_funding: testAutoExecuteAfterFunding,
+    test_auto_batch_send_after_funding: testAutoExecuteAfterFunding,
     slippage_percent: template.slippage_percent,
     fee_tier: template.fee_tier,
     can_proceed: canProceed,
@@ -886,7 +896,7 @@ export function buildTemplateWalletSupportPreview(input: {
       estimated_gas_units: estimatedGasUnits,
       main_wallet_wrap_transaction_count: mainWalletWrapTransactionCount,
       main_wallet_wrap_gas_units: mainWalletWrapGasUnits,
-      execute_gas_units_per_wallet: deploymentEnabled && testAutoExecuteAfterFunding ? deploymentContractsPerWallet * DISTRIBUTOR_EXECUTE_GAS_UNITS : 0,
+      execute_gas_units_per_wallet: deploymentEnabled && testAutoExecuteAfterFunding ? 120_000 + fundedAssetCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0,
       return_sweep_gas_units_per_wallet: returnWalletConfigured ? ETH_TRANSFER_GAS_UNITS + returnSweepTokenTransferCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0,
       local_execution_gas_units_per_wallet: localExecutionGasUnitsPerWallet,
       funding_transaction_count: fundingTransactionCount,

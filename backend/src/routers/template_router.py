@@ -30,8 +30,10 @@ class TemplateUpsertRequest(BaseModel):
     chain: str = "ethereum_mainnet"
     template_version: str = "v2"
     recipient_address: str | None = None
+    testing_recipient_address: str | None = None
     return_wallet_address: str | None = None
     test_auto_execute_after_funding: bool = False
+    test_auto_batch_send_after_funding: bool = False
     gas_reserve_eth_per_contract: str = "0"
     swap_budget_eth_per_contract: str = "0"
     direct_contract_eth_per_contract: str = "0"
