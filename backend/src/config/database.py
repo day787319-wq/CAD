@@ -81,7 +81,7 @@ class LocalSession:
             return LocalResult()
 
         if normalized.startswith("INSERT INTO WALLETS"):
-            wallet_id, wallet_type, address, encrypted_key, parent_id, created_at = params
+            wallet_id, wallet_type, address, encrypted_key, parent_id, created_at, derivation_index = params
             payload = self._read()
             payload[wallet_id] = {
                 "id": wallet_id,
@@ -90,6 +90,7 @@ class LocalSession:
                 "encrypted_key": encrypted_key,
                 "parent_id": parent_id,
                 "created_at": created_at.isoformat() if isinstance(created_at, datetime) else created_at,
+                "derivation_index": derivation_index,
             }
             self._write(payload)
             return LocalResult()
@@ -209,7 +210,8 @@ class ScyllaDB:
                 address text,
                 encrypted_key text,
                 parent_id text,
-                created_at timestamp
+                created_at timestamp,
+                derivation_index int
             )
         """
         )
@@ -309,6 +311,14 @@ class ScyllaDB:
         """
         )
         if self.mode == "scylla":
+            wallet_alter_statements = [
+                "ALTER TABLE wallets ADD derivation_index int",
+            ]
+            for statement in wallet_alter_statements:
+                try:
+                    self.session.execute(statement)
+                except Exception:
+                    pass
             template_alter_statements = [
                 "ALTER TABLE templates ADD template_version text",
                 "ALTER TABLE templates ADD chain text",

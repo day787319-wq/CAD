@@ -2518,6 +2518,131 @@ def import_private_key_wallet(private_key: str):
         **get_wallet_balances(account.address),
     }
 
+def _parse_derivation_index(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def _wallet_record_sort_key(record: dict) -> str:
+    return str(record.get("created_at") or "")
+
+def _persist_wallet_record(record: dict):
+    db.connect_keyspace()
+    created_at = record.get("created_at")
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at)
+        except ValueError:
+            created_at = datetime.now()
+    if created_at is None:
+        created_at = datetime.now()
+
+    query = """
+        INSERT INTO wallets (id, type, address, encrypted_key, parent_id, created_at, derivation_index)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    db.session.execute(
+        query,
+        (
+            record["id"],
+            record["type"],
+            record["address"],
+            record["encrypted_key"],
+            record.get("parent_id"),
+            created_at,
+            _parse_derivation_index(record.get("derivation_index")),
+        ),
+    )
+
+def _backfill_child_wallet_derivation_indices(parent_wallet: dict, child_records: list[dict] | None = None):
+    records = sorted(
+        [dict(record) for record in (child_records or list_wallet_records(parent_wallet["id"]))],
+        key=_wallet_record_sort_key,
+    )
+    if parent_wallet.get("type") not in {"main", "imported_private_key"}:
+        return records
+
+    assigned_indices = {
+        derivation_index
+        for derivation_index in (_parse_derivation_index(record.get("derivation_index")) for record in records)
+        if derivation_index is not None
+    }
+    missing_records = [
+        record
+        for record in records
+        if _parse_derivation_index(record.get("derivation_index")) is None
+    ]
+    if not missing_records:
+        return records
+
+    if parent_wallet["type"] == "main":
+        decrypted_mnemonic = decrypt_secret(parent_wallet["encrypted_key"])
+        unresolved_by_address = {
+            record["address"].lower(): record
+            for record in missing_records
+        }
+        max_known_index = max(assigned_indices, default=0)
+        search_limit = max(
+            max_known_index + len(missing_records) + 512,
+            len(records) * 16,
+            2048,
+        )
+        for child_index in range(1, search_limit + 1):
+            if not unresolved_by_address:
+                break
+            if child_index in assigned_indices:
+                continue
+
+            derived_account = Account.from_mnemonic(
+                decrypted_mnemonic,
+                account_path=f"m/44'/60'/0'/0/{child_index}",
+            )
+            record = unresolved_by_address.pop(derived_account.address.lower(), None)
+            if record is None:
+                continue
+
+            record["derivation_index"] = child_index
+            assigned_indices.add(child_index)
+
+        next_fallback_index = max(assigned_indices, default=0) + 1
+        for record in unresolved_by_address.values():
+            while next_fallback_index in assigned_indices:
+                next_fallback_index += 1
+            record["derivation_index"] = next_fallback_index
+            assigned_indices.add(next_fallback_index)
+            next_fallback_index += 1
+    else:
+        next_candidate_index = 0
+        for record in records:
+            derivation_index = _parse_derivation_index(record.get("derivation_index"))
+            if derivation_index is not None:
+                continue
+            while next_candidate_index in assigned_indices:
+                next_candidate_index += 1
+            record["derivation_index"] = next_candidate_index
+            assigned_indices.add(next_candidate_index)
+            next_candidate_index += 1
+
+    for record in records:
+        if _parse_derivation_index(record.get("derivation_index")) is None:
+            continue
+        _persist_wallet_record(record)
+
+    return records
+
+def _next_child_derivation_index(parent_wallet: dict, child_records: list[dict]) -> int:
+    existing_indices = [
+        derivation_index
+        for derivation_index in (_parse_derivation_index(record.get("derivation_index")) for record in child_records)
+        if derivation_index is not None
+    ]
+    if existing_indices:
+        return max(existing_indices) + 1
+    return 1 if parent_wallet["type"] == "main" else 0
+
 def generate_sub_wallets(main_id: str, count: int = 1):
     main_wallet = get_wallet(main_id)
     if not main_wallet or main_wallet['type'] not in {'main', 'imported_private_key'}:
@@ -2525,8 +2650,8 @@ def generate_sub_wallets(main_id: str, count: int = 1):
 
     sub_wallets = []
     decrypted_mnemonic = None
-    existing_sub_wallets = list_wallet_records(main_id)
-    next_index = len(existing_sub_wallets) + 1 if main_wallet['type'] == 'main' else len(existing_sub_wallets)
+    existing_sub_wallets = _backfill_child_wallet_derivation_indices(main_wallet, list_wallet_records(main_id))
+    next_index = _next_child_derivation_index(main_wallet, existing_sub_wallets)
 
     if main_wallet['type'] == 'main':
         decrypted_mnemonic = decrypt_secret(main_wallet['encrypted_key'])
@@ -2552,7 +2677,8 @@ def generate_sub_wallets(main_id: str, count: int = 1):
             'address': child_account.address,
             'encrypted_key': encrypted_child_key,  # Store encrypted child private key
             **balances,
-            'index': child_index
+            'index': child_index,
+            'derivation_index': child_index,
         }
 
         sub_id = f"sub_{int(datetime.now().timestamp())}_{uuid4().hex[:8]}"
@@ -5403,14 +5529,19 @@ def execute_wallet_run(
     return db.upsert_wallet_run(run_record)
 
 def store_wallet(wallet_id: str, data: dict, wallet_type: str = 'sub', parent_id: str = None):
-    db.connect_keyspace()
     encrypted_key = data['encrypted_seed'] if wallet_type == 'main' else data['encrypted_key']
-
-    query = """
-        INSERT INTO wallets (id, type, address, encrypted_key, parent_id, created_at) 
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """
-    db.session.execute(query, (wallet_id, wallet_type, data['address'], encrypted_key, parent_id, datetime.now()))
+    derivation_index = _parse_derivation_index(data.get("derivation_index", data.get("index")))
+    _persist_wallet_record(
+        {
+            "id": wallet_id,
+            "type": wallet_type,
+            "address": data["address"],
+            "encrypted_key": encrypted_key,
+            "parent_id": parent_id,
+            "created_at": datetime.now(),
+            "derivation_index": derivation_index,
+        }
+    )
     print(f"Stored {wallet_type} wallet: {wallet_id}, parent: {parent_id}")
 
 def get_wallet_record(wallet_id: str):
@@ -5513,8 +5644,9 @@ def serialize_wallet_record(
     }
     if include_token_holdings:
         payload['token_holdings'] = get_wallet_summary_token_holdings(record['address'], chain=chain)
-    if index is not None:
-        payload['index'] = index
+    resolved_index = index if index is not None else _parse_derivation_index(record.get("derivation_index"))
+    if resolved_index is not None:
+        payload['index'] = resolved_index
     return payload
 
 def get_wallet_details(wallet_id: str, chain: str | None = None):
@@ -5523,13 +5655,10 @@ def get_wallet_details(wallet_id: str, chain: str | None = None):
         return None
 
     normalized_chain = normalize_template_chain(chain)
-    sub_wallet_records = sorted(
-        list_wallet_records(wallet_id),
-        key=lambda record: str(record.get('created_at') or ''),
-    )
+    sub_wallet_records = _backfill_child_wallet_derivation_indices(wallet, list_wallet_records(wallet_id))
     sub_wallets = [
-        serialize_wallet_record(record, index=index, chain=normalized_chain)
-        for index, record in enumerate(sub_wallet_records)
+        serialize_wallet_record(record, chain=normalized_chain)
+        for record in sub_wallet_records
     ]
 
     details = serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=True)

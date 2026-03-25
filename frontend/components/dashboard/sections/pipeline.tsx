@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronUp, RefreshCw, WifiOff } from "lucide-react";
 import { ChainIcon } from "@/components/dashboard/chain-icon";
 import { useI18n } from "@/components/i18n-provider";
@@ -72,6 +72,36 @@ function formatBoolean(value: boolean | null | undefined, locale: "en" | "zn" | 
   return value ? (locale === "en" ? "Yes" : locale === "zn" ? "是" : "Có") : (locale === "en" ? "No" : locale === "zn" ? "否" : "Không");
 }
 
+function formatStatusLabel(status: string, locale: "en" | "zn" | "vn") {
+  switch (status) {
+    case "online":
+      return locale === "en" ? "Online" : locale === "zn" ? "在线" : "Trực tuyến";
+    case "unconfigured":
+      return locale === "en" ? "Unconfigured" : locale === "zn" ? "未配置" : "Chưa cấu hình";
+    default:
+      return locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến";
+  }
+}
+
+function getStatusClasses(status: string) {
+  if (status === "online") {
+    return {
+      dot: "bg-green-400",
+      text: "text-green-400",
+    };
+  }
+  if (status === "unconfigured") {
+    return {
+      dot: "bg-slate-400",
+      text: "text-slate-400",
+    };
+  }
+  return {
+    dot: "bg-red-400",
+    text: "text-red-400",
+  };
+}
+
 function getLagTone(lag: number | null, type: string) {
   if (lag === null) return "text-muted-foreground";
   if (type === "BTC") {
@@ -111,7 +141,8 @@ function Row({ node, locale }: { node: ChainStatus; locale: "en" | "zn" | "vn" }
     consensus: EMPTY_VALUE,
     color: "bg-secondary text-foreground border-border",
   };
-  const online = node.status === "online";
+  const statusClasses = getStatusClasses(node.status);
+  const lagValue = node.status === "online" ? (node.lag ?? null) : null;
 
   return (
     <>
@@ -140,17 +171,17 @@ function Row({ node, locale }: { node: ChainStatus; locale: "en" | "zn" | "vn" }
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">
-            <span className={cn("h-2 w-2 rounded-full", online ? "bg-green-400 animate-pulse" : "bg-red-400")} />
-            <span className={cn("text-xs font-medium", online ? "text-green-400" : "text-red-400")}>
-              {online ? (locale === "en" ? "Online" : locale === "zn" ? "在线" : "Trực tuyến") : locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến"}
+            <span className={cn("h-2 w-2 rounded-full", statusClasses.dot, node.status === "online" && "animate-pulse")} />
+            <span className={cn("text-xs font-medium", statusClasses.text)}>
+              {formatStatusLabel(node.status, locale)}
             </span>
           </div>
         </td>
         <td className="px-4 py-3 font-mono text-xs text-foreground">
           {node.block !== null && node.block !== undefined ? node.block.toLocaleString() : EMPTY_VALUE}
         </td>
-        <td className={cn("px-4 py-3 font-mono text-xs font-semibold", getLagTone(node.lag ?? null, node.type))}>
-          {formatLag(node.lag ?? null, node.type)}
+        <td className={cn("px-4 py-3 font-mono text-xs font-semibold", getLagTone(lagValue, node.type))}>
+          {formatLag(lagValue, node.type)}
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">{node.timestamp ?? EMPTY_VALUE}</td>
         <td className="px-4 py-3 text-center text-xs text-foreground">{formatNumber(node.peer_count)}</td>
@@ -225,7 +256,7 @@ function Row({ node, locale }: { node: ChainStatus; locale: "en" | "zn" | "vn" }
 
               {node.error && (
                 <div className="col-span-full mt-1">
-                  <span className="text-red-400/80">{node.error}</span>
+                  <span className={cn(node.status === "unconfigured" ? "text-slate-400" : "text-red-400/80")}>{node.error}</span>
                 </div>
               )}
             </div>
@@ -246,7 +277,7 @@ export function PipelineSection() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const spinResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     setSpinning(true);
 
     try {
@@ -268,7 +299,7 @@ export function PipelineSection() {
       }
       spinResetRef.current = setTimeout(() => setSpinning(false), 600);
     }
-  };
+  }, [locale]);
 
   useEffect(() => {
     void fetchStatus();
@@ -284,10 +315,13 @@ export function PipelineSection() {
         clearTimeout(spinResetRef.current);
       }
     };
-  }, []);
+  }, [fetchStatus]);
 
   const online = data?.status.filter((node) => node.status === "online").length ?? 0;
+  const offline = data?.status.filter((node) => node.status === "offline").length ?? 0;
+  const configured = data?.status.filter((node) => node.status !== "unconfigured").length ?? 0;
   const total = data?.status.length ?? 0;
+  const unconfigured = total - configured;
 
   return (
     <div className="space-y-5">
@@ -306,11 +340,17 @@ export function PipelineSection() {
                     : "Đang kết nối tới các nút..."
                 : error
                   ? `${locale === "en" ? "Connection error" : locale === "zn" ? "连接错误" : "Lỗi kết nối"}: ${error}`
-                  : locale === "en"
-                    ? `${online} / ${total} nodes online`
-                    : locale === "zn"
-                      ? `${online} / ${total} 个节点在线`
-                      : `${online} / ${total} nút đang trực tuyến`}
+                  : configured === 0
+                    ? locale === "en"
+                      ? "No nodes configured"
+                      : locale === "zn"
+                        ? "尚未配置节点"
+                        : "Chưa cấu hình nút nào"
+                    : locale === "en"
+                      ? `${online} / ${configured} configured nodes online`
+                      : locale === "zn"
+                        ? `${online} / ${configured} 个已配置节点在线`
+                        : `${online} / ${configured} nút đã cấu hình đang trực tuyến`}
             </p>
             {lastUpdated ? (
               <p className="text-xs text-muted-foreground">
@@ -344,7 +384,11 @@ export function PipelineSection() {
           </span>
           <span className="flex items-center gap-1.5 rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1 font-medium text-red-400">
             <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-            {total - online} {locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến"}
+            {offline} {locale === "en" ? "Offline" : locale === "zn" ? "离线" : "Ngoại tuyến"}
+          </span>
+          <span className="flex items-center gap-1.5 rounded-full border border-slate-500/20 bg-slate-500/10 px-3 py-1 font-medium text-slate-400">
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+            {unconfigured} {locale === "en" ? "Unconfigured" : locale === "zn" ? "未配置" : "Chưa cấu hình"}
           </span>
           {data.status
             .filter((node) => node.type === "EVM" && node.status === "online")

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTheme } from "next-themes";
 import { Bell, Check, Globe, Key, Link2, Palette, RefreshCw, Shield, User, Zap } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useHydrated } from "@/hooks/use-hydrated";
 import { supportedLocales } from "@/lib/i18n";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -78,15 +79,10 @@ export function SettingsSection() {
   const [notifyDeals, setNotifyDeals] = useState(true);
   const [notifyTeam, setNotifyTeam] = useState(true);
   const [notifyForecasts, setNotifyForecasts] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const hydrated = useHydrated();
   const { resolvedTheme, setTheme } = useTheme();
   const { locale, setLocale, localeLabels, formatRelativeTime } = useI18n();
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const isDarkMode = mounted ? resolvedTheme !== "light" : true;
+  const isDarkMode = !hydrated || resolvedTheme !== "light";
 
   const handleSave = () => {
     setIsSaving(true);

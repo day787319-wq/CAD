@@ -41,21 +41,41 @@ CORS_ALLOWED_ORIGINS = [
 
 POA_CHAINS = {"BNB", "POLYGON", "OP", "BASE", "XLAYER"}
 
-CHAINS = {
-    "ETH":     {"type": "EVM",    "rpc": "http://100.100.0.35:8545"},
-    "BNB":     {"type": "EVM",    "rpc": "http://100.100.0.50:8545"},
-    "ARB":     {"type": "EVM",    "rpc": "http://100.100.0.13:8547"},
-    "OP":      {"type": "EVM",    "rpc": "http://100.100.0.8:8545"},
-    "BASE":    {"type": "EVM",    "rpc": "http://100.100.0.8:9545"},
-    "AVAX":    {"type": "EVM",    "rpc": "http://100.100.0.10:9650/ext/bc/C/rpc"},
-    "XLAYER":  {"type": "EVM",    "rpc": "http://100.100.0.10:10545"},
-    "POLYGON": {"type": "EVM",    "rpc": "http://100.100.0.10:11545"},
-    "BTC":     {"type": "BTC",    "rpc": "http://100.100.0.8:8332"},
-    "SOLANA":  {"type": "SOLANA", "rpc": "http://100.100.0.4:8899"},
-    "TRON":    {"type": "TRON",   "rpc": "http://100.100.0.13:8090"},
+STATUS_CHAIN_DEFINITIONS = {
+    "ETH":     {"type": "EVM",    "rpc_env_names": ["ETHEREUM_RPC_URL"]},
+    "BNB":     {"type": "EVM",    "rpc_env_names": ["BNB_RPC_URL", "BSC_RPC_URL"]},
+    "ARB":     {"type": "EVM",    "rpc_env_names": ["ARB_RPC_URL", "ARBITRUM_RPC_URL"]},
+    "OP":      {"type": "EVM",    "rpc_env_names": ["OP_RPC_URL", "OPTIMISM_RPC_URL"]},
+    "BASE":    {"type": "EVM",    "rpc_env_names": ["BASE_RPC_URL"]},
+    "AVAX":    {"type": "EVM",    "rpc_env_names": ["AVAX_RPC_URL", "AVALANCHE_RPC_URL"]},
+    "XLAYER":  {"type": "EVM",    "rpc_env_names": ["XLAYER_RPC_URL"]},
+    "POLYGON": {"type": "EVM",    "rpc_env_names": ["POLYGON_RPC_URL"]},
+    "BTC":     {"type": "BTC",    "rpc_env_names": ["BTC_RPC_URL"]},
+    "SOLANA":  {"type": "SOLANA", "rpc_env_names": ["SOLANA_RPC_URL"]},
+    "TRON":    {"type": "TRON",   "rpc_env_names": ["TRON_RPC_URL"]},
 }
 
 TIMEOUT = 5
+
+
+def _resolve_chain_rpc(env_names: list[str]) -> tuple[str, str | None]:
+    for env_name in env_names:
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            return value, env_name
+    return "", env_names[0] if env_names else None
+
+
+def get_status_chains() -> dict[str, dict]:
+    chains = {}
+    for chain, info in STATUS_CHAIN_DEFINITIONS.items():
+        rpc, rpc_env_name = _resolve_chain_rpc(info.get("rpc_env_names", []))
+        chains[chain] = {
+            **info,
+            "rpc": rpc,
+            "rpc_env_name": rpc_env_name,
+        }
+    return chains
 
 
 def _jsonrpc_post(url: str, method: str, params=None, auth: tuple | None = None) -> dict | None:
@@ -238,6 +258,13 @@ def _check_tron(chain: str, rpc: str) -> dict:
 
 def check_chain(chain: str, info: dict) -> dict:
     t = info["type"]
+    if not info.get("rpc"):
+        message = (
+            f"{info['rpc_env_name']} is not configured"
+            if info.get("rpc_env_name")
+            else "RPC is not configured"
+        )
+        return {"chain": chain, "type": t, "status": "unconfigured", "error": message}
     if t == "EVM":    return _check_evm(chain, info["rpc"])
     if t == "BTC":    return _check_btc(chain, info["rpc"])
     if t == "SOLANA": return _check_solana(chain, info["rpc"])
@@ -258,7 +285,7 @@ app.add_middleware(
 
 @app.get("/status")
 def get_status():
-    results = [check_chain(chain, info) for chain, info in CHAINS.items()]
+    results = [check_chain(chain, info) for chain, info in get_status_chains().items()]
     return {"status": results, "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
 
 

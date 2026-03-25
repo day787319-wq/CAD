@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useHydrated } from "@/hooks/use-hydrated";
 import { cn } from "@/lib/utils";
 
 interface ThemeToggleProps {
@@ -21,13 +21,8 @@ export function ThemeToggle({
   toggleToDarkLabel = "Switch to dark mode",
 }: ThemeToggleProps) {
   const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const activeTheme = mounted && resolvedTheme === "light" ? "light" : "dark";
+  const hydrated = useHydrated();
+  const activeTheme = hydrated && resolvedTheme === "light" ? "light" : "dark";
   const isLight = activeTheme === "light";
 
   return (
