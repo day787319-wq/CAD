@@ -38,10 +38,22 @@ from src.services.wallet_service import (
     ERC20_APPROVE_GAS_LIMIT,
     ERC20_TRANSFER_GAS_LIMIT,
     ETH_TRANSFER_GAS_LIMIT,
+    LEGACY_GAS_STAGE_APPROVAL,
+    LEGACY_GAS_STAGE_BATCH_SEND,
+    LEGACY_GAS_STAGE_DEPLOY_TREASURY,
+    LEGACY_GAS_STAGE_FUND_SUBWALLET,
+    LEGACY_GAS_STAGE_FUND_TREASURY,
+    LEGACY_GAS_STAGE_RETURN_SWEEP,
+    LEGACY_GAS_STAGE_SWAP,
+    LEGACY_GAS_STAGE_TOP_UP,
+    LEGACY_GAS_STAGE_WRAP,
     MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT,
     MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT,
     UNISWAP_V3_SWAP_GAS_LIMIT,
     WETH_DEPOSIT_GAS_LIMIT,
+    estimate_legacy_aggressive_multi_stage_fee_eth,
+    estimate_legacy_aggressive_stage_fee_eth,
+    resolve_legacy_aggressive_gas_pricing,
     format_decimal as format_wallet_decimal,
     get_web3,
     quote_uniswap_swap,
@@ -700,7 +712,13 @@ def _get_estimated_gas_price_wei(chain: str | None = None) -> Decimal:
     try:
         web3_client = get_web3(chain)
         if web3_client and web3_client.is_connected():
-            gas_price_wei = Decimal(web3_client.eth.gas_price)
+            gas_price_wei = Decimal(
+                resolve_legacy_aggressive_gas_pricing(
+                    web3_client,
+                    chain=chain,
+                    tx_stage=LEGACY_GAS_STAGE_SWAP,
+                )["submitted_gas_price_wei"]
+            )
     except Exception:
         gas_price_wei = Decimal("0")
     return gas_price_wei
@@ -789,9 +807,69 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         + return_sweep_gas_units_per_wallet
     )
     local_execution_gas_units_total = local_execution_gas_units_per_wallet * contract_count
-    gas_price_wei = gas_price_wei if gas_price_wei is not None else _get_estimated_gas_price_wei(template.get("chain"))
-    local_execution_gas_fee_wei_per_wallet = int(gas_price_wei) * local_execution_gas_units_per_wallet
-    local_execution_gas_fee_wei_total = int(gas_price_wei) * local_execution_gas_units_total
+    chain = template.get("chain")
+    wrap_gas_price_wei = Decimal("0")
+    approval_gas_price_wei = Decimal("0")
+    swap_gas_price_wei = Decimal("0")
+    deployment_gas_price_wei = Decimal("0")
+    fund_treasury_gas_price_wei = Decimal("0")
+    batch_send_gas_price_wei = Decimal("0")
+    return_sweep_gas_price_wei = Decimal("0")
+    top_up_gas_price_wei = Decimal("0")
+    fund_subwallet_gas_price_wei = Decimal("0")
+    try:
+        web3_client = get_web3(chain)
+        if web3_client and web3_client.is_connected():
+            wrap_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_WRAP)["submitted_gas_price_wei"])
+            approval_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_APPROVAL)["submitted_gas_price_wei"])
+            swap_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_SWAP)["submitted_gas_price_wei"])
+            deployment_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_DEPLOY_TREASURY)["submitted_gas_price_wei"])
+            fund_treasury_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY)["submitted_gas_price_wei"])
+            batch_send_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_BATCH_SEND)["submitted_gas_price_wei"])
+            return_sweep_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP)["submitted_gas_price_wei"])
+            top_up_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_TOP_UP)["submitted_gas_price_wei"])
+            fund_subwallet_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET)["submitted_gas_price_wei"])
+    except Exception:
+        pass
+
+    local_execution_stage_gas_units_per_wallet = {
+        LEGACY_GAS_STAGE_WRAP: wrap_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_APPROVAL: approval_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_SWAP: swap_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_DEPLOY_TREASURY: deployment_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_FUND_TREASURY: local_contract_funding_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_BATCH_SEND: execute_gas_units_per_wallet,
+        LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+    }
+    local_execution_stage_gas_units_total = {
+        stage: int(units) * contract_count
+        for stage, units in local_execution_stage_gas_units_per_wallet.items()
+    }
+    stage_gas_prices_wei = {
+        LEGACY_GAS_STAGE_FUND_SUBWALLET: fund_subwallet_gas_price_wei,
+        LEGACY_GAS_STAGE_TOP_UP: top_up_gas_price_wei,
+        LEGACY_GAS_STAGE_WRAP: wrap_gas_price_wei,
+        LEGACY_GAS_STAGE_APPROVAL: approval_gas_price_wei,
+        LEGACY_GAS_STAGE_SWAP: swap_gas_price_wei,
+        LEGACY_GAS_STAGE_DEPLOY_TREASURY: deployment_gas_price_wei,
+        LEGACY_GAS_STAGE_FUND_TREASURY: fund_treasury_gas_price_wei,
+        LEGACY_GAS_STAGE_BATCH_SEND: batch_send_gas_price_wei,
+        LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_price_wei,
+    }
+    local_execution_gas_fee_wei_per_wallet = (
+        int(wrap_gas_price_wei) * wrap_gas_units_per_wallet
+        + int(approval_gas_price_wei) * approval_gas_units_per_wallet
+        + int(swap_gas_price_wei) * swap_gas_units_per_wallet
+        + int(deployment_gas_price_wei) * deployment_gas_units_per_wallet
+        + int(fund_treasury_gas_price_wei) * local_contract_funding_gas_units_per_wallet
+        + int(batch_send_gas_price_wei) * execute_gas_units_per_wallet
+        + int(return_sweep_gas_price_wei) * return_sweep_gas_units_per_wallet
+    )
+    local_execution_gas_fee_wei_total = local_execution_gas_fee_wei_per_wallet * contract_count
+    gas_price_wei = gas_price_wei if gas_price_wei is not None else max(
+        stage_gas_prices_wei.values(),
+        default=Decimal("0"),
+    )
 
     return {
         "stablecoin_routes": stablecoin_routes,
@@ -825,9 +903,20 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "return_sweep_gas_units_per_wallet": return_sweep_gas_units_per_wallet,
         "local_execution_gas_units_per_wallet": local_execution_gas_units_per_wallet,
         "local_execution_gas_units_total": local_execution_gas_units_total,
+        "local_execution_stage_gas_units_per_wallet": local_execution_stage_gas_units_per_wallet,
+        "local_execution_stage_gas_units_total": local_execution_stage_gas_units_total,
         "local_execution_gas_fee_eth_per_wallet": wei_to_decimal(local_execution_gas_fee_wei_per_wallet),
         "local_execution_gas_fee_eth_total": wei_to_decimal(local_execution_gas_fee_wei_total),
         "gas_price_wei": gas_price_wei,
+        "fund_subwallet_gas_price_wei": fund_subwallet_gas_price_wei,
+        "top_up_gas_price_wei": top_up_gas_price_wei,
+        "wrap_gas_price_wei": wrap_gas_price_wei,
+        "approval_gas_price_wei": approval_gas_price_wei,
+        "swap_gas_price_wei": swap_gas_price_wei,
+        "deployment_gas_price_wei": deployment_gas_price_wei,
+        "fund_treasury_gas_price_wei": fund_treasury_gas_price_wei,
+        "batch_send_gas_price_wei": batch_send_gas_price_wei,
+        "return_sweep_gas_price_wei": return_sweep_gas_price_wei,
     }
 
 
@@ -874,9 +963,10 @@ def _build_auto_top_up_projection(
     enabled = bool(template.get("auto_top_up_enabled", False))
     threshold = Decimal(str(template.get("auto_top_up_threshold_eth") or "0"))
     target = Decimal(str(template.get("auto_top_up_target_eth") or "0"))
-    gas_price_wei = Decimal(str(execution_estimate.get("gas_price_wei") or "0"))
+    top_up_gas_price_wei = Decimal(str(execution_estimate.get("top_up_gas_price_wei") or "0"))
+    wrap_gas_price_wei = Decimal(str(execution_estimate.get("wrap_gas_price_wei") or "0"))
     wrap_gas_units_per_wallet = int(execution_estimate.get("wrap_gas_units_per_wallet") or 0)
-    wrap_gas_fee_eth_per_wallet = wei_to_decimal(int(gas_price_wei) * wrap_gas_units_per_wallet)
+    wrap_gas_fee_eth_per_wallet = wei_to_decimal(int(wrap_gas_price_wei) * wrap_gas_units_per_wallet)
     projected_post_wrap_eth_per_wallet = max(
         required_eth_per_contract - required_weth_per_contract - reserved_native_eth_per_contract - wrap_gas_fee_eth_per_wallet,
         Decimal("0"),
@@ -895,7 +985,7 @@ def _build_auto_top_up_projection(
     projected_transaction_count = contract_count if projected_top_up_eth_per_wallet > 0 else 0
     projected_total_eth = projected_top_up_eth_per_wallet * Decimal(contract_count)
     projected_network_fee_eth = wei_to_decimal(
-        int(gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * projected_transaction_count
+        int(top_up_gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * projected_transaction_count
     )
 
     return {
@@ -950,15 +1040,19 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         execution_estimate=execution_estimate,
     )
     funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
-    funding_network_fee_eth = wei_to_decimal(int(gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * funding_transaction_count)
+    funding_stage_gas_price_wei = Decimal(str(execution_estimate.get("fund_subwallet_gas_price_wei") or "0"))
+    top_up_stage_gas_price_wei = Decimal(str(execution_estimate.get("top_up_gas_price_wei") or "0"))
+    wrap_stage_gas_price_wei = Decimal(str(execution_estimate.get("wrap_gas_price_wei") or "0"))
+    fund_treasury_stage_gas_price_wei = Decimal(str(execution_estimate.get("fund_treasury_gas_price_wei") or "0"))
+    funding_network_fee_eth = wei_to_decimal(int(funding_stage_gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * funding_transaction_count)
     projected_auto_top_up_eth_total = Decimal(str(auto_top_up.get("projected_total_eth") or "0"))
     top_up_network_fee_eth = Decimal(str(auto_top_up.get("projected_network_fee_eth") or "0"))
     main_wallet_weth_wrap_count = 1 if direct_contract_weth_total > 0 else 0
     main_wallet_weth_wrap_network_fee_eth = wei_to_decimal(
-        int(gas_price_wei) * WETH_DEPOSIT_GAS_LIMIT * main_wallet_weth_wrap_count
+        int(wrap_stage_gas_price_wei) * WETH_DEPOSIT_GAS_LIMIT * main_wallet_weth_wrap_count
     )
     main_wallet_direct_funding_network_fee_eth = wei_to_decimal(
-        int(gas_price_wei)
+        int(fund_treasury_stage_gas_price_wei)
         * int(execution_estimate.get("main_wallet_direct_funding_gas_units_per_wallet") or 0)
         * contract_count
     )
@@ -1094,6 +1188,15 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         "price_snapshot": market_snapshot,
         "execution_estimate": {
             "estimated_gas_price_gwei": _format_decimal(gas_price_wei / Decimal("1000000000")),
+            "fund_subwallet_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["fund_subwallet_gas_price_wei"]))),
+            "top_up_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["top_up_gas_price_wei"]))),
+            "wrap_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["wrap_gas_price_wei"]))),
+            "approval_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["approval_gas_price_wei"]))),
+            "swap_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["swap_gas_price_wei"]))),
+            "deployment_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["deployment_gas_price_wei"]))),
+            "fund_treasury_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["fund_treasury_gas_price_wei"]))),
+            "batch_send_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["batch_send_gas_price_wei"]))),
+            "return_sweep_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["return_sweep_gas_price_wei"]))),
             "wrap_transaction_count": execution_estimate["wrap_transaction_count"],
             "approval_transaction_count": execution_estimate["approval_transaction_count"],
             "swap_transaction_count": execution_estimate["swap_transaction_count"],
@@ -1411,7 +1514,9 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     main_wallet_wrap_transaction_count = 1 if main_wallet_weth_wrapped > 0 else 0
     funding_gas_units = ETH_TRANSFER_GAS_LIMIT * funding_transaction_count
     main_wallet_wrap_gas_units = WETH_DEPOSIT_GAS_LIMIT * main_wallet_wrap_transaction_count
-    gas_price_wei = Decimal(str(execution_estimate["estimated_gas_price_gwei"] or "0")) * Decimal("1000000000")
+    funding_gas_price_wei = Decimal(str(execution_estimate.get("fund_subwallet_gas_price_wei") or "0"))
+    wrap_gas_price_wei = Decimal(str(execution_estimate.get("wrap_gas_price_wei") or "0"))
+    fund_treasury_gas_price_wei = Decimal(str(execution_estimate.get("fund_treasury_gas_price_wei") or "0"))
     main_wallet_direct_funding_gas_units = (
         int(execution_estimate.get("main_wallet_direct_funding_gas_units_per_wallet") or 0) * contract_count
     )
@@ -1421,11 +1526,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         + main_wallet_direct_funding_gas_units
         + main_wallet_wrap_gas_units
     )
-    funding_network_fee_eth = wei_to_decimal(int(gas_price_wei) * funding_gas_units)
+    funding_network_fee_eth = wei_to_decimal(int(funding_gas_price_wei) * funding_gas_units)
     main_wallet_direct_funding_network_fee_eth = wei_to_decimal(
-        int(gas_price_wei) * main_wallet_direct_funding_gas_units
+        int(fund_treasury_gas_price_wei) * main_wallet_direct_funding_gas_units
     )
-    main_wallet_wrap_network_fee_eth = wei_to_decimal(int(gas_price_wei) * main_wallet_wrap_gas_units)
+    main_wallet_wrap_network_fee_eth = wei_to_decimal(int(wrap_gas_price_wei) * main_wallet_wrap_gas_units)
     registry_sync_preview = build_registry_sync_preview(
         wallet["address"],
         contract_count,
@@ -1560,7 +1665,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "local_execution_gas_fee_per_wallet_eth": format_wallet_decimal(local_execution_gas_fee_eth_per_wallet),
             "contract_sync_network_fee_eth": format_wallet_decimal(contract_sync_network_fee_eth),
             "total_network_fee_eth": format_wallet_decimal(total_network_fee_eth),
-            "estimated_gas_price_gwei": format_wallet_decimal(gas_price_wei / Decimal("1000000000")),
+            "estimated_gas_price_gwei": execution_estimate.get("estimated_gas_price_gwei"),
             "estimated_gas_units": total_execution_gas_units + top_up_gas_units,
             "execute_gas_units_per_wallet": execution_estimate.get("execute_gas_units_per_wallet"),
             "return_sweep_gas_units_per_wallet": execution_estimate.get("return_sweep_gas_units_per_wallet"),

@@ -341,6 +341,68 @@ BATCH_TREASURY_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_GRACE_SECONDS = 45
 BATCH_TREASURY_DISTRIBUTOR_DEPLOY_POST_TIMEOUT_POLL_INTERVAL_SECONDS = 5
 BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_POST_TIMEOUT_GRACE_SECONDS = 45
 BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_POST_TIMEOUT_POLL_INTERVAL_SECONDS = 5
+LEGACY_GAS_STAGE_TOP_UP = "top_up"
+LEGACY_GAS_STAGE_FUND_SUBWALLET = "fund_subwallet"
+LEGACY_GAS_STAGE_WRAP = "wrap"
+LEGACY_GAS_STAGE_APPROVAL = "approval"
+LEGACY_GAS_STAGE_SWAP = "swap"
+LEGACY_GAS_STAGE_DEPLOY_TREASURY = "deploy_treasury"
+LEGACY_GAS_STAGE_FUND_TREASURY = "fund_treasury"
+LEGACY_GAS_STAGE_BATCH_SEND = "batch_send"
+LEGACY_GAS_STAGE_RETURN_SWEEP = "return_sweep"
+LEGACY_EVM_GAS_STAGE_MULTIPLIERS = {
+    LEGACY_GAS_STAGE_TOP_UP: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+    LEGACY_GAS_STAGE_FUND_SUBWALLET: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+    LEGACY_GAS_STAGE_WRAP: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+    LEGACY_GAS_STAGE_APPROVAL: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+    LEGACY_GAS_STAGE_SWAP: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.15"),
+        "default": Decimal("1.30"),
+    },
+    LEGACY_GAS_STAGE_DEPLOY_TREASURY: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.22"),
+        "default": Decimal("1.40"),
+    },
+    LEGACY_GAS_STAGE_FUND_TREASURY: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+    LEGACY_GAS_STAGE_BATCH_SEND: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.22"),
+        "default": Decimal("1.35"),
+    },
+    LEGACY_GAS_STAGE_RETURN_SWEEP: {
+        TEMPLATE_CHAIN_ETHEREUM: Decimal("1.08"),
+        "default": Decimal("1.20"),
+    },
+}
+LEGACY_EVM_GAS_STAGE_PENDING_TIMEOUT_SECONDS = {
+    LEGACY_GAS_STAGE_TOP_UP: 45,
+    LEGACY_GAS_STAGE_FUND_SUBWALLET: 45,
+    LEGACY_GAS_STAGE_WRAP: 45,
+    LEGACY_GAS_STAGE_APPROVAL: 45,
+    LEGACY_GAS_STAGE_SWAP: 75,
+    LEGACY_GAS_STAGE_DEPLOY_TREASURY: 90,
+    LEGACY_GAS_STAGE_FUND_TREASURY: 45,
+    LEGACY_GAS_STAGE_BATCH_SEND: 90,
+    LEGACY_GAS_STAGE_RETURN_SWEEP: 45,
+}
+LEGACY_EVM_RETRY_GAS_PRICE_MULTIPLIERS = {
+    2: Decimal("1.20"),
+    3: Decimal("1.25"),
+}
 
 
 class WalletTransactionError(RuntimeError):
@@ -1015,6 +1077,123 @@ def format_decimal(value: Decimal | None):
     return format(value.normalize(), "f")
 
 
+def get_legacy_gas_stage_multiplier(chain: str | None, tx_stage: str) -> Decimal:
+    normalized_chain = normalize_template_chain(chain)
+    stage_policy = LEGACY_EVM_GAS_STAGE_MULTIPLIERS.get(tx_stage) or {}
+    return stage_policy.get(normalized_chain, stage_policy.get("default", Decimal("1.0")))
+
+
+def get_legacy_gas_stage_pending_timeout_seconds(tx_stage: str) -> int:
+    return int(
+        LEGACY_EVM_GAS_STAGE_PENDING_TIMEOUT_SECONDS.get(
+            tx_stage,
+            DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS,
+        )
+    )
+
+
+def _apply_gas_price_multiplier(value_wei: int, multiplier: Decimal) -> int:
+    if value_wei <= 0:
+        return 0
+    bumped = int((Decimal(value_wei) * multiplier).to_integral_value(rounding=ROUND_DOWN))
+    if multiplier > Decimal("1") and bumped <= value_wei:
+        bumped = value_wei + 1
+    return max(bumped, value_wei)
+
+
+def resolve_legacy_aggressive_gas_pricing(
+    web3_client: Web3,
+    *,
+    chain: str | None,
+    tx_stage: str,
+    attempt: int = 1,
+    previous_gas_price_wei: int | None = None,
+) -> dict:
+    node_gas_price_wei = int(web3_client.eth.gas_price)
+    stage_multiplier = get_legacy_gas_stage_multiplier(chain, tx_stage)
+    suggested_gas_price_wei = _apply_gas_price_multiplier(node_gas_price_wei, stage_multiplier)
+    retry_multiplier = None
+    submitted_gas_price_wei = suggested_gas_price_wei
+
+    if attempt > 1 and previous_gas_price_wei and previous_gas_price_wei > 0:
+        retry_multiplier = LEGACY_EVM_RETRY_GAS_PRICE_MULTIPLIERS.get(
+            int(attempt),
+            LEGACY_EVM_RETRY_GAS_PRICE_MULTIPLIERS[max(LEGACY_EVM_RETRY_GAS_PRICE_MULTIPLIERS)],
+        )
+        retry_bumped_gas_price_wei = _apply_gas_price_multiplier(previous_gas_price_wei, retry_multiplier)
+        submitted_gas_price_wei = max(suggested_gas_price_wei, retry_bumped_gas_price_wei)
+
+    return {
+        "chain": normalize_template_chain(chain),
+        "tx_stage": tx_stage,
+        "attempt": int(attempt),
+        "node_gas_price_wei": node_gas_price_wei,
+        "submitted_gas_price_wei": submitted_gas_price_wei,
+        "stage_multiplier": str(stage_multiplier),
+        "retry_multiplier": str(retry_multiplier) if retry_multiplier is not None else None,
+        "pending_timeout_seconds": get_legacy_gas_stage_pending_timeout_seconds(tx_stage),
+    }
+
+
+def build_legacy_gas_log_details(gas_pricing: dict | None) -> dict:
+    if not gas_pricing:
+        return {}
+    node_gas_price_wei = int(gas_pricing.get("node_gas_price_wei") or 0)
+    submitted_gas_price_wei = int(gas_pricing.get("submitted_gas_price_wei") or 0)
+    return {
+        "tx_stage": gas_pricing.get("tx_stage"),
+        "attempt": gas_pricing.get("attempt"),
+        "node_gas_price_wei": node_gas_price_wei,
+        "submitted_gas_price_wei": submitted_gas_price_wei,
+        "node_gas_price_gwei": format_decimal(Decimal(node_gas_price_wei) / Decimal("1000000000")),
+        "submitted_gas_price_gwei": format_decimal(Decimal(submitted_gas_price_wei) / Decimal("1000000000")),
+        "multiplier": gas_pricing.get("stage_multiplier"),
+        "retry_multiplier": gas_pricing.get("retry_multiplier"),
+        "pending_timeout_seconds": gas_pricing.get("pending_timeout_seconds"),
+    }
+
+
+def estimate_legacy_aggressive_stage_fee_eth(
+    web3_client: Web3,
+    gas_units: int,
+    *,
+    chain: str | None,
+    tx_stage: str,
+    gas_price_wei: int | None = None,
+) -> Decimal:
+    resolved_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=tx_stage,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    return wei_to_decimal(max(int(gas_units), 0) * resolved_gas_price_wei)
+
+
+def estimate_legacy_aggressive_multi_stage_fee_eth(
+    web3_client: Web3,
+    stage_gas_units: dict[str, int],
+    *,
+    chain: str | None,
+) -> Decimal:
+    total_fee_eth = Decimal("0")
+    for tx_stage, gas_units in stage_gas_units.items():
+        if int(gas_units or 0) <= 0:
+            continue
+        total_fee_eth += estimate_legacy_aggressive_stage_fee_eth(
+            web3_client,
+            int(gas_units),
+            chain=chain,
+            tx_stage=tx_stage,
+        )
+    return total_fee_eth
+
+
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1322,6 +1501,7 @@ def recover_deployment_after_timeout(
 def deploy_contract_from_wallet(
     web3_client: Web3,
     *,
+    chain: str | None = None,
     wallet_address: str,
     private_key: str,
     abi: list[dict],
@@ -1329,13 +1509,24 @@ def deploy_contract_from_wallet(
     constructor_args: list,
     nonce: int | None = None,
     gas_price_wei: int | None = None,
-    wait_timeout: int = DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS,
+    wait_timeout: int | None = None,
     gas_limit: int = MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_GAS_LIMIT,
 ) -> dict:
     deployer = Web3.to_checksum_address(wallet_address)
     contract = web3_client.eth.contract(abi=abi, bytecode=bytecode)
     deployment_nonce = nonce if nonce is not None else web3_client.eth.get_transaction_count(deployer, "pending")
-    deployment_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    deployment_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_DEPLOY_TREASURY,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    deployment_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_DEPLOY_TREASURY))
 
     try:
         estimated_gas = contract.constructor(*constructor_args).estimate_gas({
@@ -1364,7 +1555,7 @@ def deploy_contract_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=wait_timeout)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=deployment_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -1468,12 +1659,14 @@ def recover_managed_token_distributor_execution_after_timeout(
 def execute_managed_token_distributor_from_wallet(
     web3_client: Web3,
     *,
+    chain: str | None = None,
     contract_address: str,
     wallet_address: str,
     private_key: str,
     abi: list[dict],
     nonce: int,
     gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
     gas_limit: int = MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_GAS_LIMIT,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
@@ -1481,7 +1674,18 @@ def execute_managed_token_distributor_from_wallet(
         address=Web3.to_checksum_address(contract_address),
         abi=abi,
     )
-    execution_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    execution_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    execution_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND))
 
     try:
         estimated_gas = contract.functions.execute().estimate_gas({"from": owner})
@@ -1518,7 +1722,7 @@ def execute_managed_token_distributor_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=execution_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -1568,6 +1772,7 @@ def recover_batch_treasury_distributor_batch_send_after_timeout(
 def execute_batch_treasury_distributor_batch_send_from_wallet(
     web3_client: Web3,
     *,
+    chain: str | None = None,
     contract_address: str,
     wallet_address: str,
     private_key: str,
@@ -1578,13 +1783,25 @@ def execute_batch_treasury_distributor_batch_send_from_wallet(
     token_amounts: list[int],
     nonce: int,
     gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
     contract = web3_client.eth.contract(
         address=Web3.to_checksum_address(contract_address),
         abi=abi,
     )
-    batch_send_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    batch_send_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    batch_send_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND))
     normalized_recipients = [Web3.to_checksum_address(address) for address in recipients]
     normalized_tokens = [
         Web3.to_checksum_address(token) if token != NATIVE_ETH_SENTINEL_ADDRESS else Web3.to_checksum_address("0x0000000000000000000000000000000000000000")
@@ -1645,7 +1862,7 @@ def execute_batch_treasury_distributor_batch_send_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=batch_send_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -1666,12 +1883,14 @@ def execute_batch_treasury_distributor_batch_send_from_wallet(
 def wrap_eth_to_weth_from_wallet(
     web3_client: Web3,
     *,
+    chain: str | None = None,
     wallet_address: str,
     private_key: str,
     wrapped_native_address: str | None = None,
     amount_wei: int,
     nonce: int,
     gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
     gas_limit: int = WETH_DEPOSIT_GAS_LIMIT,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
@@ -1680,7 +1899,18 @@ def wrap_eth_to_weth_from_wallet(
         address=wrapped_token_address,
         abi=WETH_ABI,
     )
-    wrap_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    wrap_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_WRAP,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    wrap_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_WRAP))
 
     try:
         estimated_gas = weth_contract.functions.deposit().estimate_gas(
@@ -1714,7 +1944,7 @@ def wrap_eth_to_weth_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=wrap_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -2169,17 +2399,30 @@ def approve_token_from_wallet(
     web3_client: Web3,
     *,
     token_address: str,
+    chain: str | None = None,
     wallet_address: str,
     private_key: str,
     spender_address: str,
     amount_units: int,
     nonce: int,
     gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
     gas_limit: int = ERC20_APPROVE_GAS_LIMIT,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
     token_contract = web3_client.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
-    approval_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    approval_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_APPROVAL,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    approval_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_APPROVAL))
 
     try:
         estimated_gas = token_contract.functions.approve(
@@ -2212,7 +2455,7 @@ def approve_token_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=approval_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -2233,17 +2476,31 @@ def approve_token_from_wallet(
 def transfer_native_eth_from_wallet(
     web3_client: Web3,
     *,
+    chain: str | None = None,
     wallet_address: str,
     private_key: str,
     recipient_address: str,
     amount_wei: int,
     nonce: int,
     gas_price_wei: int | None = None,
+    tx_stage: str = LEGACY_GAS_STAGE_FUND_TREASURY,
+    wait_timeout: int | None = None,
     gas_limit: int = ETH_TRANSFER_GAS_LIMIT,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
     recipient = Web3.to_checksum_address(recipient_address)
-    transfer_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    transfer_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=tx_stage,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    transfer_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(tx_stage))
     recipient_balance_before_wei = int(web3_client.eth.get_balance(recipient))
     try:
         estimated_gas = web3_client.eth.estimate_gas({
@@ -2278,7 +2535,7 @@ def transfer_native_eth_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=transfer_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -2314,12 +2571,25 @@ def transfer_token_from_wallet(
     amount_units: int,
     nonce: int,
     gas_price_wei: int | None = None,
+    tx_stage: str = LEGACY_GAS_STAGE_FUND_TREASURY,
+    wait_timeout: int | None = None,
     gas_limit: int = ERC20_TRANSFER_GAS_LIMIT,
 ) -> dict:
     owner = Web3.to_checksum_address(wallet_address)
     recipient = Web3.to_checksum_address(recipient_address)
     token_contract = web3_client.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
-    transfer_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    transfer_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=tx_stage,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    transfer_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(tx_stage))
     token_decimals = int(resolve_token(token_address, chain)["decimals"])
     recipient_balance_before = int(token_contract.functions.balanceOf(recipient).call())
 
@@ -2361,7 +2631,7 @@ def transfer_token_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=transfer_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -2402,6 +2672,7 @@ def swap_weth_to_token_from_wallet(
     prepared_quote: dict | None = None,
     nonce: int,
     gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
     gas_limit: int = UNISWAP_V3_SWAP_GAS_LIMIT,
 ) -> dict:
     runtime = get_chain_runtime_config(chain)
@@ -2421,7 +2692,18 @@ def swap_weth_to_token_from_wallet(
     amount_in_units = decimal_to_wei(amount_in)
     min_amount_out_units = decimal_to_token_units(Decimal(str(quote["min_amount_out"])), int(token_out["decimals"]))
     balance_before = token_contract.functions.balanceOf(owner).call()
-    swap_gas_price_wei = gas_price_wei or int(web3_client.eth.gas_price)
+    swap_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=runtime["chain"],
+                tx_stage=LEGACY_GAS_STAGE_SWAP,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    swap_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_SWAP))
     swap_details = {
         "backend": quote.get("backend"),
         "fee_tier": int(quote["fee_tier"]) if quote.get("fee_tier") is not None else None,
@@ -2505,7 +2787,7 @@ def swap_weth_to_token_from_wallet(
         ) from exc
 
     try:
-        receipt = wait_for_transaction_success(web3_client, tx_hash)
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=swap_wait_timeout)
     except Exception as exc:
         raise WalletTransactionError(
             str(exc),
@@ -3503,9 +3785,26 @@ def execute_wallet_run(
         )
         return int(token_contract.functions.balanceOf(Web3.to_checksum_address(owner_address)).call())
 
-    def estimate_gas_fee_eth(gas_units: int, *, gas_price_wei: int | None = None) -> Decimal:
-        resolved_gas_price_wei = gas_price_wei if gas_price_wei is not None and gas_price_wei > 0 else int(web3_client.eth.gas_price)
-        return wei_to_decimal(max(int(gas_units), 0) * resolved_gas_price_wei)
+    def estimate_gas_fee_eth(
+        gas_units: int,
+        *,
+        tx_stage: str = LEGACY_GAS_STAGE_FUND_TREASURY,
+        gas_price_wei: int | None = None,
+    ) -> Decimal:
+        return estimate_legacy_aggressive_stage_fee_eth(
+            web3_client,
+            int(gas_units),
+            chain=template_chain,
+            tx_stage=tx_stage,
+            gas_price_wei=gas_price_wei,
+        )
+
+    def estimate_multi_stage_gas_fee_eth(stage_gas_units: dict[str, int]) -> Decimal:
+        return estimate_legacy_aggressive_multi_stage_fee_eth(
+            web3_client,
+            stage_gas_units,
+            chain=template_chain,
+        )
 
     def maybe_auto_top_up_subwallet(
         item: dict,
@@ -3530,8 +3829,17 @@ def execute_wallet_run(
             return current_balance
 
         top_up_amount = desired_target_eth - current_balance
-        gas_price_wei = int(web3_client.eth.gas_price)
-        top_up_fee_eth = estimate_gas_fee_eth(ETH_TRANSFER_GAS_LIMIT, gas_price_wei=gas_price_wei)
+        top_up_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+            web3_client,
+            chain=template_chain,
+            tx_stage=LEGACY_GAS_STAGE_TOP_UP,
+        )
+        gas_price_wei = int(top_up_gas_pricing["submitted_gas_price_wei"])
+        top_up_fee_eth = estimate_gas_fee_eth(
+            ETH_TRANSFER_GAS_LIMIT,
+            tx_stage=LEGACY_GAS_STAGE_TOP_UP,
+            gas_price_wei=gas_price_wei,
+        )
         current_main_balance = get_address_native_balance_decimal(sender)
         required_main_balance = top_up_amount + top_up_fee_eth
         if current_main_balance < required_main_balance:
@@ -3594,9 +3902,14 @@ def execute_wallet_run(
                     "minimum_balance_eth": format_decimal(minimum_balance_eth),
                     "triggered_by_threshold": needs_threshold_refill,
                     "triggered_by_minimum_balance": needs_minimum_refill,
+                    **build_legacy_gas_log_details(top_up_gas_pricing),
                 },
             )
-            wait_for_transaction_success(web3_client, top_up_hash)
+            wait_for_transaction_success(
+                web3_client,
+                top_up_hash,
+                timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_TOP_UP),
+            )
             balance_after = get_address_native_balance_decimal(item["address"])
             top_up_record["status"] = "confirmed"
             top_up_record["balance_after_eth"] = format_decimal(balance_after)
@@ -3624,6 +3937,7 @@ def execute_wallet_run(
                     "target_eth": format_decimal(desired_target_eth),
                     "threshold_eth": format_decimal(auto_top_up_threshold_eth),
                     "minimum_balance_eth": format_decimal(minimum_balance_eth),
+                    **build_legacy_gas_log_details(top_up_gas_pricing),
                 },
             )
             return balance_after
@@ -3714,7 +4028,10 @@ def execute_wallet_run(
         balance_ready, balance_error = ensure_subwallet_eth_headroom(
             item,
             reason="return leftover balances to the configured return wallet",
-            minimum_balance_eth=estimate_gas_fee_eth(cleanup_gas_units) if cleanup_gas_units > 0 else Decimal("0"),
+            minimum_balance_eth=estimate_gas_fee_eth(
+                cleanup_gas_units,
+                tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+            ) if cleanup_gas_units > 0 else Decimal("0"),
         )
         if not balance_ready:
             return_sweep_failure_count += 1
@@ -3726,7 +4043,12 @@ def execute_wallet_run(
                 amount_decimal = token_units_to_decimal(balance_units, int(token["decimals"]))
                 sweep_receipt = None
                 sweep_nonce = web3_client.eth.get_transaction_count(Web3.to_checksum_address(sub_wallet["address"]), "pending")
-                sweep_gas_price_wei = int(web3_client.eth.gas_price)
+                sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                    web3_client,
+                    chain=template_chain,
+                    tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                )
+                sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
                 last_sweep_error: WalletTransactionError | None = None
 
                 for sweep_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
@@ -3741,6 +4063,8 @@ def execute_wallet_run(
                             amount_units=balance_units,
                             nonce=sweep_nonce,
                             gas_price_wei=sweep_gas_price_wei,
+                            tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                            wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
                         )
                         break
                     except WalletTransactionError as exc:
@@ -3760,11 +4084,14 @@ def execute_wallet_run(
                             if sweep_receipt:
                                 break
                             if sweep_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
-                                sweep_gas_price_wei = get_bumped_gas_price_wei(
+                                sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                     web3_client,
-                                    exc.gas_price_wei,
-                                    multiplier=TOKEN_TRANSFER_GAS_PRICE_BUMP_MULTIPLIER,
+                                    chain=template_chain,
+                                    tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                                    attempt=sweep_attempt + 1,
+                                    previous_gas_price_wei=exc.gas_price_wei,
                                 )
+                                sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
                                 continue
                         raise
 
@@ -3826,7 +4153,12 @@ def execute_wallet_run(
                 raise
 
         eth_balance_wei = web3_client.eth.get_balance(Web3.to_checksum_address(sub_wallet["address"]))
-        gas_price_wei = int(web3_client.eth.gas_price)
+        eth_sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+            web3_client,
+            chain=template_chain,
+            tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+        )
+        gas_price_wei = int(eth_sweep_gas_pricing["submitted_gas_price_wei"])
         eth_transfer_fee_wei = gas_price_wei * ETH_TRANSFER_GAS_LIMIT
         transferable_eth_wei = int(eth_balance_wei) - int(eth_transfer_fee_wei)
         if transferable_eth_wei <= 0:
@@ -3846,7 +4178,11 @@ def execute_wallet_run(
                 "to": Web3.to_checksum_address(return_wallet_address),
             }
             sweep_hash = send_signed_transaction(web3_client, sweep_tx, sub_wallet["private_key"])
-            wait_for_transaction_success(web3_client, sweep_hash)
+            wait_for_transaction_success(
+                web3_client,
+                sweep_hash,
+                timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
+            )
             item.setdefault("return_sweep_transactions", []).append(
                 {
                     "asset": native_symbol,
@@ -4043,6 +4379,11 @@ def execute_wallet_run(
                     item["status"] = "created"
                     continue
 
+                funding_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                    web3_client,
+                    chain=template_chain,
+                    tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET,
+                )
                 eth_tx = {
                     **build_transaction_envelope(
                         web3_client,
@@ -4050,6 +4391,7 @@ def execute_wallet_run(
                         main_wallet_nonce,
                         gas=ETH_TRANSFER_GAS_LIMIT,
                         value=decimal_to_wei(per_wallet_eth),
+                        gas_price_wei=int(funding_gas_pricing["submitted_gas_price_wei"]),
                     ),
                     "to": recipient,
                 }
@@ -4075,6 +4417,7 @@ def execute_wallet_run(
                         "from_address": main_wallet["address"],
                         "to_address": item["address"],
                     },
+                    details=build_legacy_gas_log_details(funding_gas_pricing),
                 )
                 funding_submitted_transaction_count += 1
                 main_wallet_nonce += 1
@@ -4102,7 +4445,12 @@ def execute_wallet_run(
 
         wrap_amount_wei = decimal_to_wei(main_wallet_weth_wrapped)
         wrap_receipt = None
-        wrap_gas_price_wei = int(web3_client.eth.gas_price)
+        wrap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+            web3_client,
+            chain=template_chain,
+            tx_stage=LEGACY_GAS_STAGE_WRAP,
+        )
+        wrap_gas_price_wei = int(wrap_gas_pricing["submitted_gas_price_wei"])
         main_wallet_weth_contract = web3_client.eth.contract(
             address=wrapped_native_address,
             abi=WETH_ABI,
@@ -4124,6 +4472,7 @@ def execute_wallet_run(
                             "amount": format_decimal(main_wallet_weth_wrapped),
                             "attempt": wrap_attempt,
                             "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
+                            **build_legacy_gas_log_details(wrap_gas_pricing),
                         },
                     )
                 else:
@@ -4140,8 +4489,8 @@ def execute_wallet_run(
                             "amount": format_decimal(main_wallet_weth_wrapped),
                             "attempt": wrap_attempt,
                             "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
-                            "gas_price_wei": wrap_gas_price_wei,
                             "previous_error": str(last_wrap_error) if last_wrap_error else None,
+                            **build_legacy_gas_log_details(wrap_gas_pricing),
                         },
                     )
 
@@ -4154,6 +4503,8 @@ def execute_wallet_run(
                         amount_wei=wrap_amount_wei,
                         nonce=main_wallet_nonce,
                         gas_price_wei=wrap_gas_price_wei,
+                        chain=template_chain,
+                        wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_WRAP),
                     )
                     record_run_log(
                         stage="wrapping",
@@ -4168,6 +4519,7 @@ def execute_wallet_run(
                             "from_address": main_wallet["address"],
                             "to_address": wrapped_native_address,
                         },
+                        details=build_legacy_gas_log_details(wrap_gas_pricing),
                     )
                     break
                 except WalletTransactionError as exc:
@@ -4186,6 +4538,7 @@ def execute_wallet_run(
                                 "from_address": main_wallet["address"],
                                 "to_address": wrapped_native_address,
                             },
+                            details=build_legacy_gas_log_details(wrap_gas_pricing),
                         )
                     if exc.retryable:
                         wrap_receipt = recover_weth_wrap_after_timeout(
@@ -4212,16 +4565,20 @@ def execute_wallet_run(
                                     "attempt": wrap_attempt,
                                     "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
                                     "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                                    **build_legacy_gas_log_details(wrap_gas_pricing),
                                 },
                             )
                             break
 
                         if wrap_attempt < WETH_WRAP_MAX_ATTEMPTS:
-                            wrap_gas_price_wei = get_bumped_gas_price_wei(
+                            wrap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                 web3_client,
-                                exc.gas_price_wei,
-                                multiplier=WETH_WRAP_GAS_PRICE_BUMP_MULTIPLIER,
+                                chain=template_chain,
+                                tx_stage=LEGACY_GAS_STAGE_WRAP,
+                                attempt=wrap_attempt + 1,
+                                previous_gas_price_wei=exc.gas_price_wei,
                             )
+                            wrap_gas_price_wei = int(wrap_gas_pricing["submitted_gas_price_wei"])
                             record_run_log(
                                 stage="wrapping",
                                 event="main_wallet_eth_wrap_retry_scheduled",
@@ -4235,7 +4592,7 @@ def execute_wallet_run(
                                     "attempt": wrap_attempt,
                                     "max_attempts": WETH_WRAP_MAX_ATTEMPTS,
                                     "replacement_nonce": main_wallet_nonce,
-                                    "next_gas_price_wei": wrap_gas_price_wei,
+                                    **build_legacy_gas_log_details(wrap_gas_pricing),
                                 },
                             )
                             continue
@@ -4262,6 +4619,7 @@ def execute_wallet_run(
                 details={
                     "attempts": wrap_attempt_used,
                     "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                    **build_legacy_gas_log_details(wrap_gas_pricing),
                 },
             )
         except Exception as exc:
@@ -4273,7 +4631,10 @@ def execute_wallet_run(
                 status="failed",
                 message=f"Main-wallet {wrapped_native_symbol} funding wrap failed: {error_message}",
                 tx_hash=last_wrap_error.tx_hash if last_wrap_error else None,
-                details={"amount": format_decimal(main_wallet_weth_wrapped)},
+                details={
+                    "amount": format_decimal(main_wallet_weth_wrapped),
+                    **build_legacy_gas_log_details(wrap_gas_pricing),
+                },
             )
 
     distributor_interface = get_batch_treasury_distributor_interface() if should_execute_deployment_flow else None
@@ -4330,7 +4691,11 @@ def execute_wallet_run(
 
                 eth_transfer = item["funding_transactions"].get("eth")
                 if eth_transfer and eth_transfer.get("tx_hash"):
-                    wait_for_transaction_success(web3_client, eth_transfer["tx_hash"])
+                    wait_for_transaction_success(
+                        web3_client,
+                        eth_transfer["tx_hash"],
+                        timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_FUND_SUBWALLET),
+                    )
                     eth_transfer["status"] = "confirmed"
                     item["status"] = "funded"
                     record_run_log(
@@ -4360,7 +4725,12 @@ def execute_wallet_run(
                 if per_wallet_wrap_weth > 0:
                     wrap_amount_wei = decimal_to_wei(per_wallet_wrap_weth)
                     wrap_receipt = None
-                    wrap_gas_price_wei = int(web3_client.eth.gas_price)
+                    wrap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                        web3_client,
+                        chain=template_chain,
+                        tx_stage=LEGACY_GAS_STAGE_WRAP,
+                    )
+                    wrap_gas_price_wei = int(wrap_gas_pricing["submitted_gas_price_wei"])
                     balance_before_wrap_units = int(weth_contract.functions.balanceOf(subwallet_address).call())
                     last_wrap_error: WalletTransactionError | None = None
                     max_wrap_attempts = WETH_WRAP_MAX_ATTEMPTS
@@ -4380,6 +4750,7 @@ def execute_wallet_run(
                                     "amount": format_decimal(per_wallet_wrap_weth),
                                     "attempt": wrap_attempt,
                                     "max_attempts": max_wrap_attempts,
+                                    **build_legacy_gas_log_details(wrap_gas_pricing),
                                 },
                             )
                         else:
@@ -4398,8 +4769,8 @@ def execute_wallet_run(
                                     "amount": format_decimal(per_wallet_wrap_weth),
                                     "attempt": wrap_attempt,
                                     "max_attempts": max_wrap_attempts,
-                                    "gas_price_wei": wrap_gas_price_wei,
                                     "previous_error": str(last_wrap_error) if last_wrap_error else None,
+                                    **build_legacy_gas_log_details(wrap_gas_pricing),
                                 },
                             )
 
@@ -4412,6 +4783,8 @@ def execute_wallet_run(
                                 amount_wei=wrap_amount_wei,
                                 nonce=subwallet_nonce,
                                 gas_price_wei=wrap_gas_price_wei,
+                                chain=template_chain,
+                                wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_WRAP),
                             )
                             record_run_log(
                                 stage="wrapping",
@@ -4428,6 +4801,7 @@ def execute_wallet_run(
                                     "from_address": item["address"],
                                     "to_address": wrapped_native_address,
                                 },
+                                details=build_legacy_gas_log_details(wrap_gas_pricing),
                             )
                             break
                         except WalletTransactionError as exc:
@@ -4448,6 +4822,7 @@ def execute_wallet_run(
                                         "from_address": item["address"],
                                         "to_address": wrapped_native_address,
                                     },
+                                    details=build_legacy_gas_log_details(wrap_gas_pricing),
                                 )
                             if exc.retryable:
                                 wrap_receipt = recover_weth_wrap_after_timeout(
@@ -4476,16 +4851,20 @@ def execute_wallet_run(
                                             "attempt": wrap_attempt,
                                             "max_attempts": max_wrap_attempts,
                                             "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                                            **build_legacy_gas_log_details(wrap_gas_pricing),
                                         },
                                     )
                                     break
 
                                 if wrap_attempt < max_wrap_attempts:
-                                    wrap_gas_price_wei = get_bumped_gas_price_wei(
+                                    wrap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                         web3_client,
-                                        exc.gas_price_wei,
-                                        multiplier=WETH_WRAP_GAS_PRICE_BUMP_MULTIPLIER,
+                                        chain=template_chain,
+                                        tx_stage=LEGACY_GAS_STAGE_WRAP,
+                                        attempt=wrap_attempt + 1,
+                                        previous_gas_price_wei=exc.gas_price_wei,
                                     )
+                                    wrap_gas_price_wei = int(wrap_gas_pricing["submitted_gas_price_wei"])
                                     record_run_log(
                                         stage="wrapping",
                                         event="subwallet_eth_wrap_retry_scheduled",
@@ -4501,7 +4880,7 @@ def execute_wallet_run(
                                             "attempt": wrap_attempt,
                                             "max_attempts": max_wrap_attempts,
                                             "replacement_nonce": subwallet_nonce,
-                                            "next_gas_price_wei": wrap_gas_price_wei,
+                                            **build_legacy_gas_log_details(wrap_gas_pricing),
                                         },
                                     )
                                     continue
@@ -4538,18 +4917,19 @@ def execute_wallet_run(
                         details={
                             "attempts": wrap_attempt_used,
                             "confirmation_source": wrap_receipt.get("confirmation_source") or "receipt",
+                            **build_legacy_gas_log_details(wrap_gas_pricing),
                         },
                     )
                     subwallet_nonce += 1
 
-                planned_remaining_execution_gas_units = (
-                    (ERC20_APPROVE_GAS_LIMIT if stablecoin_routes else 0)
-                    + (planned_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
-                    + planned_route_deployment_gas_units
-                    + return_sweep_gas_units_per_wallet
-                )
-                if planned_remaining_execution_gas_units > 0:
-                    minimum_post_wrap_balance_eth = estimate_gas_fee_eth(planned_remaining_execution_gas_units)
+                planned_remaining_execution_stage_gas_units = {
+                    LEGACY_GAS_STAGE_APPROVAL: ERC20_APPROVE_GAS_LIMIT if stablecoin_routes else 0,
+                    LEGACY_GAS_STAGE_SWAP: planned_route_count * UNISWAP_V3_SWAP_GAS_LIMIT,
+                    LEGACY_GAS_STAGE_DEPLOY_TREASURY: planned_route_deployment_gas_units,
+                    LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                }
+                if sum(int(value or 0) for value in planned_remaining_execution_stage_gas_units.values()) > 0:
+                    minimum_post_wrap_balance_eth = estimate_multi_stage_gas_fee_eth(planned_remaining_execution_stage_gas_units)
                     balance_ready, balance_error = ensure_subwallet_eth_headroom(
                         item,
                         reason="continue through approvals, swaps, and distributor deployment",
@@ -4648,11 +5028,13 @@ def execute_wallet_run(
                             if quote_backend and quote_backend not in approved_swap_backends
                             else 0
                         )
-                        minimum_swap_stage_balance_eth = estimate_gas_fee_eth(
-                            remaining_approval_gas_units
-                            + (remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
-                            + remaining_route_deployment_gas_units
-                            + return_sweep_gas_units_per_wallet
+                        minimum_swap_stage_balance_eth = estimate_multi_stage_gas_fee_eth(
+                            {
+                                LEGACY_GAS_STAGE_APPROVAL: remaining_approval_gas_units,
+                                LEGACY_GAS_STAGE_SWAP: remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT,
+                                LEGACY_GAS_STAGE_DEPLOY_TREASURY: remaining_route_deployment_gas_units,
+                                LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                            }
                         )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
                             item,
@@ -4685,7 +5067,12 @@ def execute_wallet_run(
                             swap_runtime = get_swap_runtime_config(template_chain, backend=quote_backend)
                             spender_address = swap_runtime["router_address"]
                             approval_receipt = None
-                            approval_gas_price_wei = int(web3_client.eth.gas_price)
+                            approval_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                web3_client,
+                                chain=template_chain,
+                                tx_stage=LEGACY_GAS_STAGE_APPROVAL,
+                            )
+                            approval_gas_price_wei = int(approval_gas_pricing["submitted_gas_price_wei"])
                             last_approval_error: WalletTransactionError | None = None
                             max_approval_attempts = TOKEN_APPROVAL_MAX_ATTEMPTS
                             approval_attempt_used = 0
@@ -4712,8 +5099,8 @@ def execute_wallet_run(
                                                 "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
                                                 "attempt": approval_attempt,
                                                 "max_attempts": max_approval_attempts,
-                                                "gas_price_wei": approval_gas_price_wei,
                                                 "previous_error": str(last_approval_error) if last_approval_error else None,
+                                                **build_legacy_gas_log_details(approval_gas_pricing),
                                             },
                                         )
 
@@ -4727,6 +5114,8 @@ def execute_wallet_run(
                                             amount_units=approval_amount_units,
                                             nonce=subwallet_nonce,
                                             gas_price_wei=approval_gas_price_wei,
+                                            chain=template_chain,
+                                            wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_APPROVAL),
                                         )
                                         break
                                     except WalletTransactionError as exc:
@@ -4761,16 +5150,20 @@ def execute_wallet_run(
                                                         "attempt": approval_attempt,
                                                         "max_attempts": max_approval_attempts,
                                                         "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
+                                                        **build_legacy_gas_log_details(approval_gas_pricing),
                                                     },
                                                 )
                                                 break
 
                                             if approval_attempt < max_approval_attempts:
-                                                approval_gas_price_wei = get_bumped_gas_price_wei(
+                                                approval_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                                     web3_client,
-                                                    exc.gas_price_wei,
-                                                    multiplier=TOKEN_APPROVAL_GAS_PRICE_BUMP_MULTIPLIER,
+                                                    chain=template_chain,
+                                                    tx_stage=LEGACY_GAS_STAGE_APPROVAL,
+                                                    attempt=approval_attempt + 1,
+                                                    previous_gas_price_wei=exc.gas_price_wei,
                                                 )
+                                                approval_gas_price_wei = int(approval_gas_pricing["submitted_gas_price_wei"])
                                                 record_run_log(
                                                     stage="approval",
                                                     event="weth_router_approval_retry_scheduled",
@@ -4789,7 +5182,7 @@ def execute_wallet_run(
                                                         "attempt": approval_attempt,
                                                         "max_attempts": max_approval_attempts,
                                                         "replacement_nonce": subwallet_nonce,
-                                                        "next_gas_price_wei": approval_gas_price_wei,
+                                                        **build_legacy_gas_log_details(approval_gas_pricing),
                                                     },
                                                 )
                                                 continue
@@ -4831,6 +5224,7 @@ def execute_wallet_run(
                                         "attempt": approval_attempt_used,
                                         "max_attempts": max_approval_attempts,
                                         "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
+                                        **build_legacy_gas_log_details(approval_gas_pricing),
                                     },
                                 )
                                 subwallet_nonce += 1
@@ -4863,6 +5257,7 @@ def execute_wallet_run(
                                         "backend": quote_backend,
                                         "spender": spender_address,
                                         "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                        **build_legacy_gas_log_details(approval_gas_pricing),
                                     },
                                 )
                                 abort_wallet_execution = True
@@ -4871,7 +5266,12 @@ def execute_wallet_run(
 
                         try:
                             swap_receipt = None
-                            swap_gas_price_wei = int(web3_client.eth.gas_price)
+                            swap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                web3_client,
+                                chain=template_chain,
+                                tx_stage=LEGACY_GAS_STAGE_SWAP,
+                            )
+                            swap_gas_price_wei = int(swap_gas_pricing["submitted_gas_price_wei"])
                             last_swap_error: WalletTransactionError | None = None
                             max_swap_attempts = TOKEN_SWAP_MAX_ATTEMPTS
                             swap_attempt_used = 0
@@ -4896,8 +5296,8 @@ def execute_wallet_run(
                                             "amount_in_wrapped_native": format_decimal(amount_in),
                                             "attempt": swap_attempt,
                                             "max_attempts": max_swap_attempts,
-                                            "gas_price_wei": swap_gas_price_wei,
                                             "previous_error": str(last_swap_error) if last_swap_error else None,
+                                            **build_legacy_gas_log_details(swap_gas_pricing),
                                         },
                                     )
 
@@ -4914,6 +5314,7 @@ def execute_wallet_run(
                                         prepared_quote=prepared_quote,
                                         nonce=subwallet_nonce,
                                         gas_price_wei=swap_gas_price_wei,
+                                        wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_SWAP),
                                     )
                                     break
                                 except WalletTransactionError as exc:
@@ -4947,16 +5348,20 @@ def execute_wallet_run(
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
                                                     "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
+                                                    **build_legacy_gas_log_details(swap_gas_pricing),
                                                 },
                                             )
                                             break
 
                                         if swap_attempt < max_swap_attempts:
-                                            swap_gas_price_wei = get_bumped_gas_price_wei(
+                                            swap_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                                 web3_client,
-                                                exc.gas_price_wei,
-                                                multiplier=TOKEN_SWAP_GAS_PRICE_BUMP_MULTIPLIER,
+                                                chain=template_chain,
+                                                tx_stage=LEGACY_GAS_STAGE_SWAP,
+                                                attempt=swap_attempt + 1,
+                                                previous_gas_price_wei=exc.gas_price_wei,
                                             )
+                                            swap_gas_price_wei = int(swap_gas_pricing["submitted_gas_price_wei"])
                                             record_run_log(
                                                 stage="swap",
                                                 event="stablecoin_swap_retry_scheduled",
@@ -4975,7 +5380,7 @@ def execute_wallet_run(
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
                                                     "replacement_nonce": subwallet_nonce,
-                                                    "next_gas_price_wei": swap_gas_price_wei,
+                                                    **build_legacy_gas_log_details(swap_gas_pricing),
                                                 },
                                             )
                                             continue
@@ -5038,6 +5443,7 @@ def execute_wallet_run(
                                     "attempt": swap_attempt_used,
                                     "max_attempts": max_swap_attempts,
                                     "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
+                                    **build_legacy_gas_log_details(swap_gas_pricing),
                                 },
                             )
                             if amount_out > 0 and int(swap_receipt["amount_out_units"]) > 0:
@@ -5150,12 +5556,15 @@ def execute_wallet_run(
                     total_funding_target_count = len(deployment_targets)
                     deploy_attempt_used = 0
                     try:
-                        minimum_deployment_balance_eth = estimate_gas_fee_eth(
-                            build_planned_wallet_deployment_gas_units(
-                                local_funding_target_count=local_funding_target_count,
-                                total_funding_target_count=total_funding_target_count,
-                            )
-                            + return_sweep_gas_units_per_wallet
+                        planned_wallet_deployment_gas_units = build_planned_wallet_deployment_gas_units(
+                            local_funding_target_count=local_funding_target_count,
+                            total_funding_target_count=total_funding_target_count,
+                        )
+                        minimum_deployment_balance_eth = estimate_multi_stage_gas_fee_eth(
+                            {
+                                LEGACY_GAS_STAGE_DEPLOY_TREASURY: planned_wallet_deployment_gas_units,
+                                LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                            }
                         )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
                             item,
@@ -5166,7 +5575,12 @@ def execute_wallet_run(
                             raise RuntimeError(balance_error or f"Subwallet {native_symbol} headroom check failed")
 
                         deployment_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
-                        deployment_gas_price_wei = int(web3_client.eth.gas_price)
+                        deployment_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                            web3_client,
+                            chain=template_chain,
+                            tx_stage=LEGACY_GAS_STAGE_DEPLOY_TREASURY,
+                        )
+                        deployment_gas_price_wei = int(deployment_gas_pricing["submitted_gas_price_wei"])
                         deployed = None
                         last_retry_error: WalletTransactionError | None = None
                         max_deploy_attempts = BATCH_TREASURY_DISTRIBUTOR_DEPLOY_MAX_ATTEMPTS
@@ -5186,6 +5600,7 @@ def execute_wallet_run(
                                         "funding_target_count": total_funding_target_count,
                                         "attempt": deploy_attempt,
                                         "max_attempts": max_deploy_attempts,
+                                        **build_legacy_gas_log_details(deployment_gas_pricing),
                                     },
                                 )
                             else:
@@ -5204,14 +5619,15 @@ def execute_wallet_run(
                                         "funding_target_count": total_funding_target_count,
                                         "attempt": deploy_attempt,
                                         "max_attempts": max_deploy_attempts,
-                                        "gas_price_wei": deployment_gas_price_wei,
                                         "previous_error": str(last_retry_error) if last_retry_error else None,
+                                        **build_legacy_gas_log_details(deployment_gas_pricing),
                                     },
                                 )
 
                             try:
                                 deployed = deploy_contract_from_wallet(
                                     web3_client,
+                                    chain=template_chain,
                                     wallet_address=sub_wallet["address"],
                                     private_key=sub_wallet["private_key"],
                                     abi=distributor_interface["abi"],
@@ -5219,6 +5635,7 @@ def execute_wallet_run(
                                     constructor_args=[],
                                     nonce=deployment_nonce,
                                     gas_price_wei=deployment_gas_price_wei,
+                                    wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_DEPLOY_TREASURY),
                                     gas_limit=BATCH_TREASURY_DISTRIBUTOR_DEPLOY_GAS_LIMIT,
                                 )
                                 break
@@ -5251,16 +5668,20 @@ def execute_wallet_run(
                                                 "attempt": deploy_attempt,
                                                 "max_attempts": max_deploy_attempts,
                                                 "confirmation_source": deployed.get("confirmation_source") or "receipt",
+                                                **build_legacy_gas_log_details(deployment_gas_pricing),
                                             },
                                         )
                                         break
 
                                     if deploy_attempt < max_deploy_attempts:
-                                        deployment_gas_price_wei = get_bumped_gas_price_wei(
+                                        deployment_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                             web3_client,
-                                            exc.gas_price_wei,
-                                            multiplier=BATCH_TREASURY_DISTRIBUTOR_DEPLOY_GAS_PRICE_BUMP_MULTIPLIER,
+                                            chain=template_chain,
+                                            tx_stage=LEGACY_GAS_STAGE_DEPLOY_TREASURY,
+                                            attempt=deploy_attempt + 1,
+                                            previous_gas_price_wei=exc.gas_price_wei,
                                         )
+                                        deployment_gas_price_wei = int(deployment_gas_pricing["submitted_gas_price_wei"])
                                         record_run_log(
                                             stage="deployment",
                                             event="managed_token_distributor_deployment_retry_scheduled",
@@ -5276,7 +5697,7 @@ def execute_wallet_run(
                                                 "attempt": deploy_attempt,
                                                 "max_attempts": max_deploy_attempts,
                                                 "replacement_nonce": deployment_nonce,
-                                                "next_gas_price_wei": deployment_gas_price_wei,
+                                                **build_legacy_gas_log_details(deployment_gas_pricing),
                                             },
                                         )
                                         continue
@@ -5301,6 +5722,7 @@ def execute_wallet_run(
                                 "attempt": deploy_attempt_used,
                                 "max_attempts": max_deploy_attempts,
                                 "confirmation_source": deployed.get("confirmation_source") or "receipt",
+                                **build_legacy_gas_log_details(deployment_gas_pricing),
                             },
                         )
 
@@ -5319,7 +5741,12 @@ def execute_wallet_run(
                                 funding_nonce = main_wallet_nonce
                             else:
                                 funding_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
-                            funding_gas_price_wei = int(web3_client.eth.gas_price)
+                            funding_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                web3_client,
+                                chain=template_chain,
+                                tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY,
+                            )
+                            funding_gas_price_wei = int(funding_gas_pricing["submitted_gas_price_wei"])
 
                             try:
                                 for funding_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
@@ -5328,12 +5755,15 @@ def execute_wallet_run(
                                         if (target.get("funding_asset_kind") or "erc20") == "native_eth":
                                             funding_receipt = transfer_native_eth_from_wallet(
                                                 web3_client,
+                                                chain=template_chain,
                                                 wallet_address=funding_wallet_address,
                                                 private_key=funding_private_key,
                                                 recipient_address=deployed["contract_address"],
                                                 amount_wei=int(target["amount_units"]),
                                                 nonce=funding_nonce,
                                                 gas_price_wei=funding_gas_price_wei,
+                                                tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY,
+                                                wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_FUND_TREASURY),
                                             )
                                         else:
                                             funding_receipt = transfer_token_from_wallet(
@@ -5346,6 +5776,8 @@ def execute_wallet_run(
                                                 amount_units=int(target["amount_units"]),
                                                 nonce=funding_nonce,
                                                 gas_price_wei=funding_gas_price_wei,
+                                                tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY,
+                                                wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_FUND_TREASURY),
                                             )
                                         break
                                     except WalletTransactionError as exc:
@@ -5376,11 +5808,14 @@ def execute_wallet_run(
                                             if funding_receipt:
                                                 break
                                             if funding_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
-                                                funding_gas_price_wei = get_bumped_gas_price_wei(
+                                                funding_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                                     web3_client,
-                                                    exc.gas_price_wei,
-                                                    multiplier=TOKEN_TRANSFER_GAS_PRICE_BUMP_MULTIPLIER,
+                                                    chain=template_chain,
+                                                    tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY,
+                                                    attempt=funding_attempt + 1,
+                                                    previous_gas_price_wei=exc.gas_price_wei,
                                                 )
+                                                funding_gas_price_wei = int(funding_gas_pricing["submitted_gas_price_wei"])
                                                 continue
                                         raise
 
@@ -5434,6 +5869,7 @@ def execute_wallet_run(
                                         "source": target["source"],
                                         "funding_asset_kind": target.get("funding_asset_kind") or "erc20",
                                         "funding_wallet_kind": target.get("funding_wallet_kind") or "subwallet",
+                                        **build_legacy_gas_log_details(funding_gas_pricing),
                                     },
                                 )
                             except Exception as exc:
@@ -5463,6 +5899,7 @@ def execute_wallet_run(
                                         "token_symbol": target["token"]["symbol"],
                                         "contract_address": deployment_info.get("contract_address"),
                                         "attempts": deployment_info.get("funding_attempts"),
+                                        **build_legacy_gas_log_details(funding_gas_pricing),
                                     },
                                 )
 
@@ -5497,10 +5934,14 @@ def execute_wallet_run(
                         if test_auto_execute_after_funding and deployment_info["funded_assets"]:
                             execute_attempt_used = 0
                             try:
-                                minimum_execute_balance_eth = estimate_gas_fee_eth(
-                                    BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT
-                                    + (BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_PER_ENTRY_GAS_LIMIT * len(deployment_info["funded_assets"]))
-                                    + return_sweep_gas_units_per_wallet
+                                minimum_execute_balance_eth = estimate_multi_stage_gas_fee_eth(
+                                    {
+                                        LEGACY_GAS_STAGE_BATCH_SEND: (
+                                            BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT
+                                            + (BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_PER_ENTRY_GAS_LIMIT * len(deployment_info["funded_assets"]))
+                                        ),
+                                        LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                                    }
                                 )
                                 balance_ready, balance_error = ensure_subwallet_eth_headroom(
                                     item,
@@ -5521,7 +5962,12 @@ def execute_wallet_run(
                                     for asset in deployment_info["funded_assets"]
                                 ]
                                 execution_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
-                                execution_gas_price_wei = int(web3_client.eth.gas_price)
+                                execution_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                    web3_client,
+                                    chain=template_chain,
+                                    tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+                                )
+                                execution_gas_price_wei = int(execution_gas_pricing["submitted_gas_price_wei"])
                                 execution_receipt = None
                                 last_execute_error: WalletTransactionError | None = None
                                 max_execute_attempts = BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_MAX_ATTEMPTS
@@ -5531,6 +5977,7 @@ def execute_wallet_run(
                                     try:
                                         execution_receipt = execute_batch_treasury_distributor_batch_send_from_wallet(
                                             web3_client,
+                                            chain=template_chain,
                                             contract_address=deployed["contract_address"],
                                             wallet_address=sub_wallet["address"],
                                             private_key=sub_wallet["private_key"],
@@ -5541,6 +5988,7 @@ def execute_wallet_run(
                                             token_amounts=token_amounts,
                                             nonce=execution_nonce,
                                             gas_price_wei=execution_gas_price_wei,
+                                            wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND),
                                         )
                                         break
                                     except WalletTransactionError as exc:
@@ -5555,11 +6003,14 @@ def execute_wallet_run(
                                             if execution_receipt:
                                                 break
                                             if execute_attempt < max_execute_attempts:
-                                                execution_gas_price_wei = get_bumped_gas_price_wei(
+                                                execution_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                                                     web3_client,
-                                                    exc.gas_price_wei,
-                                                    multiplier=BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_GAS_PRICE_BUMP_MULTIPLIER,
+                                                    chain=template_chain,
+                                                    tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+                                                    attempt=execute_attempt + 1,
+                                                    previous_gas_price_wei=exc.gas_price_wei,
                                                 )
+                                                execution_gas_price_wei = int(execution_gas_pricing["submitted_gas_price_wei"])
                                                 continue
                                         raise
 
@@ -5599,6 +6050,7 @@ def execute_wallet_run(
                                         "attempt": execute_attempt_used,
                                         "max_attempts": max_execute_attempts,
                                         "confirmation_source": execution_receipt.get("confirmation_source") or "receipt",
+                                        **build_legacy_gas_log_details(execution_gas_pricing),
                                     },
                                 )
                             except Exception as exc:
