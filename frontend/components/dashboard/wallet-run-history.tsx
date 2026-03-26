@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, MouseEvent, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, Boxes, CheckCircle2, CircleDashed, CircleSlash, Copy, Download, Loader2, Rocket, ScrollText, Trash2, WalletCards } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, Boxes, CheckCircle2, CircleDashed, CircleSlash, Copy, Download, Loader2, ScrollText, Trash2, WalletCards } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -18,31 +18,41 @@ type FundingTransaction = {
   amount?: string | null;
 };
 
-type ApprovalTransaction = {
+type TransactionRecord = {
+  tx_hash?: string | null;
+  status?: string | null;
+  error?: string | null;
+};
+
+type TopUpTransaction = TransactionRecord & {
+  amount?: string | null;
+};
+
+type ApprovalTransaction = TransactionRecord & {
+  backend?: string | null;
   token_symbol?: string;
   token_address?: string;
   spender_address?: string;
   amount?: string | null;
-  tx_hash?: string | null;
-  status?: string;
   attempts?: number | null;
   confirmation_source?: string | null;
-  error?: string | null;
 };
 
-type SwapTransaction = {
+type SwapTransaction = TransactionRecord & {
+  backend?: string | null;
+  route_type?: string | null;
+  path_symbols?: string[] | null;
+  path_addresses?: string[] | null;
+  path_fee_tiers?: number[] | null;
   token_symbol?: string;
   token_address?: string;
   amount_in?: string | null;
   amount_out?: string | null;
   min_amount_out?: string | null;
   fee_tier?: number | null;
-  tx_hash?: string | null;
-  status?: string;
   source?: string;
   attempts?: number | null;
   confirmation_source?: string | null;
-  error?: string | null;
 };
 
 type RunLog = {
@@ -71,7 +81,6 @@ type DeployedContract = {
   contract_address?: string | null;
   tx_hash?: string | null;
   funding_tx_hash?: string | null;
-  funding_status?: string | null;
   status?: string;
   token_symbol?: string;
   token_address?: string;
@@ -80,7 +89,28 @@ type DeployedContract = {
   owner_address?: string | null;
   compiler_version?: string | null;
   deployment_attempts?: number | null;
+  funding_status?: string | null;
+  funded_assets?: Array<{
+    token_symbol?: string;
+    token_address?: string;
+    amount?: string | null;
+    amount_units?: number | null;
+    funding_tx_hash?: string | null;
+    source?: string | null;
+  }>;
   error?: string | null;
+};
+
+type ContractExecutionTransaction = TransactionRecord & {
+  contract_address?: string | null;
+  token_symbol?: string | null;
+  recipient_address?: string | null;
+};
+
+type ReturnSweepTransaction = TransactionRecord & {
+  asset?: string | null;
+  amount?: string | null;
+  destination_address?: string | null;
 };
 
 type RunSubWallet = {
@@ -102,8 +132,11 @@ type RunSubWallet = {
     status?: string;
     eth_wrapped?: string | null;
   } | null;
+  top_up_transactions?: TopUpTransaction[];
   approval_transactions?: ApprovalTransaction[];
   swap_transactions?: SwapTransaction[];
+  contract_execution_transactions?: ContractExecutionTransaction[];
+  return_sweep_transactions?: ReturnSweepTransaction[];
   private_key_access?: {
     wallet_id?: string;
     export_supported?: boolean;
@@ -132,6 +165,16 @@ type WalletRun = {
     execution?: {
       total_network_fee_eth?: string | null;
       contract_sync_network_fee_eth?: string | null;
+      funding_transaction_count?: number | null;
+      top_up_transaction_count?: number | null;
+      execute_transaction_count?: number | null;
+      wrap_transaction_count?: number | null;
+      approval_transaction_count?: number | null;
+      swap_transaction_count?: number | null;
+      deployment_transaction_count?: number | null;
+      contract_funding_transaction_count?: number | null;
+      return_sweep_transaction_count?: number | null;
+      total_transaction_count?: number | null;
     };
   };
   funding_fee_estimate?: {
@@ -184,6 +227,22 @@ type WalletRun = {
 };
 
 type AutomationStageStatus = "completed" | "running" | "failed" | "skipped" | "pending";
+type AutomationProgressStep = {
+  key: string;
+  label: string;
+  status: AutomationStageStatus;
+  note: string;
+  expectedCount: number;
+  completedCount: number;
+  includeInOverallProgress: boolean;
+};
+
+type TerminalRunCounters = {
+  topUpSuccessCount: number;
+  topUpFailureCount: number;
+  returnSweepSuccessCount: number;
+  returnSweepFailureCount: number;
+};
 const WETH_TOKEN_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 function shortValue(value: string | null | undefined, head = 6, tail = 4) {
@@ -223,8 +282,25 @@ function getTreasuryContractExecution(run: WalletRun) {
     ?? null;
 }
 
+function normalizeStatus(status: string | null | undefined) {
+  return (status ?? "").trim().toLowerCase();
+}
+
+function parseCount(value: number | string | null | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  }
+  return 0;
+}
+
+function parseDetailCount(value: string | number | boolean | null | undefined) {
+  return typeof value === "boolean" ? 0 : parseCount(value);
+}
+
 function statusTone(status: string | null | undefined) {
-  switch ((status || "").toLowerCase()) {
+  switch (normalizeStatus(status)) {
     case "queued":
     case "running":
     case "started":
@@ -483,28 +559,19 @@ function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
 }
 
 function isCompletedStatus(status: string | null | undefined) {
-  return ["completed", "confirmed", "deployed", "created"].includes((status ?? "").toLowerCase());
+  return ["completed", "confirmed", "deployed", "created", "approved", "wrapped", "swapped", "funded", "returned"].includes(normalizeStatus(status));
 }
 
 function isRunningStatus(status: string | null | undefined) {
-  return ["queued", "running", "started", "submitted", "wrapping", "swapping", "deploying"].includes((status ?? "").toLowerCase());
+  return ["queued", "running", "started", "submitted", "wrapping", "swapping", "deploying"].includes(normalizeStatus(status));
 }
 
 function shouldAnimateLogStatus(status: string | null | undefined) {
-  return ["queued", "running", "started", "wrapping", "swapping", "deploying"].includes((status ?? "").toLowerCase());
+  return ["queued", "running", "started", "wrapping", "swapping", "deploying"].includes(normalizeStatus(status));
 }
 
 function isFailedStatus(status: string | null | undefined) {
-  return ["failed", "deployment_failed"].includes((status ?? "").toLowerCase());
-}
-
-function deriveStageStatus(entries: RunLog[] | undefined, fallback: AutomationStageStatus = "pending"): AutomationStageStatus {
-  if (!entries?.length) return fallback;
-  if (entries.some((entry) => isFailedStatus(entry.status))) return "failed";
-  if (entries.every((entry) => (entry.status ?? "").toLowerCase() === "skipped")) return "skipped";
-  if (entries.some((entry) => isCompletedStatus(entry.status))) return "completed";
-  if (entries.some((entry) => isRunningStatus(entry.status))) return "running";
-  return fallback;
+  return ["failed", "deployment_failed"].includes(normalizeStatus(status));
 }
 
 function stageStatusText(status: AutomationStageStatus, locale: SupportedLocale) {
@@ -522,137 +589,8 @@ function stageStatusText(status: AutomationStageStatus, locale: SupportedLocale)
   }
 }
 
-function getRunStageSummaries(run: WalletRun, locale: SupportedLocale) {
-  const walletCreationLogs = run.run_logs?.filter((log) => log.stage === "wallet_creation");
-  const fundingLogs = run.run_logs?.filter((log) => log.stage === "funding");
-  const wrappingLogs = run.run_logs?.filter((log) => log.stage === "wrapping");
-  const routeLogs = run.run_logs?.filter((log) => ["approval", "swap"].includes(log.stage ?? ""));
-  const deploymentLogs = run.run_logs?.filter((log) => ["deployment", "distribution"].includes(log.stage ?? ""));
-  const fundedWalletCount = countFundedWallets(run);
-  const wrappedWalletCount = countWrappedTransactions(run);
-  const swapCount = countSwapTransactions(run);
-  const deployedContractCount = countDeployedContracts(run);
-  const deploymentMessage = (getTreasuryContractExecution(run)?.message ?? "").toLowerCase();
-
-  return [
-    {
-      key: "wallet_creation",
-      label: locale === "en" ? "Create wallets" : locale === "zn" ? "创建钱包" : "Tạo ví",
-      status: deriveStageStatus(walletCreationLogs, run.sub_wallets?.length ? "completed" : "pending"),
-      note:
-        locale === "en"
-          ? `${run.sub_wallets?.length ?? 0} sub-wallet${run.sub_wallets?.length === 1 ? "" : "s"} created`
-          : locale === "zn"
-            ? `已创建 ${run.sub_wallets?.length ?? 0} 个子钱包`
-            : `Đã tạo ${run.sub_wallets?.length ?? 0} ví con`,
-    },
-    {
-      key: "funding",
-      label: locale === "en" ? "Fund batch" : locale === "zn" ? "批量注资" : "Cấp vốn lô",
-      status: deriveStageStatus(
-        fundingLogs,
-        run.sub_wallets?.some((wallet) => wallet.funding_transactions?.eth?.tx_hash || wallet.funding_transactions?.weth?.tx_hash) ? "completed" : "pending",
-      ),
-      note:
-        locale === "en"
-          ? `${fundedWalletCount} wallet${fundedWalletCount === 1 ? "" : "s"} funded`
-          : locale === "zn"
-            ? `${fundedWalletCount} 个钱包已注资`
-            : `${fundedWalletCount} ví đã cấp vốn`,
-    },
-    {
-      key: "wrapping",
-      label: locale === "en" ? "Local wrap" : locale === "zn" ? "本地包装" : "Wrap cục bộ",
-      status: deriveStageStatus(
-        wrappingLogs,
-        wrappedWalletCount > 0 ? "completed" : "skipped",
-      ),
-      note: wrappedWalletCount > 0
-        ? locale === "en"
-          ? `${wrappedWalletCount} wallet${wrappedWalletCount === 1 ? "" : "s"} completed local wrap`
-          : locale === "zn"
-            ? `${wrappedWalletCount} 个钱包已完成本地包装`
-            : `${wrappedWalletCount} ví đã hoàn tất wrap cục bộ`
-        : locale === "en"
-          ? "No local wrap needed"
-          : locale === "zn"
-            ? "无需本地包装"
-            : "Không cần wrap cục bộ",
-    },
-    {
-      key: "swap",
-      label: locale === "en" ? "Approve and swap" : locale === "zn" ? "授权与兑换" : "Phê duyệt và swap",
-      status: deriveStageStatus(
-        routeLogs,
-        swapCount > 0 ? "completed" : "skipped",
-      ),
-      note: swapCount > 0
-        ? locale === "en"
-          ? `${swapCount} swap${swapCount === 1 ? "" : "s"} completed`
-          : locale === "zn"
-            ? `已完成 ${swapCount} 笔兑换`
-            : `Đã hoàn tất ${swapCount} giao dịch swap`
-        : routeLogs?.some((log) => isFailedStatus(log.status))
-          ? locale === "en"
-            ? "Swap failed"
-            : locale === "zn"
-              ? "兑换失败"
-              : "Swap thất bại"
-          : routeLogs?.some((log) => isRunningStatus(log.status))
-            ? locale === "en"
-              ? "Swap in progress"
-              : locale === "zn"
-                ? "兑换进行中"
-                : "Swap đang chạy"
-          : locale === "en"
-            ? "No token swaps set"
-            : locale === "zn"
-              ? "未设置代币兑换"
-              : "Chưa thiết lập swap token",
-    },
-    {
-      key: "deployment",
-      label: locale === "en" ? "Deploy treasury contracts" : locale === "zn" ? "部署资金合约" : "Triển khai hợp đồng treasury",
-      status: deriveStageStatus(
-        deploymentLogs,
-        deployedContractCount > 0 ? "completed" : "skipped",
-      ),
-      note:
-        deployedContractCount > 0
-          ? locale === "en"
-            ? `${deployedContractCount} contract${deployedContractCount === 1 ? "" : "s"} deployed`
-            : locale === "zn"
-              ? `已部署 ${deployedContractCount} 个合约`
-              : `Đã triển khai ${deployedContractCount} hợp đồng`
-          : deploymentLogs?.some((log) => isFailedStatus(log.status))
-            ? locale === "en"
-              ? "Deployment failed"
-              : locale === "zn"
-                ? "部署失败"
-                : "Triển khai thất bại"
-            : deploymentLogs?.some((log) => isRunningStatus(log.status))
-              ? locale === "en"
-                ? "Deployment in progress"
-                : locale === "zn"
-                  ? "部署进行中"
-                  : "Đang triển khai"
-              : deploymentMessage.includes("recipient_address")
-                ? locale === "en"
-                  ? "Add a recipient to enable deployment"
-                  : locale === "zn"
-                    ? "添加接收地址以启用部署"
-                    : "Thêm địa chỉ nhận để bật triển khai"
-                : locale === "en"
-                  ? "No contract deployment set"
-                  : locale === "zn"
-                    ? "未设置合约部署"
-                    : "Chưa thiết lập triển khai hợp đồng",
-    },
-  ];
-}
-
-function getAutomationHeadline(run: WalletRun, locale: SupportedLocale) {
-  switch ((run.status ?? "").toLowerCase()) {
+function getAutomationHeadline(status: string | null | undefined, locale: SupportedLocale) {
+  switch (normalizeStatus(status)) {
     case "queued":
       return {
         label: locale === "en" ? "Automation Queued" : locale === "zn" ? "自动化已排队" : "Tự động hóa đã vào hàng đợi",
@@ -695,7 +633,7 @@ function getAutomationHeadline(run: WalletRun, locale: SupportedLocale) {
 }
 
 function getRunStatusLabel(status: string | null | undefined, locale: SupportedLocale) {
-  switch ((status ?? "").toLowerCase()) {
+  switch (normalizeStatus(status)) {
     case "queued":
       return locale === "en" ? "queued" : locale === "zn" ? "已排队" : "đã xếp hàng";
     case "running":
@@ -739,7 +677,7 @@ function getRunStatusLabel(status: string | null | undefined, locale: SupportedL
   }
 }
 
-function getRunSummaryMessage(run: WalletRun, latestLog: RunLog | null, locale: SupportedLocale) {
+function getRunSummaryMessage(runStatus: string | null | undefined, latestLog: RunLog | null, locale: SupportedLocale) {
   const latestMessage = (latestLog?.message ?? "").trim();
   const isGenericRunMessage =
     (latestLog?.stage ?? "").toLowerCase() === "run"
@@ -747,7 +685,7 @@ function getRunSummaryMessage(run: WalletRun, latestLog: RunLog | null, locale: 
     || /^started run /i.test(latestMessage);
 
   if (isGenericRunMessage || !latestMessage) {
-    switch ((run.status ?? "").toLowerCase()) {
+    switch (normalizeStatus(runStatus)) {
       case "queued":
         return locale === "en"
           ? "Run is queued and waiting to start."
@@ -793,19 +731,472 @@ function getRunSummaryMessage(run: WalletRun, latestLog: RunLog | null, locale: 
 }
 
 function isTerminalRunStatus(status: string | null | undefined) {
-  return ["completed", "partial", "failed"].includes((status ?? "").toLowerCase());
+  return ["completed", "partial", "failed"].includes(normalizeStatus(status));
 }
 
-function getProgressPercent(run: WalletRun, stageSummaries: ReturnType<typeof getRunStageSummaries>) {
-  if (["completed", "partial", "failed"].includes((run.status ?? "").toLowerCase())) return 100;
+function getEffectiveRunStatus(run: WalletRun) {
+  if (isTerminalRunStatus(run.status)) return normalizeStatus(run.status);
 
-  const weight = stageSummaries.reduce((total, stage) => {
-    if (stage.status === "completed" || stage.status === "skipped") return total + 1;
-    if (stage.status === "running") return total + 0.5;
-    return total;
-  }, 0);
+  for (let index = (run.run_logs?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const log = run.run_logs?.[index];
+    if (!log) continue;
+    if (normalizeStatus(log.event) === "run_finished" && isTerminalRunStatus(log.status)) {
+      return normalizeStatus(log.status);
+    }
+    if (normalizeStatus(log.event) === "run_snapshot_recorded" && isTerminalRunStatus(`${log.details?.run_status ?? ""}`)) {
+      return normalizeStatus(`${log.details?.run_status ?? ""}`);
+    }
+  }
 
-  return Math.max(15, Math.round((weight / Math.max(stageSummaries.length, 1)) * 100));
+  if (run.error) return "failed";
+  return normalizeStatus(run.status) || "submitted";
+}
+
+function getTerminalRunCounters(run: WalletRun): TerminalRunCounters {
+  for (let index = (run.run_logs?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const log = run.run_logs?.[index];
+    if (!log) continue;
+    const event = normalizeStatus(log.event);
+    const runStatus = event === "run_snapshot_recorded"
+      ? normalizeStatus(`${log.details?.run_status ?? ""}`)
+      : normalizeStatus(log.status);
+    if (!["run_finished", "run_snapshot_recorded"].includes(event) || !isTerminalRunStatus(runStatus)) {
+      continue;
+    }
+
+    return {
+      topUpSuccessCount: parseDetailCount(log.details?.top_up_success_count),
+      topUpFailureCount: parseDetailCount(log.details?.top_up_failure_count),
+      returnSweepSuccessCount: parseDetailCount(log.details?.return_sweep_success_count),
+      returnSweepFailureCount: parseDetailCount(log.details?.return_sweep_failure_count),
+    };
+  }
+
+  return {
+    topUpSuccessCount: 0,
+    topUpFailureCount: 0,
+    returnSweepSuccessCount: 0,
+    returnSweepFailureCount: 0,
+  };
+}
+
+function countSuccessfulRecords<T extends TransactionRecord>(records: T[] | null | undefined) {
+  return records?.filter((record) => isCompletedStatus(record.status)).length ?? 0;
+}
+
+function countAttemptedRecords<T extends TransactionRecord>(records: T[] | null | undefined) {
+  return records?.filter((record) => Boolean(record.tx_hash) || Boolean(record.status) || Boolean(record.error)).length ?? 0;
+}
+
+function countFailedRecords<T extends TransactionRecord>(records: T[] | null | undefined) {
+  return records?.filter((record) => isFailedStatus(record.status)).length ?? 0;
+}
+
+function countWalletCreation(run: WalletRun) {
+  return run.sub_wallets?.length ?? 0;
+}
+
+function countConfirmedFundingTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => {
+    const confirmedFunding = [wallet.funding_transactions?.eth, wallet.funding_transactions?.weth]
+      .filter((tx): tx is FundingTransaction => Boolean(tx))
+      .filter((tx) => isCompletedStatus(tx.status)).length;
+    return total + confirmedFunding;
+  }, 0) ?? 0;
+}
+
+function countWrappedTransactions(run: WalletRun) {
+  const subWalletWraps = run.sub_wallets?.filter((wallet) => isCompletedStatus(wallet.wrap_transaction?.status)).length ?? 0;
+  return subWalletWraps || (isCompletedStatus(run.wrap_transaction?.status) ? 1 : 0);
+}
+
+function countApprovalTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countSuccessfulRecords(wallet.approval_transactions), 0) ?? 0;
+}
+
+function countSwapTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countSuccessfulRecords(wallet.swap_transactions), 0) ?? 0;
+}
+
+function countDeployedContracts(run: WalletRun) {
+  return run.deployed_contracts?.filter((contract) => Boolean(contract.contract_address) || isCompletedStatus(contract.status)).length ?? 0;
+}
+
+function countTreasuryFundingTransactions(run: WalletRun) {
+  return run.deployed_contracts?.reduce(
+    (total, contract) => total + (contract.funded_assets?.filter((asset) => Boolean(asset.funding_tx_hash)).length ?? 0),
+    0,
+  ) ?? 0;
+}
+
+function countBatchSendTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countSuccessfulRecords(wallet.contract_execution_transactions), 0) ?? 0;
+}
+
+function countTopUpTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countSuccessfulRecords(wallet.top_up_transactions), 0) ?? 0;
+}
+
+function countTopUpAttempts(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countAttemptedRecords(wallet.top_up_transactions), 0) ?? 0;
+}
+
+function countTopUpFailures(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.top_up_transactions), 0) ?? 0;
+}
+
+function countReturnSweepTransactions(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countSuccessfulRecords(wallet.return_sweep_transactions), 0) ?? 0;
+}
+
+function countReturnSweepAttempts(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countAttemptedRecords(wallet.return_sweep_transactions), 0) ?? 0;
+}
+
+function countReturnSweepFailures(run: WalletRun) {
+  return run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.return_sweep_transactions), 0) ?? 0;
+}
+
+function someRunLog(run: WalletRun, predicate: (log: RunLog) => boolean) {
+  return run.run_logs?.some(predicate) ?? false;
+}
+
+function buildStepStatus({
+  expectedCount,
+  completedCount,
+  failedCount = 0,
+  running,
+  effectiveRunStatus,
+}: {
+  expectedCount: number;
+  completedCount: number;
+  failedCount?: number;
+  running: boolean;
+  effectiveRunStatus: string;
+}): AutomationStageStatus {
+  if (expectedCount <= 0) {
+    if (failedCount > 0) return isTerminalRunStatus(effectiveRunStatus) ? "failed" : "running";
+    return running ? "running" : "skipped";
+  }
+  if (completedCount >= expectedCount) return "completed";
+  if (failedCount > 0 && isTerminalRunStatus(effectiveRunStatus)) return "failed";
+  if (completedCount > 0 && isTerminalRunStatus(effectiveRunStatus)) return "failed";
+  if (running || completedCount > 0 || failedCount > 0) return "running";
+  return isTerminalRunStatus(effectiveRunStatus) ? "skipped" : "pending";
+}
+
+function getCountNote({
+  completedCount,
+  expectedCount,
+  skippedText,
+  locale,
+  failedCount = 0,
+}: {
+  completedCount: number;
+  expectedCount: number;
+  skippedText: string;
+  locale: SupportedLocale;
+  failedCount?: number;
+}) {
+  if (expectedCount <= 0) return skippedText;
+  const confirmedLabel = locale === "en" ? "confirmed" : locale === "zn" ? "已确认" : "đã xác nhận";
+  const failedLabel = locale === "en" ? "failed" : locale === "zn" ? "失败" : "thất bại";
+  const base = `${completedCount} / ${expectedCount} ${confirmedLabel}`;
+  return failedCount > 0 ? `${base} · ${failedCount} ${failedLabel}` : base;
+}
+
+function getRunProgressSteps(run: WalletRun, effectiveRunStatus: string, locale: SupportedLocale): AutomationProgressStep[] {
+  const execution = run.preview?.execution;
+  const deploymentMessage = (getTreasuryContractExecution(run)?.message ?? "").toLowerCase();
+  const terminalRunCounters = getTerminalRunCounters(run);
+
+  const expectedWalletCreation = Math.max(run.contract_count ?? 0, countWalletCreation(run));
+  const completedWalletCreation = countWalletCreation(run);
+
+  const expectedFunding = parseCount(execution?.funding_transaction_count);
+  const completedFunding = countConfirmedFundingTransactions(run);
+  const fundingFailed = someRunLog(run, (log) => log.stage === "funding" && isFailedStatus(log.status)) ? 1 : 0;
+
+  const expectedWrap = parseCount(execution?.wrap_transaction_count);
+  const completedWrap = countWrappedTransactions(run);
+  const wrapFailed = someRunLog(run, (log) => log.stage === "wrapping" && isFailedStatus(log.status)) ? 1 : 0;
+
+  const expectedApproval = parseCount(execution?.approval_transaction_count);
+  const completedApproval = countApprovalTransactions(run);
+  const approvalFailed = run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.approval_transactions), 0) ?? 0;
+
+  const expectedSwap = parseCount(execution?.swap_transaction_count);
+  const completedSwap = countSwapTransactions(run);
+  const swapFailed = run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.swap_transactions), 0) ?? 0;
+
+  const expectedDeployment = parseCount(execution?.deployment_transaction_count);
+  const completedDeployment = countDeployedContracts(run);
+  const deploymentFailed = run.deployed_contracts?.filter((contract) => isFailedStatus(contract.status)).length ?? 0;
+
+  const expectedTreasuryFunding = parseCount(execution?.contract_funding_transaction_count);
+  const completedTreasuryFunding = countTreasuryFundingTransactions(run);
+  const treasuryFundingFailed = someRunLog(
+    run,
+    (log) => log.stage === "distribution" && normalizeStatus(log.event).includes("funding_failed"),
+  ) ? 1 : 0;
+
+  const expectedBatchSend = parseCount(execution?.execute_transaction_count);
+  const completedBatchSend = countBatchSendTransactions(run);
+  const batchSendFailed = run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.contract_execution_transactions), 0) ?? 0;
+
+  const topUpLoggedFailures = run.run_logs?.filter((log) => normalizeStatus(log.stage) === "top_up" && isFailedStatus(log.status)).length ?? 0;
+  const topUpCompleted = Math.max(countTopUpTransactions(run), terminalRunCounters.topUpSuccessCount);
+  const topUpFailed = Math.max(countTopUpFailures(run), terminalRunCounters.topUpFailureCount, topUpLoggedFailures);
+  const topUpAttempts = Math.max(countTopUpAttempts(run), topUpCompleted + topUpFailed);
+
+  const plannedReturnSweep = parseCount(execution?.return_sweep_transaction_count);
+  const returnSweepLoggedFailures = run.run_logs?.filter((log) => normalizeStatus(log.stage) === "cleanup" && isFailedStatus(log.status)).length ?? 0;
+  const returnSweepCompleted = Math.max(countReturnSweepTransactions(run), terminalRunCounters.returnSweepSuccessCount);
+  const returnSweepFailed = Math.max(countReturnSweepFailures(run), terminalRunCounters.returnSweepFailureCount, returnSweepLoggedFailures);
+  const returnSweepAttempts = Math.max(countReturnSweepAttempts(run), returnSweepCompleted + returnSweepFailed);
+  const expectedReturnSweep = isTerminalRunStatus(effectiveRunStatus) && returnSweepAttempts === 0
+    ? 0
+    : Math.max(plannedReturnSweep, returnSweepAttempts);
+
+  return [
+    {
+      key: "wallet_creation",
+      label: locale === "en" ? "Create wallets" : locale === "zn" ? "创建钱包" : "Tạo ví",
+      status: buildStepStatus({
+        expectedCount: expectedWalletCreation,
+        completedCount: completedWalletCreation,
+        failedCount: 0,
+        running: someRunLog(run, (log) => log.stage === "wallet_creation" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedWalletCreation,
+        expectedCount: expectedWalletCreation,
+        skippedText: locale === "en" ? "No sub-wallet batch requested" : locale === "zn" ? "未请求子钱包批次" : "Không yêu cầu lô ví con",
+        locale,
+      }),
+      expectedCount: expectedWalletCreation,
+      completedCount: completedWalletCreation,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "funding",
+      label: locale === "en" ? "Fund wallets" : locale === "zn" ? "钱包注资" : "Cấp vốn ví",
+      status: buildStepStatus({
+        expectedCount: expectedFunding,
+        completedCount: completedFunding,
+        failedCount: fundingFailed,
+        running: someRunLog(run, (log) => log.stage === "funding" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedFunding,
+        expectedCount: expectedFunding,
+        skippedText: locale === "en" ? "No wallet funding required" : locale === "zn" ? "无需钱包注资" : "Không cần cấp vốn ví",
+        locale,
+        failedCount: fundingFailed,
+      }),
+      expectedCount: expectedFunding,
+      completedCount: completedFunding,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "top_up",
+      label: locale === "en" ? "Auto top-up gas" : locale === "zn" ? "自动补充 gas" : "Nạp thêm gas tự động",
+      status: buildStepStatus({
+        expectedCount: topUpAttempts,
+        completedCount: topUpCompleted,
+        failedCount: topUpFailed,
+        running: someRunLog(run, (log) => normalizeStatus(log.stage) === "top_up" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: topUpCompleted,
+        expectedCount: topUpAttempts,
+        skippedText: locale === "en" ? "No auto top-up used" : locale === "zn" ? "未使用自动补充" : "Không dùng nạp thêm tự động",
+        locale,
+        failedCount: topUpFailed,
+      }),
+      expectedCount: topUpAttempts,
+      completedCount: topUpCompleted,
+      includeInOverallProgress: false,
+    },
+    {
+      key: "wrapping",
+      label: locale === "en" ? "Local wrap" : locale === "zn" ? "本地包装" : "Wrap cục bộ",
+      status: buildStepStatus({
+        expectedCount: expectedWrap,
+        completedCount: completedWrap,
+        failedCount: wrapFailed,
+        running: someRunLog(run, (log) => log.stage === "wrapping" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedWrap,
+        expectedCount: expectedWrap,
+        skippedText: locale === "en" ? "No local wrap needed" : locale === "zn" ? "无需本地包装" : "Không cần wrap cục bộ",
+        locale,
+        failedCount: wrapFailed,
+      }),
+      expectedCount: expectedWrap,
+      completedCount: completedWrap,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "approval",
+      label: locale === "en" ? "Approve routers" : locale === "zn" ? "授权路由器" : "Phê duyệt router",
+      status: buildStepStatus({
+        expectedCount: expectedApproval,
+        completedCount: completedApproval,
+        failedCount: approvalFailed,
+        running: someRunLog(run, (log) => log.stage === "approval" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedApproval,
+        expectedCount: expectedApproval,
+        skippedText: locale === "en" ? "No router approval needed" : locale === "zn" ? "无需路由器授权" : "Không cần phê duyệt router",
+        locale,
+        failedCount: approvalFailed,
+      }),
+      expectedCount: expectedApproval,
+      completedCount: completedApproval,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "swap",
+      label: locale === "en" ? "Swap token routes" : locale === "zn" ? "兑换路由" : "Swap tuyến token",
+      status: buildStepStatus({
+        expectedCount: expectedSwap,
+        completedCount: completedSwap,
+        failedCount: swapFailed,
+        running: someRunLog(run, (log) => log.stage === "swap" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedSwap,
+        expectedCount: expectedSwap,
+        skippedText: locale === "en" ? "No token swaps set" : locale === "zn" ? "未设置代币兑换" : "Chưa thiết lập swap token",
+        locale,
+        failedCount: swapFailed,
+      }),
+      expectedCount: expectedSwap,
+      completedCount: completedSwap,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "deployment",
+      label: locale === "en" ? "Deploy treasury" : locale === "zn" ? "部署资金合约" : "Triển khai treasury",
+      status: buildStepStatus({
+        expectedCount: expectedDeployment,
+        completedCount: completedDeployment,
+        failedCount: deploymentFailed,
+        running: someRunLog(run, (log) => log.stage === "deployment" && isRunningStatus(log.status)),
+        effectiveRunStatus,
+      }),
+      note: expectedDeployment > 0
+        ? getCountNote({
+            completedCount: completedDeployment,
+            expectedCount: expectedDeployment,
+            skippedText: "",
+            locale,
+            failedCount: deploymentFailed,
+          })
+        : deploymentMessage.includes("recipient_address")
+          ? locale === "en"
+            ? "Add a testing recipient to enable deployment"
+            : locale === "zn"
+              ? "添加测试接收地址以启用部署"
+              : "Thêm địa chỉ nhận thử nghiệm để bật triển khai"
+          : locale === "en"
+            ? "No treasury deployment set"
+            : locale === "zn"
+              ? "未设置资金合约部署"
+              : "Chưa thiết lập triển khai treasury",
+      expectedCount: expectedDeployment,
+      completedCount: completedDeployment,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "treasury_funding",
+      label: locale === "en" ? "Fund treasury" : locale === "zn" ? "合约注资" : "Cấp vốn treasury",
+      status: buildStepStatus({
+        expectedCount: expectedTreasuryFunding,
+        completedCount: completedTreasuryFunding,
+        failedCount: treasuryFundingFailed,
+        running: false,
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedTreasuryFunding,
+        expectedCount: expectedTreasuryFunding,
+        skippedText: locale === "en" ? "No treasury funding transfers needed" : locale === "zn" ? "无需合约注资转账" : "Không cần chuyển vốn vào treasury",
+        locale,
+        failedCount: treasuryFundingFailed,
+      }),
+      expectedCount: expectedTreasuryFunding,
+      completedCount: completedTreasuryFunding,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "batch_send",
+      label: locale === "en" ? "Testing batch send" : locale === "zn" ? "测试批量发送" : "batch send thử nghiệm",
+      status: buildStepStatus({
+        expectedCount: expectedBatchSend,
+        completedCount: completedBatchSend,
+        failedCount: batchSendFailed,
+        running: false,
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: completedBatchSend,
+        expectedCount: expectedBatchSend,
+        skippedText: locale === "en" ? "Testing batch send is off" : locale === "zn" ? "测试批量发送已关闭" : "Đã tắt batch send thử nghiệm",
+        locale,
+        failedCount: batchSendFailed,
+      }),
+      expectedCount: expectedBatchSend,
+      completedCount: completedBatchSend,
+      includeInOverallProgress: true,
+    },
+    {
+      key: "return_sweep",
+      label: locale === "en" ? "Return leftovers" : locale === "zn" ? "回收剩余资金" : "Thu hồi số dư còn lại",
+      status: buildStepStatus({
+        expectedCount: expectedReturnSweep,
+        completedCount: returnSweepCompleted,
+        failedCount: returnSweepFailed,
+        running: false,
+        effectiveRunStatus,
+      }),
+      note: getCountNote({
+        completedCount: returnSweepCompleted,
+        expectedCount: expectedReturnSweep,
+        skippedText: locale === "en" ? "No leftover sweep used" : locale === "zn" ? "未执行剩余资金回收" : "Không dùng hoàn trả số dư còn lại",
+        locale,
+        failedCount: returnSweepFailed,
+      }),
+      expectedCount: expectedReturnSweep,
+      completedCount: returnSweepCompleted,
+      includeInOverallProgress: true,
+    },
+  ];
+}
+
+function getProgressPercent(effectiveRunStatus: string, progressSteps: AutomationProgressStep[]) {
+  if (normalizeStatus(effectiveRunStatus) === "completed") return 100;
+
+  const totalUnits = progressSteps.reduce((total, step) => (
+    step.includeInOverallProgress ? total + step.expectedCount : total
+  ), 0);
+
+  if (totalUnits <= 0) return isTerminalRunStatus(effectiveRunStatus) ? 100 : 0;
+
+  const completedUnits = progressSteps.reduce((total, step) => (
+    step.includeInOverallProgress ? total + Math.min(step.completedCount, step.expectedCount) : total
+  ), 0);
+
+  return Math.max(0, Math.min(100, Math.round((completedUnits / totalUnits) * 100)));
 }
 
 function parseLogAttempt(log: RunLog) {
@@ -920,36 +1311,10 @@ function getRunningCountdownLabel(log: RunLog | null | undefined, nowMs: number,
   }
 }
 
-function stageBadgeClass(status: AutomationStageStatus) {
-  switch (status) {
-    case "completed":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    case "running":
-      return "border-sky-200 bg-sky-50 text-sky-700";
-    case "failed":
-      return "border-rose-200 bg-rose-50 text-rose-700";
-    case "skipped":
-      return "border-slate-200 bg-slate-100 text-slate-600";
-    default:
-      return "border-border/70 bg-secondary/20 text-muted-foreground";
-  }
-}
-
 function countFundedWallets(run: WalletRun) {
-  return run.sub_wallets?.filter((wallet) => wallet.funding_transactions?.eth?.tx_hash || wallet.funding_transactions?.weth?.tx_hash).length ?? 0;
-}
-
-function countWrappedTransactions(run: WalletRun) {
-  const subWalletWraps = run.sub_wallets?.filter((wallet) => wallet.wrap_transaction?.tx_hash).length ?? 0;
-  return subWalletWraps || (run.wrap_transaction?.tx_hash ? 1 : 0);
-}
-
-function countSwapTransactions(run: WalletRun) {
-  return run.sub_wallets?.reduce((total, wallet) => total + (wallet.swap_transactions?.filter((swap) => swap.tx_hash).length ?? 0), 0) ?? 0;
-}
-
-function countDeployedContracts(run: WalletRun) {
-  return run.deployed_contracts?.filter((contract) => Boolean(contract.contract_address) || (contract.status ?? "").toLowerCase() === "completed").length ?? 0;
+  return run.sub_wallets?.filter((wallet) => (
+    isCompletedStatus(wallet.funding_transactions?.eth?.status) || isCompletedStatus(wallet.funding_transactions?.weth?.status)
+  )).length ?? 0;
 }
 
 function subWalletHasDeployedContract(subWallet: RunSubWallet) {
@@ -1061,11 +1426,11 @@ export function WalletRunHistory({
     return () => {
       active = false;
     };
-  }, [mainWalletId, refreshKey, pollTick]);
+  }, [mainWalletId, refreshKey, pollTick, locale]);
 
   useEffect(() => {
     if (loading) return;
-    if (!runs.some((run) => !isTerminalRunStatus(run.status))) return;
+    if (!runs.some((run) => !isTerminalRunStatus(getEffectiveRunStatus(run)))) return;
     const timer = window.setTimeout(() => {
       setPollTick((current) => current + 1);
     }, 2000);
@@ -1073,7 +1438,7 @@ export function WalletRunHistory({
   }, [runs, loading]);
 
   useEffect(() => {
-    const activeRun = runs.find((run) => !isTerminalRunStatus(run.status));
+    const activeRun = runs.find((run) => !isTerminalRunStatus(getEffectiveRunStatus(run)));
     if (!activeRun) {
       autoOpenedActiveRunIdRef.current = null;
       return;
@@ -1084,7 +1449,7 @@ export function WalletRunHistory({
     }
   }, [runs]);
 
-  const hasActiveRun = runs.some((run) => !isTerminalRunStatus(run.status));
+  const hasActiveRun = runs.some((run) => !isTerminalRunStatus(getEffectiveRunStatus(run)));
 
   useEffect(() => {
     if (!hasActiveRun) return;
@@ -1218,7 +1583,7 @@ export function WalletRunHistory({
   };
 
   const handleDeleteRun = async (run: WalletRun) => {
-    if (!isTerminalRunStatus(run.status)) {
+    if (!isTerminalRunStatus(getEffectiveRunStatus(run))) {
       toast({
         title: locale === "en" ? "Run is still active" : locale === "zn" ? "运行仍在进行中" : "Lượt chạy vẫn đang hoạt động",
         description:
@@ -1309,9 +1674,10 @@ export function WalletRunHistory({
       ) : (
         <Accordion type="single" collapsible value={openRunId} onValueChange={setOpenRunId} className="space-y-3">
           {runs.map((run) => {
-            const stageSummaries = getRunStageSummaries(run, locale);
-            const automationHeadline = getAutomationHeadline(run, locale);
-            const progressPercent = getProgressPercent(run, stageSummaries);
+            const effectiveRunStatus = getEffectiveRunStatus(run);
+            const progressSteps = getRunProgressSteps(run, effectiveRunStatus, locale);
+            const automationHeadline = getAutomationHeadline(effectiveRunStatus, locale);
+            const progressPercent = getProgressPercent(effectiveRunStatus, progressSteps);
             const fundedWalletCount = countFundedWallets(run);
             const wrappedTransactionCount = countWrappedTransactions(run);
             const swapTransactionCount = countSwapTransactions(run);
@@ -1319,21 +1685,21 @@ export function WalletRunHistory({
             const latestLog = run.run_logs?.length ? run.run_logs[run.run_logs.length - 1] : null;
             const deploymentLogs = run.run_logs?.filter((log) => ["deployment", "distribution"].includes(log.stage ?? ""));
             const treasuryExecution = getTreasuryContractExecution(run);
-            const isRunLive = !isTerminalRunStatus(run.status);
+            const isRunLive = !isTerminalRunStatus(effectiveRunStatus);
             const latestLogIndex = run.run_logs?.length ? run.run_logs.length - 1 : -1;
             const activeLog = isRunLive && latestLogIndex >= 0 && shouldAnimateLogStatus(run.run_logs?.[latestLogIndex]?.status)
               ? run.run_logs?.[latestLogIndex] ?? null
               : null;
             const activeLogCountdownLabel = getRunningCountdownLabel(activeLog, nowMs, locale);
-            const runningStage = stageSummaries.find((stage) => stage.status === "running");
+            const runningStep = progressSteps.find((step) => step.status === "running");
 
             return (
               <AccordionItem key={run.id} value={run.id} className="overflow-hidden rounded-2xl bg-secondary/10 ring-1 ring-border/60">
                 <AccordionTrigger className="px-4 py-5 hover:no-underline">
                   <div className="flex min-w-0 flex-1 flex-col gap-3 text-left">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusTone(run.status)}`}>
-                        {getRunStatusLabel(run.status, locale)}
+                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusTone(effectiveRunStatus)}`}>
+                        {getRunStatusLabel(effectiveRunStatus, locale)}
                       </span>
                       <span className="text-sm font-semibold text-foreground">{run.template_name}</span>
                       <span className="text-xs text-muted-foreground">{formatTimestamp(run.created_at, locale)}</span>
@@ -1373,7 +1739,7 @@ export function WalletRunHistory({
                         onClick={() => handleDeleteRun(run)}
                         disabled={deletingRunId === run.id}
                         title={
-                          isTerminalRunStatus(run.status)
+                          isTerminalRunStatus(effectiveRunStatus)
                             ? undefined
                             : locale === "en"
                               ? "Finish the run before deleting its history."
@@ -1396,78 +1762,104 @@ export function WalletRunHistory({
                       </div>
                     ) : null}
 
-                    <div className="rounded-[28px] bg-slate-100/90 p-4 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.35)]">
-                      <div className="rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.3)] sm:p-6">
-                        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                          <div className="max-w-3xl">
-                        <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] ${automationHeadline.tone}`}>
-                              {isRunLive ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                              {automationHeadline.label}
-                            </div>
+                    <div className="space-y-6 border-b border-slate-200/80 pb-6">
+                      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="max-w-3xl">
+                          <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] ${automationHeadline.tone}`}>
                             {isRunLive ? (
-                              <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium text-sky-700">
-                                <span className="relative flex h-2.5 w-2.5">
-                                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
-                                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-500" />
-                                </span>
-                                {locale === "en" ? "Live automation is running" : locale === "zn" ? "实时自动化运行中" : "Tự động hóa trực tiếp đang chạy"}
-                              </div>
-                            ) : null}
-                            <h3 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950">{run.template_name}</h3>
-                            <p className="mt-2 text-sm leading-6 text-slate-600">
-                              {getRunSummaryMessage(run, latestLog, locale)}
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : normalizeStatus(effectiveRunStatus) === "completed" ? (
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                            ) : (
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                            )}
+                            {automationHeadline.label}
+                          </div>
+                          {isRunLive ? (
+                            <div className="mt-3 inline-flex items-center gap-2 text-[11px] font-medium text-sky-700">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              {runningStep ? runningStep.label : locale === "en" ? "Polling live progress" : locale === "zn" ? "正在实时轮询进度" : "Đang theo dõi tiến độ trực tiếp"}
+                            </div>
+                          ) : null}
+                          <h3 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950">{run.template_name}</h3>
+                          <p className="mt-2 text-sm leading-6 text-slate-600">
+                            {getRunSummaryMessage(effectiveRunStatus, latestLog, locale)}
+                          </p>
+                          {treasuryExecution?.message && !deployedContractCount && !deploymentLogs?.length ? (
+                            <p className="mt-2 text-sm text-slate-500">{progressSteps.find((step) => step.key === "deployment")?.note}</p>
+                          ) : null}
+                        </div>
+
+                        <div className="grid gap-3 sm:min-w-[280px]">
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                              {locale === "en" ? "Run ID" : locale === "zn" ? "运行 ID" : "ID lượt chạy"}
                             </p>
-                            {treasuryExecution?.message && !deployedContractCount && !deploymentLogs?.length ? (
-                              <p className="mt-2 text-sm text-slate-500">{stageSummaries.find((stage) => stage.key === "deployment")?.note}</p>
+                            <p className="mt-1 break-all font-mono text-xs text-slate-700">{run.id}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                              {locale === "en" ? "Network fee estimate" : locale === "zn" ? "网络费预估" : "Ước tính phí mạng"}
+                            </p>
+                            <p className="mt-1 text-sm font-semibold text-slate-900">
+                              {formatAmount(run.preview?.execution?.total_network_fee_eth ?? run.funding_fee_estimate?.fee_eth, "ETH")}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          <span>{locale === "en" ? "Overall progress" : locale === "zn" ? "整体进度" : "Tiến độ tổng thể"}</span>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            {isRunLive && activeLogCountdownLabel ? (
+                              <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold tracking-normal text-sky-700">
+                                {activeLogCountdownLabel}
+                              </span>
                             ) : null}
-                          </div>
-
-                          <div className="grid gap-3 sm:min-w-[280px]">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                                {locale === "en" ? "Run ID" : locale === "zn" ? "运行 ID" : "ID lượt chạy"}
-                              </p>
-                              <p className="mt-1 break-all font-mono text-xs text-slate-700">{run.id}</p>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                                {locale === "en" ? "Network fee estimate" : locale === "zn" ? "网络费预估" : "Ước tính phí mạng"}
-                              </p>
-                              <p className="mt-1 text-sm font-semibold text-slate-900">
-                                {formatAmount(run.preview?.execution?.total_network_fee_eth ?? run.funding_fee_estimate?.fee_eth, "ETH")}
-                              </p>
-                            </div>
+                            <span>{progressPercent}%</span>
                           </div>
                         </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+                          <div className={`h-full rounded-full transition-[width] duration-500 ease-out ${automationHeadline.bar}`} style={{ width: `${progressPercent}%` }} />
+                        </div>
 
-                        <div className="mt-6">
-                          <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                            <span>{locale === "en" ? "Automation progress" : locale === "zn" ? "自动化进度" : "Tiến độ tự động hóa"}</span>
-                            <div className="flex flex-wrap items-center justify-end gap-2">
-                              {isRunLive ? (
-                                <>
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-normal text-sky-700">
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    {runningStage ? `${runningStage.label} ${locale === "en" ? "live" : locale === "zn" ? "实时" : "trực tiếp"}` : locale === "en" ? "Polling live" : locale === "zn" ? "实时轮询中" : "Đang thăm dò trực tiếp"}
-                                  </span>
-                                  {activeLogCountdownLabel ? (
-                                    <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold tracking-normal text-sky-700">
-                                      {activeLogCountdownLabel}
+                        <div className="space-y-3">
+                          {progressSteps.map((step) => {
+                            const isStepActive = step.status === "running" && runningStep?.key === step.key;
+
+                            return (
+                              <div key={step.key} className="flex gap-3">
+                                <div className="flex w-6 shrink-0 justify-center pt-0.5">
+                                  {step.status === "completed" ? (
+                                    <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                                  ) : step.status === "failed" ? (
+                                    <CircleSlash className="h-5 w-5 text-rose-600" />
+                                  ) : step.status === "running" ? (
+                                    <Loader2 className="h-5 w-5 animate-spin text-sky-600" />
+                                  ) : (
+                                    <CircleDashed className="h-5 w-5 text-slate-400" />
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1 border-l border-slate-200 pl-4">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-slate-900">{step.label}</p>
+                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone(step.status)}`}>
+                                      {stageStatusText(step.status, locale)}
                                     </span>
+                                  </div>
+                                  <p className="mt-1 text-sm text-slate-600">{step.note}</p>
+                                  {isStepActive && activeLogCountdownLabel ? (
+                                    <p className="mt-1 text-xs font-semibold text-sky-700">{activeLogCountdownLabel}</p>
                                   ) : null}
-                                </>
-                              ) : null}
-                              <span>{progressPercent}%</span>
-                            </div>
-                          </div>
-                          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
-                            <div className={`relative h-full rounded-full transition-[width] duration-700 ease-out ${automationHeadline.bar}`} style={{ width: `${progressPercent}%` }}>
-                              {isRunLive ? <div className="absolute inset-y-0 -right-2 w-14 animate-pulse rounded-full bg-white/45 blur-md" /> : null}
-                            </div>
-                          </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
+                      </div>
 
-                        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                             <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
                               {locale === "en" ? "Wallets" : locale === "zn" ? "钱包" : "Ví"}
@@ -1498,41 +1890,9 @@ export function WalletRunHistory({
                             </p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">{deployedContractCount}</p>
                           </div>
-                        </div>
+                      </div>
 
-                        <div className="mt-6 grid gap-3 xl:grid-cols-5">
-                          {stageSummaries.map((stage) => (
-                            <div
-                              key={stage.key}
-                              className={`rounded-2xl border px-4 py-4 transition-all ${
-                                stage.status === "running"
-                                  ? "border-sky-300 bg-sky-50/70 shadow-[0_18px_36px_-28px_rgba(14,165,233,0.5)]"
-                                  : "border-slate-200 bg-white"
-                              }`}
-                            >
-                              <div className="flex items-start gap-3">
-                                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${stageBadgeClass(stage.status)} ${stage.status === "running" ? "animate-pulse" : ""}`}>
-                                  {stage.status === "completed" ? (
-                                    <CheckCircle2 className="h-4 w-4" />
-                                  ) : stage.status === "failed" ? (
-                                    <CircleSlash className="h-4 w-4" />
-                                  ) : stage.status === "running" ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                  ) : (
-                                    <CircleDashed className="h-4 w-4" />
-                                  )}
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-semibold text-slate-900">{stage.label}</p>
-                                  <p className="mt-1 text-sm font-semibold text-slate-500">{stageStatusText(stage.status, locale)}</p>
-                                  <p className="mt-1 text-sm font-semibold text-slate-900">{stage.note}</p>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200">
+                      <div className="overflow-hidden rounded-2xl border border-slate-200">
                             <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                               <Boxes className="h-4 w-4 text-slate-500" />
                             <p className="text-sm font-semibold text-slate-900">{locale === "en" ? "Automation matrix" : locale === "zn" ? "自动化矩阵" : "Ma trận tự động hóa"}</p>
@@ -1630,7 +1990,6 @@ export function WalletRunHistory({
                               {locale === "en" ? "No sub-wallet batch was saved for this run." : locale === "zn" ? "该运行未保存子钱包批次。" : "Không có lô ví con nào được lưu cho lần chạy này."}
                             </div>
                           )}
-                        </div>
                       </div>
                     </div>
 
@@ -1776,7 +2135,7 @@ export function WalletRunHistory({
                             {treasuryExecution?.status?.replace(/_/g, " ") ?? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")}
                           </p>
                           {treasuryExecution?.message ? (
-                            <p className="mt-2 text-xs text-slate-500">{stageSummaries.find((stage) => stage.key === "deployment")?.note}</p>
+                            <p className="mt-2 text-xs text-slate-500">{progressSteps.find((step) => step.key === "deployment")?.note}</p>
                           ) : null}
                         </div>
                         {run.deployed_contracts?.length ? (
