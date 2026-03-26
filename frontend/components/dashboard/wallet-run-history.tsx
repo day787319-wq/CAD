@@ -160,6 +160,12 @@ type WalletRun = {
       recipient_address?: string | null;
       amount?: string | null;
     };
+    batch_treasury_distributor?: {
+      status?: string;
+      message?: string;
+      recipient_address?: string | null;
+      amount?: string | null;
+    };
     records?: Array<{
       contract_name?: string;
       artifact_path?: string | null;
@@ -209,6 +215,12 @@ function formatTimestamp(value: string | null | undefined, locale: SupportedLoca
 function getDisplayTokenSymbol(tokenSymbol: string | null | undefined, tokenAddress: string | null | undefined) {
   if ((tokenAddress ?? "").toLowerCase() === WETH_TOKEN_ADDRESS.toLowerCase()) return "WETH";
   return tokenSymbol ?? "TOKEN";
+}
+
+function getTreasuryContractExecution(run: WalletRun) {
+  return run.contract_execution?.batch_treasury_distributor
+    ?? run.contract_execution?.managed_token_distributor
+    ?? null;
 }
 
 function statusTone(status: string | null | undefined) {
@@ -456,12 +468,15 @@ function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
     return locale === "en" ? message : locale === "zn" ? "已保存运行快照和钱包批次详情。" : "Đã lưu snapshot chạy và chi tiết lô ví.";
   }
 
-  if (message.startsWith("ManagedTokenDistributor auto deployment is skipped because this template only funds sub-wallet ETH.")) {
+  if (
+    message.startsWith("ManagedTokenDistributor auto deployment is skipped because this template only funds sub-wallet ETH.")
+    || message.startsWith("BatchTreasuryDistributor testing deployment is skipped because this template only funds the sub-wallet")
+  ) {
     return locale === "en"
       ? message
       : locale === "zn"
-        ? "已跳过 ManagedTokenDistributor 自动部署。此模板只为子钱包提供 ETH 资金。如需部署，请添加稳定币兑换预算并配置分配，或将直接合约 ETH/WETH 设置为大于 0。"
-        : "Đã bỏ qua tự động triển khai ManagedTokenDistributor. Mẫu này chỉ cấp ETH cho ví con. Để triển khai, hãy thêm ngân sách swap stablecoin và cấu hình phân bổ, hoặc đặt ETH/WETH trực tiếp cho hợp đồng lớn hơn 0.";
+        ? "已跳过资金合约自动部署。此模板当前只为子钱包提供原生币资金。如需部署，请添加正数的兑换预算并配置分配，或将直接合约原生币或包装原生币设置为大于 0。"
+        : "Đã bỏ qua tự động triển khai hợp đồng treasury. Mẫu này hiện chỉ cấp vốn native cho ví con. Để triển khai, hãy thêm ngân sách swap dương và cấu hình phân bổ, hoặc đặt cấp vốn native hay wrapped-native trực tiếp cho hợp đồng lớn hơn 0.";
   }
 
   return message;
@@ -517,7 +532,7 @@ function getRunStageSummaries(run: WalletRun, locale: SupportedLocale) {
   const wrappedWalletCount = countWrappedTransactions(run);
   const swapCount = countSwapTransactions(run);
   const deployedContractCount = countDeployedContracts(run);
-  const deploymentMessage = (run.contract_execution?.managed_token_distributor?.message ?? "").toLowerCase();
+  const deploymentMessage = (getTreasuryContractExecution(run)?.message ?? "").toLowerCase();
 
   return [
     {
@@ -554,15 +569,15 @@ function getRunStageSummaries(run: WalletRun, locale: SupportedLocale) {
       ),
       note: wrappedWalletCount > 0
         ? locale === "en"
-          ? `${wrappedWalletCount} wallet${wrappedWalletCount === 1 ? "" : "s"} wrapped to WETH`
+          ? `${wrappedWalletCount} wallet${wrappedWalletCount === 1 ? "" : "s"} completed local wrap`
           : locale === "zn"
-            ? `${wrappedWalletCount} 个钱包已包装为 WETH`
-            : `${wrappedWalletCount} ví đã wrap sang WETH`
+            ? `${wrappedWalletCount} 个钱包已完成本地包装`
+            : `${wrappedWalletCount} ví đã hoàn tất wrap cục bộ`
         : locale === "en"
-          ? "No WETH wrap needed"
+          ? "No local wrap needed"
           : locale === "zn"
-            ? "无需 WETH 包装"
-            : "Không cần wrap WETH",
+            ? "无需本地包装"
+            : "Không cần wrap cục bộ",
     },
     {
       key: "swap",
@@ -597,7 +612,7 @@ function getRunStageSummaries(run: WalletRun, locale: SupportedLocale) {
     },
     {
       key: "deployment",
-      label: locale === "en" ? "Deploy distributors" : locale === "zn" ? "部署分发合约" : "Triển khai distributor",
+      label: locale === "en" ? "Deploy treasury contracts" : locale === "zn" ? "部署资金合约" : "Triển khai hợp đồng treasury",
       status: deriveStageStatus(
         deploymentLogs,
         deployedContractCount > 0 ? "completed" : "skipped",
@@ -983,7 +998,7 @@ export function WalletRunHistory({
   mainWalletId,
   refreshKey = 0,
   title = "Run history",
-  description = "Every run creates a fresh batch of wallets, funds them with ETH, wraps locally when needed, approves the router, executes swaps, deploys distributor contracts, transfers tokens into them, and stores a full movement log. Open a batch to inspect its subwallets and export encrypted keystores when needed.",
+  description = "Every run creates a fresh batch of wallets, funds them with the chain-native asset, wraps locally when needed, approves the router, executes swaps, deploys treasury contracts, transfers assets into them, and stores a full movement log. Open a batch to inspect its subwallets and export encrypted keystores when needed.",
   emptyMessage = "No runs yet. Execute one from a main wallet and it will appear here.",
 }: {
   mainWalletId?: string;
@@ -1303,6 +1318,7 @@ export function WalletRunHistory({
             const deployedContractCount = countDeployedContracts(run);
             const latestLog = run.run_logs?.length ? run.run_logs[run.run_logs.length - 1] : null;
             const deploymentLogs = run.run_logs?.filter((log) => ["deployment", "distribution"].includes(log.stage ?? ""));
+            const treasuryExecution = getTreasuryContractExecution(run);
             const isRunLive = !isTerminalRunStatus(run.status);
             const latestLogIndex = run.run_logs?.length ? run.run_logs.length - 1 : -1;
             const activeLog = isRunLive && latestLogIndex >= 0 && shouldAnimateLogStatus(run.run_logs?.[latestLogIndex]?.status)
@@ -1401,7 +1417,7 @@ export function WalletRunHistory({
                             <p className="mt-2 text-sm leading-6 text-slate-600">
                               {getRunSummaryMessage(run, latestLog, locale)}
                             </p>
-                            {run.contract_execution?.managed_token_distributor?.message && !deployedContractCount && !deploymentLogs?.length ? (
+                            {treasuryExecution?.message && !deployedContractCount && !deploymentLogs?.length ? (
                               <p className="mt-2 text-sm text-slate-500">{stageSummaries.find((stage) => stage.key === "deployment")?.note}</p>
                             ) : null}
                           </div>
@@ -1744,10 +1760,10 @@ export function WalletRunHistory({
                             <p className="text-[11px] uppercase tracking-wide text-slate-500">{locale === "en" ? "Local wrap" : locale === "zn" ? "本地包装" : "Wrap cục bộ"}</p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">
                               {locale === "en"
-                                ? `${wrappedTransactionCount} wallet${wrappedTransactionCount === 1 ? "" : "s"} wrapped ETH into WETH`
+                                ? `${wrappedTransactionCount} wallet${wrappedTransactionCount === 1 ? "" : "s"} completed local wrap`
                                 : locale === "zn"
-                                  ? `${wrappedTransactionCount} 个钱包已将 ETH 包装为 WETH`
-                                  : `${wrappedTransactionCount} ví đã wrap ETH thành WETH`}
+                                  ? `${wrappedTransactionCount} 个钱包已完成本地包装`
+                                  : `${wrappedTransactionCount} ví đã hoàn tất wrap cục bộ`}
                             </p>
                             {run.wrap_transaction?.tx_hash ? (
                               <p className="mt-2 break-all font-mono text-xs text-slate-700">{run.wrap_transaction.tx_hash}</p>
@@ -1757,9 +1773,9 @@ export function WalletRunHistory({
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
                           <p className="text-[11px] uppercase tracking-wide text-slate-500">{locale === "en" ? "Contract deployment" : locale === "zn" ? "合约部署" : "Triển khai hợp đồng"}</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">
-                            {run.contract_execution?.managed_token_distributor?.status?.replace(/_/g, " ") ?? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")}
+                            {treasuryExecution?.status?.replace(/_/g, " ") ?? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")}
                           </p>
-                          {run.contract_execution?.managed_token_distributor?.message ? (
+                          {treasuryExecution?.message ? (
                             <p className="mt-2 text-xs text-slate-500">{stageSummaries.find((stage) => stage.key === "deployment")?.note}</p>
                           ) : null}
                         </div>
@@ -1773,7 +1789,7 @@ export function WalletRunHistory({
                                     <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone(contract.status)}`}>
                                       {contract.status ?? (locale === "en" ? "unknown" : locale === "zn" ? "未知" : "không xác định")}
                                     </span>
-                                    <p className="text-sm font-semibold text-slate-900">{contract.contract_name ?? (locale === "en" ? "Managed contract" : locale === "zn" ? "托管合约" : "Hợp đồng quản lý")}</p>
+                                    <p className="text-sm font-semibold text-slate-900">{contract.contract_name ?? (locale === "en" ? "Treasury contract" : locale === "zn" ? "资金合约" : "Hợp đồng treasury")}</p>
                                   </div>
                                   {contract.contract_address ? (
                                     <p className="mt-2 break-all font-mono text-xs text-slate-700">{contract.contract_address}</p>

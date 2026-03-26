@@ -3370,6 +3370,8 @@ def execute_wallet_run(
         }
 
     def build_planned_wallet_deployment_gas_units(*, local_funding_target_count: int, total_funding_target_count: int) -> int:
+        if total_funding_target_count <= 0:
+            return 0
         return (
             BATCH_TREASURY_DISTRIBUTOR_DEPLOY_GAS_LIMIT
             + (ERC20_TRANSFER_GAS_LIMIT * local_funding_target_count)
@@ -3379,6 +3381,19 @@ def execute_wallet_run(
                 if test_auto_execute_after_funding and total_funding_target_count > 0
                 else 0
             )
+        )
+
+    direct_main_wallet_funding_target_count = (
+        (1 if distributor_amount > 0 and recipient_address else 0)
+        + (1 if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
+    )
+
+    def build_planned_remaining_deployment_gas_units(*, remaining_local_funding_target_count: int) -> int:
+        if not should_execute_deployment_flow:
+            return 0
+        return build_planned_wallet_deployment_gas_units(
+            local_funding_target_count=remaining_local_funding_target_count,
+            total_funding_target_count=remaining_local_funding_target_count + direct_main_wallet_funding_target_count,
         )
 
     needs_onchain_funding = per_wallet_eth > 0
@@ -3873,6 +3888,12 @@ def execute_wallet_run(
             )
             raise
 
+    def has_successful_return_sweep(item: dict) -> bool:
+        return any(
+            (entry.get("status") or "").lower() in {"confirmed", "completed"}
+            for entry in (item.get("return_sweep_transactions") or [])
+        )
+
     record_run_log(
         stage="run",
         event="run_started",
@@ -4291,24 +4312,8 @@ def execute_wallet_run(
             )
 
         planned_route_count = len(stablecoin_routes)
-        planned_route_deployment_gas_units = planned_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
-        planned_direct_target_gas_units = (
-            (
-                build_planned_target_gas_units(
-                    funding_asset_kind="erc20",
-                    funding_wallet_kind="main_wallet",
-                )
-                if distributor_amount > 0 and recipient_address
-                else 0
-            )
-            + (
-                build_planned_target_gas_units(
-                    funding_asset_kind="native_eth",
-                    funding_wallet_kind="main_wallet",
-                )
-                if direct_contract_native_eth_per_wallet > 0 and recipient_address
-                else 0
-            )
+        planned_route_deployment_gas_units = build_planned_remaining_deployment_gas_units(
+            remaining_local_funding_target_count=planned_route_count,
         )
 
         for item in run_sub_wallets:
@@ -4316,6 +4321,7 @@ def execute_wallet_run(
             completed_deployments_for_wallet = 0
             successful_swaps_for_wallet = 0
             abort_wallet_execution = False
+            sub_wallet = None
 
             try:
                 sub_wallet = get_wallet(item["wallet_id"])
@@ -4540,7 +4546,6 @@ def execute_wallet_run(
                     (ERC20_APPROVE_GAS_LIMIT if stablecoin_routes else 0)
                     + (planned_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
                     + planned_route_deployment_gas_units
-                    + planned_direct_target_gas_units
                     + return_sweep_gas_units_per_wallet
                 )
                 if planned_remaining_execution_gas_units > 0:
@@ -4585,57 +4590,6 @@ def execute_wallet_run(
 
                         token_out = resolve_token(route["token_address"], template_chain)
                         remaining_route_count = planned_route_count - route_index
-                        remaining_route_deployment_gas_units = remaining_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
-                        remaining_direct_target_gas_units = (
-                            (
-                                build_planned_target_gas_units(
-                                    funding_asset_kind="erc20",
-                                    funding_wallet_kind="main_wallet",
-                                )
-                                if distributor_amount > 0 and recipient_address
-                                else 0
-                            )
-                            + (
-                                build_planned_target_gas_units(
-                                    funding_asset_kind="native_eth",
-                                    funding_wallet_kind="main_wallet",
-                                )
-                                if direct_contract_native_eth_per_wallet > 0 and recipient_address
-                                else 0
-                            )
-                        )
-                        minimum_swap_stage_balance_eth = estimate_gas_fee_eth(
-                            (remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
-                            + remaining_route_deployment_gas_units
-                            + remaining_direct_target_gas_units
-                            + return_sweep_gas_units_per_wallet
-                        )
-                        balance_ready, balance_error = ensure_subwallet_eth_headroom(
-                            item,
-                            reason=f"swap into {token_out['symbol']} and finish the remaining automation",
-                            minimum_balance_eth=minimum_swap_stage_balance_eth,
-                        )
-                        if not balance_ready:
-                            abort_wallet_execution = True
-                            execution_failure_count += 1
-                            subwallet_errors.append(balance_error or f"Subwallet {native_symbol} headroom check failed")
-                            record_run_log(
-                                stage="top_up" if auto_top_up_enabled else "run",
-                                event="subwallet_eth_headroom_failed",
-                                status="failed",
-                                message=(
-                                    f"Subwallet {item['address']} does not have enough {native_symbol} to swap into "
-                                    f"{token_out['symbol']} and finish the remaining automation: {balance_error}"
-                                ),
-                                wallet_id=item["wallet_id"],
-                                wallet_address=item["address"],
-                                details={
-                                    "required_minimum_eth": format_decimal(minimum_swap_stage_balance_eth),
-                                    "token_symbol": token_out["symbol"],
-                                    "auto_top_up_enabled": auto_top_up_enabled,
-                                },
-                            )
-                            break
 
                         prepared_quote = None
                         quote_backend = None
@@ -4685,6 +4639,47 @@ def execute_wallet_run(
                                     },
                                 )
                                 continue
+
+                        remaining_route_deployment_gas_units = build_planned_remaining_deployment_gas_units(
+                            remaining_local_funding_target_count=remaining_route_count,
+                        )
+                        remaining_approval_gas_units = (
+                            ERC20_APPROVE_GAS_LIMIT
+                            if quote_backend and quote_backend not in approved_swap_backends
+                            else 0
+                        )
+                        minimum_swap_stage_balance_eth = estimate_gas_fee_eth(
+                            remaining_approval_gas_units
+                            + (remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT)
+                            + remaining_route_deployment_gas_units
+                            + return_sweep_gas_units_per_wallet
+                        )
+                        balance_ready, balance_error = ensure_subwallet_eth_headroom(
+                            item,
+                            reason=f"swap into {token_out['symbol']} and finish the remaining automation",
+                            minimum_balance_eth=minimum_swap_stage_balance_eth,
+                        )
+                        if not balance_ready:
+                            abort_wallet_execution = True
+                            execution_failure_count += 1
+                            subwallet_errors.append(balance_error or f"Subwallet {native_symbol} headroom check failed")
+                            record_run_log(
+                                stage="top_up" if auto_top_up_enabled else "run",
+                                event="subwallet_eth_headroom_failed",
+                                status="failed",
+                                message=(
+                                    f"Subwallet {item['address']} does not have enough {native_symbol} to swap into "
+                                    f"{token_out['symbol']} and finish the remaining automation: {balance_error}"
+                                ),
+                                wallet_id=item["wallet_id"],
+                                wallet_address=item["address"],
+                                details={
+                                    "required_minimum_eth": format_decimal(minimum_swap_stage_balance_eth),
+                                    "token_symbol": token_out["symbol"],
+                                    "auto_top_up_enabled": auto_top_up_enabled,
+                                },
+                            )
+                            break
 
                         if quote_backend and quote_backend not in approved_swap_backends and not abort_wallet_execution:
                             swap_runtime = get_swap_runtime_config(template_chain, backend=quote_backend)
@@ -5687,9 +5682,9 @@ def execute_wallet_run(
                         or item["wrap_transaction"]
                         or successful_swaps_for_wallet
                         or completed_deployments_for_wallet
-                        or item.get("return_sweep_transactions")
+                        or has_successful_return_sweep(item)
                     ) else "failed"
-                elif item.get("return_sweep_transactions"):
+                elif has_successful_return_sweep(item):
                     item["status"] = "returned"
                 elif completed_deployments_for_wallet or successful_swaps_for_wallet:
                     item["status"] = "completed"
@@ -5702,7 +5697,16 @@ def execute_wallet_run(
                 else:
                     item["status"] = item.get("status") or "created"
             except Exception as exc:
-                item["status"] = "failed"
+                recovery_sweep_attempted = False
+                recovery_sweep_error = None
+                if return_wallet_address and sub_wallet:
+                    recovery_sweep_attempted = True
+                    try:
+                        sweep_subwallet_leftovers(item, sub_wallet=sub_wallet)
+                    except Exception as sweep_exc:
+                        recovery_sweep_error = sweep_exc
+
+                item["status"] = "partial" if has_successful_return_sweep(item) else "failed"
                 execution_failure_count += 1
                 record_run_log(
                     stage="run",
@@ -5711,6 +5715,11 @@ def execute_wallet_run(
                     message=f"Subwallet automation failed for {item['address']}: {exc}",
                     wallet_id=item["wallet_id"],
                     wallet_address=item["address"],
+                    details={
+                        "return_wallet_address": return_wallet_address,
+                        "auto_return_sweep_attempted": recovery_sweep_attempted,
+                        "auto_return_sweep_error": str(recovery_sweep_error) if recovery_sweep_error else None,
+                    },
                 )
 
         if (

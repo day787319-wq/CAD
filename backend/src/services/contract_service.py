@@ -194,7 +194,7 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
         ],
         "status": "mapped" if status["token_config_registry_enabled"] else "unavailable",
     }
-    managed_token_distributor = {
+    batch_treasury_distributor = {
         "contract_name": "BatchTreasuryDistributor",
         "artifact_path": load_contract_artifact("BatchTreasuryDistributor")["artifact_path"] if status["managed_token_distributor_enabled"] else None,
         "status": (
@@ -263,14 +263,15 @@ def build_contract_execution_snapshot(*, main_wallet: dict, template: dict, sub_
         "main_wallet_registry": main_wallet_registry,
         "sub_wallet_registry": sub_wallet_registry,
         "token_config_registry": token_config_registry,
-        "managed_token_distributor": managed_token_distributor,
+        "managed_token_distributor": batch_treasury_distributor,
+        "batch_treasury_distributor": batch_treasury_distributor,
         "records": [
             item
             for item in (
                 main_wallet_registry,
                 sub_wallet_registry,
                 token_config_registry,
-                managed_token_distributor,
+                batch_treasury_distributor,
             )
             if item.get("artifact_path")
         ],
