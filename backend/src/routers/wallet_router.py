@@ -39,12 +39,14 @@ class SwapQuoteRequest(BaseModel):
     token_in: str
     token_out: str
     amount_in: str
+    chain: str | None = None
     fee_tier: int | None = None
     slippage_percent: str | None = None
 
 class BatchSwapQuoteRequest(BaseModel):
     wallet_id: str
     token_out: str
+    chain: str | None = None
     fee_tier: int | None = None
     slippage_percent: str | None = None
 
@@ -177,9 +179,9 @@ async def delete_wallet_run_endpoint(run_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("")
-async def list_wallets_endpoint():
+async def list_wallets_endpoint(chain: str | None = Query(default=None)):
     try:
-        return {"wallets": list_saved_wallets_service()}
+        return {"wallets": list_saved_wallets_service(chain=chain)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -219,6 +221,7 @@ async def get_swap_quote_endpoint(request: SwapQuoteRequest):
             request.token_in,
             request.token_out,
             request.amount_in,
+            chain=request.chain,
             fee_tier=request.fee_tier,
             slippage_percent=request.slippage_percent,
         )
@@ -236,6 +239,7 @@ async def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
         quote = quote_wallet_batch_swap_service(
             request.wallet_id,
             request.token_out,
+            chain=request.chain,
             fee_tier=request.fee_tier,
             slippage_percent=request.slippage_percent,
         )

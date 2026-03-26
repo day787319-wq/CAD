@@ -5882,7 +5882,7 @@ def list_wallet_records(parent_id: str):
     return [dict(row._asdict()) for row in rows.all()]
 
 
-def list_saved_wallets():
+def list_saved_wallets(chain: str | None = None):
     db.connect_keyspace()
     rows = db.session.execute("SELECT * FROM wallets")
     wallet_records = [dict(row._asdict()) for row in rows.all()]
@@ -5892,7 +5892,7 @@ def list_saved_wallets():
         if record.get("parent_id") in (None, "") and record.get("type") in {"main", "imported_private_key"}
     ]
     root_wallets.sort(key=lambda record: str(record.get("created_at") or ""), reverse=True)
-    return [serialize_wallet_record(record, include_token_holdings=True) for record in root_wallets]
+    return [serialize_wallet_record(record, chain=chain, include_token_holdings=True) for record in root_wallets]
 
 
 def list_wallet_runs(main_wallet_id: str | None = None):

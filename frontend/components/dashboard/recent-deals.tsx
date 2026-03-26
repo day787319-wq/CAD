@@ -2,7 +2,7 @@
 
 import { FormEvent, MouseEvent, useEffect, useState } from "react";
 import { Copy, Loader2, PlusCircle, ShieldCheck, Trash2, WalletCards } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { WalletRunHistory } from "@/components/dashboard/wallet-run-history";
@@ -154,6 +154,7 @@ function formatBalanceValue(value: string | number | null | undefined) {
 
 export function RecentDeals() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { locale, interpolate } = useI18n();
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(false);
@@ -171,7 +172,9 @@ export function RecentDeals() {
   const loadWallets = async () => {
     setLoadingWallets(true);
     try {
-      const response = await fetch(`${API_URL}/api/wallets`);
+      const chain = searchParams.get("chain");
+      const query = chain ? `?chain=${encodeURIComponent(chain)}` : "";
+      const response = await fetch(`${API_URL}/api/wallets${query}`);
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload.detail ?? copy.loadFailed[locale]);
@@ -187,7 +190,7 @@ export function RecentDeals() {
 
   useEffect(() => {
     loadWallets();
-  }, []);
+  }, [searchParams]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
