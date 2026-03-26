@@ -449,6 +449,13 @@ class ScyllaDB:
         payload.pop("payload_json", None)
         return payload
 
+    def _asset_monitor_snapshot_storage_key(self, address: str | None, chain: str | None) -> str | None:
+        normalized_address = (address or "").strip().lower()
+        if not normalized_address:
+            return None
+        normalized_chain = (chain or "ethereum_mainnet").strip().lower()
+        return f"{normalized_chain}:{normalized_address}"
+
     def _serialize_balance_rule_record(self, record: dict | None):
         if record is None:
             return None
@@ -759,6 +766,9 @@ class ScyllaDB:
         if updated_at is None:
             updated_at = datetime.utcnow()
         payload["updated_at"] = updated_at
+        storage_key = self._asset_monitor_snapshot_storage_key(payload.get("address"), payload.get("chain"))
+        if not storage_key:
+            raise ValueError("Snapshot address is required")
 
         if self.mode == "scylla":
             self.session.execute(
@@ -767,7 +777,7 @@ class ScyllaDB:
                     VALUES (%s, %s, %s)
                 """,
                 (
-                    payload["address"],
+                    storage_key,
                     updated_at,
                     json.dumps({**payload, "updated_at": updated_at.isoformat()}),
                 ),
@@ -776,16 +786,17 @@ class ScyllaDB:
 
         with self._asset_monitor_lock:
             local_payload = self._read_local_asset_monitor_payload()
-            local_payload["snapshots"][payload["address"].lower()] = {
+            local_payload["snapshots"][storage_key] = {
                 **payload,
                 "updated_at": updated_at.isoformat(),
             }
             self._write_local_asset_monitor_payload(local_payload)
-            return self._serialize_asset_monitor_record(local_payload["snapshots"][payload["address"].lower()])
+            return self._serialize_asset_monitor_record(local_payload["snapshots"][storage_key])
 
-    def list_asset_monitor_snapshots(self, addresses: list[str] | None = None):
+    def list_asset_monitor_snapshots(self, addresses: list[str] | None = None, chain: str | None = None):
         self.connect_keyspace()
         normalized_addresses = {address.lower() for address in (addresses or []) if address}
+        normalized_chain = (chain or "").strip().lower()
 
         if self.mode == "scylla":
             rows = self.session.execute("SELECT * FROM asset_monitor_snapshots")
@@ -795,8 +806,23 @@ class ScyllaDB:
                 payload = self._read_local_asset_monitor_payload()
             snapshots = [self._serialize_asset_monitor_record(record) for record in payload.get("snapshots", {}).values()]
 
+        if normalized_chain:
+            snapshots = [snapshot for snapshot in snapshots if str(snapshot.get("chain") or "").strip().lower() == normalized_chain]
         if normalized_addresses:
             snapshots = [snapshot for snapshot in snapshots if (snapshot.get("address") or "").lower() in normalized_addresses]
+
+        deduped_snapshots: dict[str, dict] = {}
+        for snapshot in snapshots:
+            dedupe_key = self._asset_monitor_snapshot_storage_key(snapshot.get("address"), snapshot.get("chain"))
+            if not dedupe_key:
+                continue
+            current = deduped_snapshots.get(dedupe_key)
+            current_updated_at = str(current.get("updated_at") or "") if current else ""
+            candidate_updated_at = str(snapshot.get("updated_at") or "")
+            if current is None or candidate_updated_at >= current_updated_at:
+                deduped_snapshots[dedupe_key] = snapshot
+
+        snapshots = list(deduped_snapshots.values())
         snapshots.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
         return snapshots
 
@@ -841,9 +867,10 @@ class ScyllaDB:
             self._write_local_asset_monitor_payload(local_payload)
             return self._serialize_asset_monitor_record(local_payload["events"][0])
 
-    def list_asset_monitor_events(self, addresses: list[str] | None = None, limit: int = 100):
+    def list_asset_monitor_events(self, addresses: list[str] | None = None, limit: int = 100, chain: str | None = None):
         self.connect_keyspace()
         normalized_addresses = {address.lower() for address in (addresses or []) if address}
+        normalized_chain = (chain or "").strip().lower()
 
         if self.mode == "scylla":
             rows = self.session.execute("SELECT * FROM asset_monitor_events")
@@ -853,6 +880,8 @@ class ScyllaDB:
                 payload = self._read_local_asset_monitor_payload()
             events = [self._serialize_asset_monitor_record(record) for record in payload.get("events", [])]
 
+        if normalized_chain:
+            events = [event for event in events if str(event.get("chain") or "").strip().lower() == normalized_chain]
         if normalized_addresses:
             events = [event for event in events if (event.get("address") or "").lower() in normalized_addresses]
         events.sort(key=lambda item: item.get("observed_at") or "", reverse=True)

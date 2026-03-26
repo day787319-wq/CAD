@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, MouseEvent, useEffect, useState } from "react";
+import { FormEvent, MouseEvent, useCallback, useEffect, useState } from "react";
 import { Copy, Loader2, PlusCircle, ShieldCheck, Trash2, WalletCards } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { API_URL } from "@/lib/api";
+import { getTemplateChainMeta, normalizeTemplateChain } from "@/lib/template";
 
 const copy = {
   title: { en: "Wallet Vault", zn: "钱包库", vn: "Kho ví" },
@@ -114,6 +115,7 @@ type ImportedWallet = {
   type?: string;
   address: string;
   chain?: string | null;
+  chain_label?: string | null;
   native_symbol?: string | null;
   wrapped_native_symbol?: string | null;
   eth_balance: number | null;
@@ -135,15 +137,18 @@ type ImportedWallet = {
 
 type ImportMode = "main" | "private_key";
 
-function walletSummary(wallet: ImportedWallet) {
-  return `${wallet.address} | ${wallet.id}`;
+async function readApiPayload(response: Response) {
+  const rawText = await response.text();
+  if (!rawText) return null;
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    return { detail: rawText };
+  }
 }
 
-function formatBalance(value: string | number | null | undefined, symbol: string) {
-  if (value === null || value === undefined) return `Unavailable ${symbol}`;
-  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
-  if (!Number.isFinite(numeric)) return `Unavailable ${symbol}`;
-  return `${numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${symbol}`;
+function walletSummary(wallet: ImportedWallet) {
+  return `${wallet.address} | ${wallet.id}`;
 }
 
 function formatBalanceValue(value: string | number | null | undefined) {
@@ -169,29 +174,32 @@ export function RecentDeals() {
   const [walletsError, setWalletsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("saved");
   const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null);
+  const preferredChain = normalizeTemplateChain(searchParams.get("chain"));
 
-  const loadWallets = async () => {
+  const loadWallets = useCallback(async () => {
     setLoadingWallets(true);
     try {
-      const chain = searchParams.get("chain");
-      const query = chain ? `?chain=${encodeURIComponent(chain)}` : "";
+      const query = preferredChain ? `?chain=${encodeURIComponent(preferredChain)}` : "";
       const response = await fetch(`${API_URL}/api/wallets${query}`);
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? copy.loadFailed[locale]);
+        throw new Error((payload as { detail?: string } | null)?.detail ?? copy.loadFailed[locale]);
       }
-      setSavedWallets(Array.isArray(payload.wallets) ? payload.wallets : []);
+      setSavedWallets(Array.isArray((payload as { wallets?: ImportedWallet[] } | null)?.wallets) ? (payload as { wallets: ImportedWallet[] }).wallets : []);
       setWalletsError(null);
+      return true;
     } catch (loadError) {
-      setWalletsError(loadError instanceof Error ? loadError.message : copy.loadFailed[locale]);
+      const message = loadError instanceof Error ? loadError.message : copy.loadFailed[locale];
+      setWalletsError(message);
+      throw new Error(message);
     } finally {
       setLoadingWallets(false);
     }
-  };
+  }, [locale, preferredChain]);
 
   useEffect(() => {
-    loadWallets();
-  }, [searchParams]);
+    void loadWallets();
+  }, [loadWallets]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -212,15 +220,23 @@ export function RecentDeals() {
           ),
         },
       );
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
 
       if (!response.ok) {
-        throw new Error(payload.detail ?? copy.importFailed[locale]);
+        throw new Error((payload as { detail?: string } | null)?.detail ?? copy.importFailed[locale]);
       }
 
-      setWallet(payload);
-      await loadWallets();
-      setActiveTab("saved");
+      const importedWallet = payload as ImportedWallet;
+      setWallet(importedWallet);
+      setActiveTab("latest");
+      try {
+        const refreshSucceeded = await loadWallets();
+        if (refreshSucceeded) {
+          setActiveTab("saved");
+        }
+      } catch (refreshError) {
+        setWalletsError(refreshError instanceof Error ? refreshError.message : copy.loadFailed[locale]);
+      }
       setSecretValue("");
       setIsOpen(false);
       toast({
@@ -248,12 +264,16 @@ export function RecentDeals() {
     });
   };
 
-  const openWalletPage = (walletId: string | undefined) => {
-    if (!walletId) {
+  const openWalletPage = (targetWallet: ImportedWallet | null | undefined) => {
+    if (!targetWallet?.id) {
       return;
     }
 
-    router.push(`/wallets/${walletId}`);
+    const targetChain = preferredChain ?? normalizeTemplateChain(targetWallet.chain);
+    const target = targetChain
+      ? `/wallets/${targetWallet.id}?chain=${encodeURIComponent(targetChain)}`
+      : `/wallets/${targetWallet.id}`;
+    router.push(target);
   };
 
   const handleDeleteWallet = async (event: MouseEvent<HTMLButtonElement>, walletToDelete: ImportedWallet) => {
@@ -267,9 +287,9 @@ export function RecentDeals() {
       const response = await fetch(`${API_URL}/api/wallets/${walletToDelete.id}`, {
         method: "DELETE",
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? copy.deleteFailed[locale]);
+        throw new Error((payload as { detail?: string } | null)?.detail ?? copy.deleteFailed[locale]);
       }
 
       if (wallet?.id === walletToDelete.id) {
@@ -403,17 +423,33 @@ export function RecentDeals() {
           ) : savedWallets.length > 0 ? (
             <div className="space-y-3">
               {savedWallets.map((savedWallet) => {
-                const summaryTokenHoldings = savedWallet.token_holdings ?? [];
+                const walletChain = normalizeTemplateChain(savedWallet.chain);
+                const chainMeta = walletChain ? getTemplateChainMeta(walletChain) : null;
+                const chainLabel = savedWallet.chain_label ?? chainMeta?.label ?? null;
+                const nativeLabel = savedWallet.native_symbol
+                  ? locale === "en"
+                    ? `${savedWallet.native_symbol} balance`
+                    : locale === "zn"
+                      ? `${savedWallet.native_symbol} 余额`
+                      : `Số dư ${savedWallet.native_symbol}`
+                  : copy.nativeBalance[locale];
+                const wrappedLabel = savedWallet.wrapped_native_symbol
+                  ? locale === "en"
+                    ? `${savedWallet.wrapped_native_symbol} balance`
+                    : locale === "zn"
+                      ? `${savedWallet.wrapped_native_symbol} 余额`
+                      : `Số dư ${savedWallet.wrapped_native_symbol}`
+                  : copy.wrappedBalance[locale];
                 return (
                   <div
                     key={savedWallet.id}
                     role="button"
                     tabIndex={0}
-                    onClick={() => openWalletPage(savedWallet.id)}
+                    onClick={() => openWalletPage(savedWallet)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        openWalletPage(savedWallet.id);
+                        openWalletPage(savedWallet);
                       }
                     }}
                     className="rounded-2xl border border-border bg-secondary/30 p-4 transition hover:border-accent/50 hover:bg-secondary/45 focus:outline-none focus:ring-2 focus:ring-accent/40"
@@ -428,6 +464,7 @@ export function RecentDeals() {
                           <p className="text-sm font-semibold text-foreground">
                             {savedWallet.type === "imported_private_key" ? copy.privateKeyType[locale] : copy.mainType[locale]}
                           </p>
+                          {chainLabel ? <p className="mt-1 text-[11px] uppercase tracking-wide text-sky-700">{chainLabel}</p> : null}
                           <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{savedWallet.address}</p>
                           <p className="mt-1 break-all text-xs text-muted-foreground">{savedWallet.id}</p>
                         </div>
@@ -452,26 +489,15 @@ export function RecentDeals() {
                       </div>
                     </div>
 
-                    <div className={`mt-4 grid gap-3 ${summaryTokenHoldings.length > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy.nativeBalance[locale]}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{nativeLabel}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.eth_balance)}</p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy.wrappedBalance[locale]}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{wrappedLabel}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.weth_balance)}</p>
                       </div>
-                      {summaryTokenHoldings.map((holding) => (
-                        <div key={holding.address} className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{holding.symbol}</p>
-                          <p className="mt-1 text-sm font-semibold text-foreground">
-                            {holding.error ? `Unavailable ${holding.symbol}` : formatBalance(holding.balance, holding.symbol)}
-                          </p>
-                          {holding.chain_label ? (
-                            <p className="mt-1 text-[11px] text-muted-foreground">{holding.chain_label}</p>
-                          ) : null}
-                        </div>
-                      ))}
                     </div>
                   </div>
                 );
@@ -489,11 +515,11 @@ export function RecentDeals() {
             <div
               role="button"
               tabIndex={0}
-              onClick={() => openWalletPage(wallet.id)}
+              onClick={() => openWalletPage(wallet)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  openWalletPage(wallet.id);
+                  openWalletPage(wallet);
                 }
               }}
               className="rounded-2xl border border-border bg-secondary/30 p-4 transition hover:border-accent/50 hover:bg-secondary/45 focus:outline-none focus:ring-2 focus:ring-accent/40"
@@ -506,6 +532,7 @@ export function RecentDeals() {
 
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-foreground">{copy.importedTitle[locale]}</p>
+                    {wallet.chain_label ? <p className="mt-1 text-[11px] uppercase tracking-wide text-sky-700">{wallet.chain_label}</p> : null}
                     <p className="truncate font-mono text-xs text-muted-foreground">{walletSummary(wallet)}</p>
                   </div>
                 </div>
@@ -526,6 +553,33 @@ export function RecentDeals() {
                     {deletingWalletId === wallet.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                     {copy.deleteWallet[locale]}
                   </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    {wallet.native_symbol
+                      ? locale === "en"
+                        ? `${wallet.native_symbol} balance`
+                        : locale === "zn"
+                          ? `${wallet.native_symbol} 余额`
+                          : `Số dư ${wallet.native_symbol}`
+                      : copy.nativeBalance[locale]}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(wallet.eth_balance)}</p>
+                </div>
+                <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    {wallet.wrapped_native_symbol
+                      ? locale === "en"
+                        ? `${wallet.wrapped_native_symbol} balance`
+                        : locale === "zn"
+                          ? `${wallet.wrapped_native_symbol} 余额`
+                          : `Số dư ${wallet.wrapped_native_symbol}`
+                      : copy.wrappedBalance[locale]}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(wallet.weth_balance)}</p>
                 </div>
               </div>
             </div>

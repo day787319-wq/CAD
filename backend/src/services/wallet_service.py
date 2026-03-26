@@ -34,6 +34,7 @@ from src.services.template_chain_config import (
     TEMPLATE_CHAIN_POLYGON,
     TEMPLATE_CHAIN_XLAYER,
     get_template_chain_config,
+    get_template_chain_tokens,
     get_template_chain_swap_backends,
     normalize_template_chain,
 )
@@ -89,7 +90,16 @@ CHAIN_TRUSTWALLET_SLUG = {
     TEMPLATE_CHAIN_POLYGON: "polygon",
     TEMPLATE_CHAIN_XLAYER: "xlayer",
 }
-WALLET_SUMMARY_TOKEN_SYMBOLS = {}
+CONFIGURABLE_EVM_TEMPLATE_CHAINS = [
+    TEMPLATE_CHAIN_ETHEREUM,
+    TEMPLATE_CHAIN_BNB,
+    TEMPLATE_CHAIN_ARBITRUM,
+    TEMPLATE_CHAIN_AVALANCHE,
+    TEMPLATE_CHAIN_BASE,
+    TEMPLATE_CHAIN_OPTIMISM,
+    TEMPLATE_CHAIN_POLYGON,
+    TEMPLATE_CHAIN_XLAYER,
+]
 WETH_ABI = [
     {
         "constant": True,
@@ -752,6 +762,41 @@ def get_chain_runtime_config(chain: str | None = None) -> dict:
     }
 
 
+def list_configured_template_chains(*, include_unconfigured: bool = False) -> list[str]:
+    configured_chains: list[str] = []
+    for chain in CONFIGURABLE_EVM_TEMPLATE_CHAINS:
+        runtime = get_chain_runtime_config(chain)
+        if include_unconfigured or runtime["rpc_url"]:
+            configured_chains.append(chain)
+    return configured_chains
+
+
+@lru_cache(maxsize=32)
+def get_wallet_summary_tracked_tokens(chain: str) -> list[dict]:
+    normalized_chain = normalize_template_chain(chain)
+    tracked_tokens: list[dict] = []
+    seen_addresses: set[str] = set()
+
+    for token in get_template_chain_tokens(normalized_chain, include_wrapped_native=False):
+        token_address = str(token.get("address") or "").strip()
+        if not Web3.is_address(token_address):
+            continue
+        checksum_address = Web3.to_checksum_address(token_address)
+        if checksum_address.lower() in seen_addresses:
+            continue
+        seen_addresses.add(checksum_address.lower())
+        tracked_tokens.append(
+            {
+                "symbol": token.get("symbol") or checksum_address[-6:].upper(),
+                "name": token.get("name") or token.get("symbol") or checksum_address[-6:].upper(),
+                "address": checksum_address,
+                "decimals": token.get("decimals"),
+            }
+        )
+
+    return tracked_tokens
+
+
 def get_swap_runtime_config(chain: str | None = None, backend: str | None = None) -> dict:
     runtimes = get_swap_runtime_configs(chain)
     if backend is None:
@@ -968,6 +1013,7 @@ def get_wallet_balances(address: str, chain: str | None = None) -> dict:
     gas_price_gwei = None
     payload = {
         'chain': runtime["chain"],
+        'chain_label': runtime["chain_label"],
         'native_symbol': runtime["native_symbol"],
         'wrapped_native_symbol': runtime["wrapped_native_symbol"],
         'eth_balance': None,
@@ -1013,59 +1059,66 @@ def get_wallet_balances(address: str, chain: str | None = None) -> dict:
 
 
 def get_wallet_summary_token_holdings(address: str, chain: str | None = None) -> list[dict]:
-    normalized_chain = normalize_template_chain(chain)
     owner_address = Web3.to_checksum_address(address)
     token_holdings: list[dict] = []
     if chain is None:
-        source_chains = [normalized_chain]
-        for configured_chain in WALLET_SUMMARY_TOKEN_SYMBOLS:
-            if configured_chain not in source_chains:
-                source_chains.append(configured_chain)
+        source_chains = list_configured_template_chains()
     else:
-        source_chains = [normalized_chain]
+        source_chains = [normalize_template_chain(chain)]
 
     for source_chain in source_chains:
-        identifiers = WALLET_SUMMARY_TOKEN_SYMBOLS.get(source_chain, [])
-        if not identifiers:
+        tracked_tokens = get_wallet_summary_tracked_tokens(source_chain)
+        if not tracked_tokens:
             continue
 
         runtime = get_chain_runtime_config(source_chain)
         web3_client = get_web3(source_chain)
-        rpc_error = None
-        if not web3_client:
-            rpc_error = (
-                f"{runtime['rpc_env_name']} is not configured"
-                if runtime["rpc_env_name"]
-                else f"{runtime['chain_label']} RPC is not configured"
-            )
-        elif not web3_client.is_connected():
-            rpc_error = f"{runtime['chain_label']} RPC is unavailable"
+        if not web3_client or not web3_client.is_connected():
+            continue
 
-        for identifier in identifiers:
-            token = resolve_token(identifier, source_chain)
-            entry = {
-                "symbol": token["symbol"],
-                "name": token["name"],
-                "address": Web3.to_checksum_address(token["address"]),
-                "decimals": int(token["decimals"]),
-                "raw_balance": None,
-                "balance": None,
-                "error": rpc_error,
-                "chain": source_chain,
-                "chain_label": runtime["chain_label"],
-            }
+        for token in tracked_tokens:
+            token_contract = web3_client.eth.contract(address=token["address"], abi=ERC20_ABI)
+            try:
+                raw_balance = int(token_contract.functions.balanceOf(owner_address).call())
+            except Exception:
+                continue
 
-            if rpc_error is None:
+            if raw_balance <= 0:
+                continue
+
+            decimals = token.get("decimals")
+            symbol = token.get("symbol") or token["address"][-6:].upper()
+            name = token.get("name") or symbol
+            if decimals is None:
                 try:
-                    token_contract = web3_client.eth.contract(address=entry["address"], abi=ERC20_ABI)
-                    raw_balance = int(token_contract.functions.balanceOf(owner_address).call())
-                    entry["raw_balance"] = str(raw_balance)
-                    entry["balance"] = format_decimal(token_units_to_decimal(raw_balance, entry["decimals"]))
-                except Exception as exc:
-                    entry["error"] = str(exc)
+                    metadata = get_onchain_token_metadata(token["address"], source_chain)
+                except Exception:
+                    continue
+                decimals = metadata["decimals"]
+                symbol = metadata.get("symbol") or symbol
+                name = metadata.get("name") or name
 
-            token_holdings.append(entry)
+            token_holdings.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "address": token["address"],
+                    "decimals": int(decimals),
+                    "raw_balance": str(raw_balance),
+                    "balance": format_decimal(token_units_to_decimal(raw_balance, int(decimals))),
+                    "error": None,
+                    "chain": source_chain,
+                    "chain_label": runtime["chain_label"],
+                }
+            )
 
+    token_holdings.sort(
+        key=lambda item: (
+            str(item.get("chain_label") or ""),
+            str(item.get("symbol") or ""),
+            str(item.get("address") or ""),
+        )
+    )
     return token_holdings
 
 
@@ -2500,7 +2553,7 @@ def transfer_native_eth_from_wallet(
             )["submitted_gas_price_wei"]
         )
     )
-    transfer_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(tx_stage))
+    transfer_wait_timeout = int(wait_timeout or DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS)
     recipient_balance_before_wei = int(web3_client.eth.get_balance(recipient))
     try:
         estimated_gas = web3_client.eth.estimate_gas({
@@ -2589,7 +2642,7 @@ def transfer_token_from_wallet(
             )["submitted_gas_price_wei"]
         )
     )
-    transfer_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(tx_stage))
+    transfer_wait_timeout = int(wait_timeout or DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS)
     token_decimals = int(resolve_token(token_address, chain)["decimals"])
     recipient_balance_before = int(token_contract.functions.balanceOf(recipient).call())
 
@@ -3651,18 +3704,31 @@ def execute_wallet_run(
             "error": None,
         }
 
-    def build_planned_wallet_deployment_gas_units(*, local_funding_target_count: int, total_funding_target_count: int) -> int:
+    def build_planned_wallet_deployment_stage_gas_units(
+        *,
+        local_funding_target_count: int,
+        total_funding_target_count: int,
+    ) -> dict[str, int]:
         if total_funding_target_count <= 0:
-            return 0
-        return (
-            BATCH_TREASURY_DISTRIBUTOR_DEPLOY_GAS_LIMIT
-            + (ERC20_TRANSFER_GAS_LIMIT * local_funding_target_count)
-            + (
+            return {}
+        return {
+            LEGACY_GAS_STAGE_DEPLOY_TREASURY: BATCH_TREASURY_DISTRIBUTOR_DEPLOY_GAS_LIMIT,
+            LEGACY_GAS_STAGE_FUND_TREASURY: ERC20_TRANSFER_GAS_LIMIT * max(local_funding_target_count, 0),
+            LEGACY_GAS_STAGE_BATCH_SEND: (
                 BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT
                 + (BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_PER_ENTRY_GAS_LIMIT * total_funding_target_count)
                 if test_auto_execute_after_funding and total_funding_target_count > 0
                 else 0
-            )
+            ),
+        }
+
+    def build_planned_wallet_deployment_gas_units(*, local_funding_target_count: int, total_funding_target_count: int) -> int:
+        return sum(
+            int(value or 0)
+            for value in build_planned_wallet_deployment_stage_gas_units(
+                local_funding_target_count=local_funding_target_count,
+                total_funding_target_count=total_funding_target_count,
+            ).values()
         )
 
     direct_main_wallet_funding_target_count = (
@@ -3670,12 +3736,20 @@ def execute_wallet_run(
         + (1 if direct_contract_native_eth_per_wallet > 0 and recipient_address else 0)
     )
 
-    def build_planned_remaining_deployment_gas_units(*, remaining_local_funding_target_count: int) -> int:
+    def build_planned_remaining_deployment_stage_gas_units(*, remaining_local_funding_target_count: int) -> dict[str, int]:
         if not should_execute_deployment_flow:
-            return 0
-        return build_planned_wallet_deployment_gas_units(
+            return {}
+        return build_planned_wallet_deployment_stage_gas_units(
             local_funding_target_count=remaining_local_funding_target_count,
             total_funding_target_count=remaining_local_funding_target_count + direct_main_wallet_funding_target_count,
+        )
+
+    def build_planned_remaining_deployment_gas_units(*, remaining_local_funding_target_count: int) -> int:
+        return sum(
+            int(value or 0)
+            for value in build_planned_remaining_deployment_stage_gas_units(
+                remaining_local_funding_target_count=remaining_local_funding_target_count,
+            ).values()
         )
 
     needs_onchain_funding = per_wallet_eth > 0
@@ -3752,6 +3826,7 @@ def execute_wallet_run(
             "main_wallet_id": main_id,
             "main_wallet_address": main_wallet["address"],
             "main_wallet_type": main_wallet["type"],
+            "chain": template_chain,
             "template_id": template["id"],
             "template_name": template["name"],
             "contract_count": count,
@@ -3908,7 +3983,7 @@ def execute_wallet_run(
             wait_for_transaction_success(
                 web3_client,
                 top_up_hash,
-                timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_TOP_UP),
+                timeout=DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS,
             )
             balance_after = get_address_native_balance_decimal(item["address"])
             top_up_record["status"] = "confirmed"
@@ -4673,7 +4748,7 @@ def execute_wallet_run(
             )
 
         planned_route_count = len(stablecoin_routes)
-        planned_route_deployment_gas_units = build_planned_remaining_deployment_gas_units(
+        planned_route_deployment_stage_gas_units = build_planned_remaining_deployment_stage_gas_units(
             remaining_local_funding_target_count=planned_route_count,
         )
 
@@ -4694,7 +4769,7 @@ def execute_wallet_run(
                     wait_for_transaction_success(
                         web3_client,
                         eth_transfer["tx_hash"],
-                        timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_FUND_SUBWALLET),
+                        timeout=DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS,
                     )
                     eth_transfer["status"] = "confirmed"
                     item["status"] = "funded"
@@ -4925,8 +5000,8 @@ def execute_wallet_run(
                 planned_remaining_execution_stage_gas_units = {
                     LEGACY_GAS_STAGE_APPROVAL: ERC20_APPROVE_GAS_LIMIT if stablecoin_routes else 0,
                     LEGACY_GAS_STAGE_SWAP: planned_route_count * UNISWAP_V3_SWAP_GAS_LIMIT,
-                    LEGACY_GAS_STAGE_DEPLOY_TREASURY: planned_route_deployment_gas_units,
                     LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                    **planned_route_deployment_stage_gas_units,
                 }
                 if sum(int(value or 0) for value in planned_remaining_execution_stage_gas_units.values()) > 0:
                     minimum_post_wrap_balance_eth = estimate_multi_stage_gas_fee_eth(planned_remaining_execution_stage_gas_units)
@@ -5020,7 +5095,7 @@ def execute_wallet_run(
                                 )
                                 continue
 
-                        remaining_route_deployment_gas_units = build_planned_remaining_deployment_gas_units(
+                        remaining_route_deployment_stage_gas_units = build_planned_remaining_deployment_stage_gas_units(
                             remaining_local_funding_target_count=remaining_route_count,
                         )
                         remaining_approval_gas_units = (
@@ -5032,8 +5107,8 @@ def execute_wallet_run(
                             {
                                 LEGACY_GAS_STAGE_APPROVAL: remaining_approval_gas_units,
                                 LEGACY_GAS_STAGE_SWAP: remaining_route_count * UNISWAP_V3_SWAP_GAS_LIMIT,
-                                LEGACY_GAS_STAGE_DEPLOY_TREASURY: remaining_route_deployment_gas_units,
                                 LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                                **remaining_route_deployment_stage_gas_units,
                             }
                         )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
@@ -5556,14 +5631,14 @@ def execute_wallet_run(
                     total_funding_target_count = len(deployment_targets)
                     deploy_attempt_used = 0
                     try:
-                        planned_wallet_deployment_gas_units = build_planned_wallet_deployment_gas_units(
+                        planned_wallet_deployment_stage_gas_units = build_planned_wallet_deployment_stage_gas_units(
                             local_funding_target_count=local_funding_target_count,
                             total_funding_target_count=total_funding_target_count,
                         )
                         minimum_deployment_balance_eth = estimate_multi_stage_gas_fee_eth(
                             {
-                                LEGACY_GAS_STAGE_DEPLOY_TREASURY: planned_wallet_deployment_gas_units,
                                 LEGACY_GAS_STAGE_RETURN_SWEEP: return_sweep_gas_units_per_wallet,
+                                **planned_wallet_deployment_stage_gas_units,
                             }
                         )
                         balance_ready, balance_error = ensure_subwallet_eth_headroom(
@@ -6360,7 +6435,14 @@ def list_saved_wallets(chain: str | None = None):
         if record.get("parent_id") in (None, "") and record.get("type") in {"main", "imported_private_key"}
     ]
     root_wallets.sort(key=lambda record: str(record.get("created_at") or ""), reverse=True)
-    return [serialize_wallet_record(record, chain=chain, include_token_holdings=True) for record in root_wallets]
+    return [
+        serialize_wallet_record(
+            record,
+            chain=chain or record.get("chain"),
+            include_token_holdings=False,
+        )
+        for record in root_wallets
+    ]
 
 
 def list_wallet_runs(main_wallet_id: str | None = None):
@@ -6425,6 +6507,7 @@ def serialize_wallet_record(
     *,
     chain: str | None = None,
     include_token_holdings: bool = False,
+    token_holdings_chain: str | None = None,
 ):
     payload = {
         'id': record['id'],
@@ -6435,7 +6518,7 @@ def serialize_wallet_record(
         **get_wallet_balances(record['address'], chain=chain),
     }
     if include_token_holdings:
-        payload['token_holdings'] = get_wallet_summary_token_holdings(record['address'], chain=chain)
+        payload['token_holdings'] = get_wallet_summary_token_holdings(record['address'], chain=token_holdings_chain)
     resolved_index = index if index is not None else _parse_derivation_index(record.get("derivation_index"))
     if resolved_index is not None:
         payload['index'] = resolved_index

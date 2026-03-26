@@ -373,7 +373,7 @@ const logDetailLabelMap: Record<string, Record<SupportedLocale, string>> = {
   per_wallet_local_wrap_weth: { en: "Per Wallet Local Wrap WETH", zn: "每钱包本地包装 WETH", vn: "WETH wrap cục bộ mỗi ví" },
   swap_budget_weth_per_wallet: { en: "Swap Budget WETH Per Wallet", zn: "每钱包 WETH 兑换预算", vn: "Ngân sách swap WETH mỗi ví" },
   direct_contract_weth_per_wallet: { en: "Direct Contract WETH Per Wallet", zn: "每钱包合约 WETH", vn: "WETH hợp đồng mỗi ví" },
-  test_auto_execute_after_funding: { en: "Test Auto Execute After Funding", zn: "注资后测试自动执行", vn: "Tự chạy thử sau cấp vốn" },
+  test_auto_execute_after_funding: { en: "Testing Batch Send After Funding", zn: "注资后测试批量发送", vn: "Batch send thử nghiệm sau cấp vốn" },
   total_eth_deducted: { en: "Total ETH Deducted", zn: "扣除 ETH 总额", vn: "Tổng ETH đã trừ" },
   total_eth_required_with_fees: { en: "Total ETH Required With Fees", zn: "含手续费所需 ETH 总额", vn: "Tổng ETH cần gồm phí" },
   main_wallet_network_fee_eth: { en: "Main Wallet Network Fee ETH", zn: "主钱包网络费 ETH", vn: "Phí mạng ETH ví chính" },
@@ -954,8 +954,8 @@ function getRunProgressSteps(run: WalletRun, effectiveRunStatus: string, locale:
   const returnSweepCompleted = Math.max(countReturnSweepTransactions(run), terminalRunCounters.returnSweepSuccessCount);
   const returnSweepFailed = Math.max(countReturnSweepFailures(run), terminalRunCounters.returnSweepFailureCount, returnSweepLoggedFailures);
   const returnSweepAttempts = Math.max(countReturnSweepAttempts(run), returnSweepCompleted + returnSweepFailed);
-  const expectedReturnSweep = isTerminalRunStatus(effectiveRunStatus) && returnSweepAttempts === 0
-    ? 0
+  const expectedReturnSweep = normalizeStatus(effectiveRunStatus) === "completed"
+    ? returnSweepAttempts
     : Math.max(plannedReturnSweep, returnSweepAttempts);
 
   return [
@@ -2320,7 +2320,7 @@ export function WalletRunHistory({
                               <div className="mt-4 space-y-3">
                                 {(subWallet.deployed_contracts?.length ? subWallet.deployed_contracts : [subWallet.deployed_contract]).filter(Boolean).map((contract, index) => (
                                   <div key={`${subWallet.wallet_id}-deployed-contract-${index}`} className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
-                                    <p className="text-sm font-semibold text-foreground">{contract?.contract_name ?? "ManagedTokenDistributor"}</p>
+                                    <p className="text-sm font-semibold text-foreground">{contract?.contract_name ?? "BatchTreasuryDistributor"}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
                                       {contract?.amount
                                         ? `${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address))} to ${shortValue(contract.recipient_address ?? "", 10, 6)}`

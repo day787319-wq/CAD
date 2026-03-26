@@ -41,6 +41,7 @@ type AssetMonitorTarget = {
 type AssetMonitorSnapshot = AssetMonitorTarget & {
   updated_at?: string | null;
   chain?: string | null;
+  chain_label?: string | null;
   chain_id?: number | null;
   block_number?: number | null;
   status?: string | null;
@@ -73,7 +74,10 @@ type WalletAssetMonitoring = {
   synced_at?: string | null;
   latest_block?: number | null;
   chain?: string | null;
+  chain_label?: string | null;
   chain_id?: number | null;
+  native_symbol?: string | null;
+  wrapped_native_symbol?: string | null;
   poll_interval_seconds?: number | null;
   target_count: number;
   tracked_token_count: number;
@@ -163,7 +167,15 @@ function SummaryCard({
   );
 }
 
-export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: string; enabled?: boolean }) {
+export function WalletAssetMonitoring({
+  walletId,
+  enabled = true,
+  chain,
+}: {
+  walletId: string;
+  enabled?: boolean;
+  chain?: string | null;
+}) {
   const { locale, t } = useI18n();
   const [monitoring, setMonitoring] = useState<WalletAssetMonitoring | null>(null);
   const [loading, setLoading] = useState(true);
@@ -180,7 +192,14 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
     }
 
     try {
-      const response = await fetch(buildApiUrl(`/api/monitoring/wallet/${walletId}?sync=true&limit=20`), {
+      const query = new URLSearchParams({
+        sync: "true",
+        limit: "20",
+      });
+      if (chain) {
+        query.set("chain", chain);
+      }
+      const response = await fetch(buildApiUrl(`/api/monitoring/wallet/${walletId}?${query.toString()}`), {
         cache: "no-store",
       });
       const payload = await response.json();
@@ -201,7 +220,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
     if (!enabled) return;
     setLoading(true);
     void fetchMonitoring(false);
-  }, [walletId, enabled]);
+  }, [walletId, enabled, chain]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -213,14 +232,17 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [walletId, enabled, monitoring?.poll_interval_seconds]);
+  }, [walletId, enabled, chain, monitoring?.poll_interval_seconds]);
 
   if (!enabled) return null;
 
   const snapshots = monitoring?.snapshots ?? [];
   const events = monitoring?.events ?? [];
   const workerStatus = monitoring?.worker?.status ?? monitoring?.status ?? "idle";
-  const trackedAssetList = monitoring?.tracked_tokens?.map((token) => token.symbol).join(", ") || "WETH, USDC, USDT, DAI";
+  const trackedAssetList =
+    monitoring?.tracked_tokens?.map((token) => token.symbol).join(", ") ||
+    monitoring?.wrapped_native_symbol ||
+    t("Unavailable");
 
   return (
     <div className="space-y-6">
@@ -235,10 +257,10 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
             {locale === "en"
-              ? "The backend watches wallet, return, recipient, and ManagedTokenDistributor addresses block-by-block, stores balance snapshots, and records asset deltas in the database."
+              ? "The backend watches wallet, return, recipient, and BatchTreasuryDistributor addresses on the selected chain, stores balance snapshots, and records asset deltas in the database."
               : locale === "zn"
-                ? "后端会逐区块监控钱包、返还地址、接收地址以及 ManagedTokenDistributor 地址，保存余额快照并在数据库中记录资产变化。"
-                : "Backend theo dõi từng block cho ví, địa chỉ hoàn trả, địa chỉ nhận và ManagedTokenDistributor, lưu snapshot số dư và ghi nhận biến động tài sản vào cơ sở dữ liệu."}
+                ? "后端会在所选链上逐区块监控钱包、返还地址、接收地址以及 BatchTreasuryDistributor 地址，保存余额快照并在数据库中记录资产变化。"
+                : "Backend theo dõi từng block trên chain đã chọn cho ví, địa chỉ hoàn trả, địa chỉ nhận và BatchTreasuryDistributor, lưu snapshot số dư và ghi nhận biến động tài sản vào cơ sở dữ liệu."}
           </p>
         </div>
 
@@ -270,7 +292,11 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
             <SummaryCard
               label={locale === "en" ? "Latest block" : locale === "zn" ? "最新区块" : "Khối gần nhất"}
               value={monitoring.latest_block ? monitoring.latest_block.toLocaleString() : t("Unavailable")}
-              hint={monitoring.chain_id ? `Chain ID ${monitoring.chain_id}` : locale === "en" ? "Ethereum mainnet" : locale === "zn" ? "以太坊主网" : "Ethereum mainnet"}
+              hint={
+                monitoring.chain_id
+                  ? `${monitoring.chain_label ?? monitoring.chain ?? t("Unavailable")} · Chain ID ${monitoring.chain_id}`
+                  : monitoring.chain_label ?? monitoring.chain ?? t("Unavailable")
+              }
             />
             <SummaryCard label={locale === "en" ? "Watched addresses" : locale === "zn" ? "监控地址" : "Địa chỉ theo dõi"} value={`${monitoring.target_count}`} hint={locale === "en" ? "Main, sub, contract, return, and recipient scope" : locale === "zn" ? "主钱包、子钱包、合约、返还地址和接收地址范围" : "Phạm vi ví chính, ví con, hợp đồng, địa chỉ hoàn trả và nhận"} />
             <SummaryCard label={locale === "en" ? "Tracked assets" : locale === "zn" ? "跟踪资产" : "Tài sản theo dõi"} value={`${monitoring.tracked_token_count + 1}`} hint={trackedAssetList} />
@@ -320,6 +346,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-foreground">{snapshot.label}</p>
+                          {snapshot.chain_label ? <p className="mt-1 text-[11px] uppercase tracking-wide text-sky-700">{snapshot.chain_label}</p> : null}
                           <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{snapshot.address}</p>
                         </div>
                         <div className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium capitalize ${statusTone(snapshot.status)}`}>
@@ -342,7 +369,7 @@ export function WalletAssetMonitoring({ walletId, enabled = true }: { walletId: 
                         <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-3">
                           <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Native" : locale === "zn" ? "原生资产" : "Tài sản gốc"}</p>
                           <p className="mt-1 text-sm font-semibold text-foreground">
-                            {formatBalance(snapshot.native_balance?.balance, snapshot.native_balance?.symbol ?? "ETH")}
+                            {formatBalance(snapshot.native_balance?.balance, snapshot.native_balance?.symbol ?? monitoring.native_symbol ?? "NATIVE")}
                           </p>
                         </div>
                         <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-3">

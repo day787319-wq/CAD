@@ -43,6 +43,19 @@ export type TemplateChain =
   | "polygon"
   | "xlayer";
 
+const TEMPLATE_CHAIN_ALIASES: Record<string, TemplateChain> = {
+  ethereum: "ethereum_mainnet",
+  mainnet: "ethereum_mainnet",
+  eth: "ethereum_mainnet",
+  bsc: "bnb",
+  arb: "arbitrum",
+  avax: "avalanche",
+  op: "optimism",
+  matic: "polygon",
+  pol: "polygon",
+  x_layer: "xlayer",
+};
+
 export const TEMPLATE_CHAIN_META: Record<
   TemplateChain,
   {
@@ -98,9 +111,16 @@ export const TEMPLATE_CHAIN_META: Record<
     label: "X Layer",
     nativeSymbol: "OKB",
     wrappedNativeSymbol: "WOKB",
-    quoteSupported: true,
+    quoteSupported: false,
   },
 };
+
+export function normalizeTemplateChain(value: string | null | undefined): TemplateChain | null {
+  const normalized = `${value ?? ""}`.trim().toLowerCase().replace(/-/g, "_").replace(/ /g, "_");
+  if (!normalized) return null;
+  const candidate = (TEMPLATE_CHAIN_ALIASES[normalized] ?? normalized) as TemplateChain;
+  return candidate in TEMPLATE_CHAIN_META ? candidate : null;
+}
 
 export const TEMPLATE_CHAIN_CAVEATS: Record<TemplateChain, string[]> = {
   ethereum_mainnet: [

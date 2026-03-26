@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { MouseEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Coins, Copy, Fuel, Loader2, Pencil, PlusCircle, RefreshCw, Rocket, Trash2, WalletCards } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { Section } from "@/app/page";
 import { Header } from "@/components/dashboard/header";
 import { useI18n } from "@/components/i18n-provider";
@@ -28,6 +28,7 @@ import {
   formatRelativeTimestamp,
   getTemplateChainMeta,
   getStablecoinDistributionRows,
+  normalizeTemplateChain,
   shortAddress,
 } from "@/lib/template";
 import type { SupportedLocale } from "@/lib/i18n";
@@ -70,6 +71,17 @@ function formatTokenBalance(value: string | number | null | undefined, symbol: s
 
 function localeText(locale: SupportedLocale, text: Record<SupportedLocale, string>) {
   return text[locale];
+}
+
+async function readApiPayload(response: Response) {
+  const rawText = await response.text();
+  if (!rawText) return null;
+
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    return { detail: rawText };
+  }
 }
 
 function getChainUiContext(
@@ -241,6 +253,13 @@ function estimateGasFeeDisplay(
   return formatCryptoMetric((gasUnits * gasPrice) / 1_000_000_000, symbol);
 }
 
+function getTestAutoBatchSendEnabled(
+  value: Pick<Template, "test_auto_execute_after_funding" | "test_auto_batch_send_after_funding"> |
+    Pick<TemplateWalletSupportPreview, "test_auto_execute_after_funding" | "test_auto_batch_send_after_funding">,
+) {
+  return value.test_auto_batch_send_after_funding ?? value.test_auto_execute_after_funding ?? false;
+}
+
 function getDistributorAutomationSummary(template: Template, locale: SupportedLocale) {
   const { nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, null, locale);
   const recipientConfigured = Boolean(template.recipient_address);
@@ -259,21 +278,21 @@ function getDistributorAutomationSummary(template: Template, locale: SupportedLo
       }),
       description: hasSwapRoutes && (distributorAmount > 0 || distributorNativeEthAmount > 0)
         ? localeText(locale, {
-            en: `Deploy distributor contracts after swaps, then fund direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet.`,
-            zn: `在兑换后部署分发合约，然后由主钱包注入直接 ${nativeSymbol}/${wrappedNativeSymbol}。`,
-            vn: `Triển khai hợp đồng phân phối sau bước swap, rồi cấp trực tiếp ${nativeSymbol}/${wrappedNativeSymbol} từ ví chính.`,
+            en: `Deploy treasury contracts after swaps, then fund direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet.`,
+            zn: `在兑换后部署资金库合约，然后由主钱包注入直接 ${nativeSymbol}/${wrappedNativeSymbol}。`,
+            vn: `Triển khai treasury sau bước swap, rồi cấp trực tiếp ${nativeSymbol}/${wrappedNativeSymbol} từ ví chính.`,
           })
         : hasSwapRoutes
           ? localeText(locale, {
-              en: "Deploy distributor contracts after the swap step.",
-              zn: "在兑换步骤后部署分发合约。",
-              vn: "Triển khai hợp đồng phân phối sau bước swap.",
+              en: "Deploy treasury contracts after the swap step.",
+              zn: "在兑换步骤后部署资金库合约。",
+              vn: "Triển khai treasury sau bước swap.",
             })
           : locale === "en"
-            ? `Main-wallet distributor funding is ready with ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} and ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`
+            ? `Main-wallet treasury funding is ready with ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} and ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`
             : locale === "zn"
-              ? `主钱包分发合约注资已就绪：${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} 和 ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}。`
-              : `Cấp vốn từ ví chính cho hợp đồng phân phối đã sẵn sàng với ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} và ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`,
+              ? `主钱包资金库合约注资已就绪：${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} 和 ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}。`
+              : `Cấp vốn treasury từ ví chính đã sẵn sàng với ${formatCryptoMetric(template.direct_contract_native_eth_per_contract, nativeSymbol)} và ${formatCryptoMetric(template.direct_contract_weth_per_contract, wrappedNativeSymbol)}.`,
     };
   }
 
@@ -378,6 +397,7 @@ function buildGasEstimateRows(
   const distributorAutomation = getDistributorAutomationSummary(template, locale);
   const gasPrice = preview.execution.estimated_gas_price_gwei;
   const totalGasUnits = preview.execution.estimated_gas_units ?? 0;
+  const testAutoBatchSendEnabled = getTestAutoBatchSendEnabled(preview);
 
   return [
     {
@@ -390,7 +410,7 @@ function buildGasEstimateRows(
       value: estimateGasFeeDisplay(preview.execution.main_wallet_wrap_gas_units ?? 0, gasPrice, locale, nativeSymbol),
       hint:
         (preview.execution.main_wallet_wrap_transaction_count ?? 0) > 0
-          ? `Wrap ${wrappedNativeSymbol} on the main wallet before direct distributor funding`
+          ? `Wrap ${wrappedNativeSymbol} on the main wallet before direct treasury funding`
           : `No main-wallet ${wrappedNativeSymbol} wrap is required`,
     },
     {
@@ -402,12 +422,12 @@ function buildGasEstimateRows(
           : "No projected auto top-up transfers are reserved in this plan",
     },
     {
-      label: localeText(locale, { en: "testing execute gas", zn: "测试执行 gas", vn: "gas chạy thử" }),
+      label: localeText(locale, { en: "testing batch send gas", zn: "测试批量发送 gas", vn: "gas batch send thử nghiệm" }),
       value: estimateGasFeeDisplay((preview.execution.execute_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice, locale, nativeSymbol),
       hint:
-        preview.test_auto_execute_after_funding
-          ? "Testing mode: immediately call execute() after each distributor is funded."
-          : "Distributor auto-execute testing mode is off",
+        testAutoBatchSendEnabled
+          ? "Testing mode: immediately call batchSend() after each treasury contract is funded."
+          : "Testing batch send is off",
     },
     {
       label: localeText(locale, { en: "return sweep gas", zn: "回收 gas", vn: "gas hoàn lại" }),
@@ -435,17 +455,17 @@ function buildGasEstimateRows(
     {
       label: localeText(locale, { en: "deploy gas", zn: "部署 gas", vn: "gas triển khai" }),
       value: estimateGasFeeDisplay(preview.execution.deployment_transaction_count * DISTRIBUTOR_DEPLOY_GAS_UNITS, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.deployment_transaction_count > 0 ? "Deploy ManagedTokenDistributor from each sub-wallet target" : distributorAutomation.description,
+      hint: preview.execution.deployment_transaction_count > 0 ? "Deploy one BatchTreasuryDistributor from each funded sub-wallet." : distributorAutomation.description,
     },
     {
-      label: localeText(locale, { en: "distributor funding gas", zn: "合约注资 gas", vn: "gas cấp vốn hợp đồng" }),
+      label: localeText(locale, { en: "treasury funding gas", zn: "资金库注资 gas", vn: "gas cấp vốn treasury" }),
       value: estimateGasFeeDisplay((preview.execution.contract_funding_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer swapped tokens from sub-wallets and direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet into each deployed distributor` : "No post-deploy distributor funding transfers are required",
+      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer swapped tokens from sub-wallets and direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet into each deployed treasury contract.` : "No post-deploy treasury funding transfers are required",
     },
     {
       label: localeText(locale, { en: "total gas", zn: "总 gas", vn: "tổng gas" }),
       value: estimateGasFeeDisplay(totalGasUnits, gasPrice, locale, nativeSymbol),
-      hint: "Funding, main-wallet wrap, projected top-up, local wrap, approval, swap, deployment, distributor funding, testing execute, and return sweep estimate",
+      hint: "Funding, main-wallet wrap, projected top-up, local wrap, approval, swap, treasury deployment, treasury funding, testing batch send, and return sweep estimate",
     },
   ];
 }
@@ -458,6 +478,7 @@ function buildAutomationSteps(
 ): Array<{ title: string; description: string; tone: AutomationStepTone }> {
   const { nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, null, locale);
   const distributorAutomation = getDistributorAutomationSummary(template, locale);
+  const testAutoBatchSendEnabled = getTestAutoBatchSendEnabled(preview);
   const autoAddedGasBuffer = toNumericValue(preview.per_contract.auto_added_gas_buffer_eth);
   const minimumUnwrappedEth = preview.per_contract.minimum_unwrapped_eth ?? preview.per_contract.gas_reserve_eth;
   const mainWalletWethWrapped = toNumericValue(preview.funding.main_wallet_weth_wrapped ?? "0") ?? 0;
@@ -504,11 +525,11 @@ function buildAutomationSteps(
       title: localeText(locale, { en: `Wrap to ${wrappedNativeSymbol}`, zn: `转换为 ${wrappedNativeSymbol}`, vn: `Wrap sang ${wrappedNativeSymbol}` }),
       description:
         preview.execution.wrap_transaction_count > 0 && mainWalletWethWrapped > 0
-          ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} for swaps and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas. The main wallet also wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct distributor funding.`
+          ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} for swaps and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas. The main wallet also wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct treasury funding.`
           : preview.execution.wrap_transaction_count > 0
             ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas.`
             : mainWalletWethWrapped > 0
-              ? `The main wallet wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct distributor funding.`
+              ? `The main wallet wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct treasury funding.`
               : `No ${wrappedNativeSymbol} wrap is needed.`,
       tone: preview.execution.wrap_transaction_count > 0 || mainWalletWethWrapped > 0 ? "planned" : "optional",
     },
@@ -522,11 +543,11 @@ function buildAutomationSteps(
       tone: autoTopUp?.enabled ? "planned" : "optional",
     },
     {
-      title: localeText(locale, { en: "Test execute", zn: "测试执行", vn: "Chạy thử" }),
-      description: preview.test_auto_execute_after_funding
-        ? "Test mode is on. Each deployed contract runs immediately after funding."
-        : "Test mode is off. Deployed contracts wait for a later manual execute.",
-      tone: preview.test_auto_execute_after_funding ? "attention" : "optional",
+      title: localeText(locale, { en: "Testing batch send", zn: "测试批量发送", vn: "Batch send thử nghiệm" }),
+      description: testAutoBatchSendEnabled
+        ? "Testing mode is on. Each funded BatchTreasuryDistributor calls batchSend() immediately."
+        : "Testing mode is off. Funded treasury contracts wait for a later manual release path.",
+      tone: testAutoBatchSendEnabled ? "attention" : "optional",
     },
     {
       title: localeText(locale, { en: "Return funds", zn: "返还资金", vn: "Hoàn tiền" }),
@@ -544,10 +565,10 @@ function buildAutomationSteps(
     },
     {
       title: distributorAutomation.enabled
-        ? localeText(locale, { en: "Deploy contracts", zn: "部署合约", vn: "Triển khai hợp đồng" })
+        ? localeText(locale, { en: "Deploy treasury", zn: "部署资金库", vn: "Triển khai treasury" })
         : distributorAutomation.title,
       description: distributorAutomation.enabled
-        ? `Deploy up to ${preview.execution.deployment_transaction_count} contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"} and send swapped tokens from sub-wallets plus any direct ${nativeSymbol}/${wrappedNativeSymbol} funding from the main wallet.`
+        ? `Deploy up to ${preview.execution.deployment_transaction_count} BatchTreasuryDistributor contract${preview.execution.deployment_transaction_count === 1 ? "" : "s"} and fund each one with successful swap outputs plus any direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet.`
         : distributorAutomation.description,
       tone: distributorAutomation.enabled ? "planned" : "optional",
     },
@@ -666,8 +687,8 @@ function buildTemplateSummary(template: Template, locale: SupportedLocale) {
   const autoTopUpSuffix = template.auto_top_up_enabled
     ? localeText(locale, { en: " · auto top-up", zn: " · 自动补充", vn: " · nạp thêm tự động" })
     : "";
-  const testingExecuteSuffix = template.test_auto_execute_after_funding
-    ? localeText(locale, { en: " · test auto-exec", zn: " · 测试执行", vn: " · chạy thử tự động" })
+  const testingExecuteSuffix = getTestAutoBatchSendEnabled(template)
+    ? localeText(locale, { en: " · testing batch send", zn: " · 测试批量发送", vn: " · batch send thử nghiệm" })
     : "";
   if (template.stablecoin_distribution_mode === "none") {
     return `${localeText(locale, {
@@ -715,7 +736,7 @@ function buildReturnWalletSummary(template: Template, locale: SupportedLocale) {
 }
 
 function buildTestingExecuteSummary(template: Template, locale: SupportedLocale) {
-  return template.test_auto_execute_after_funding
+  return getTestAutoBatchSendEnabled(template)
     ? localeText(locale, { en: "Testing only", zn: "仅测试", vn: "Chỉ để thử nghiệm" })
     : localeText(locale, { en: "Off", zn: "关闭", vn: "Tắt" });
 }
@@ -739,8 +760,10 @@ function buildConfiguredTemplateTotals(template: Template, contractCount: number
 
 export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const { locale } = useI18n();
+  const preferredChain = normalizeTemplateChain(searchParams.get("chain"));
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wallet, setWallet] = useState<WalletDetails | null>(null);
@@ -762,6 +785,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [runHistoryRefreshKey, setRunHistoryRefreshKey] = useState(0);
   const [reviewPreview, setReviewPreview] = useState<TemplateWalletSupportPreview | null>(null);
   const [preparingRun, setPreparingRun] = useState(false);
+  const dashboardPath = preferredChain ? `/?chain=${encodeURIComponent(preferredChain)}` : "/";
+  const walletPathWithPreferredChain = (targetWalletId: string) =>
+    preferredChain ? `/wallets/${targetWalletId}?chain=${encodeURIComponent(preferredChain)}` : `/wallets/${targetWalletId}`;
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === selectedTemplateId) ?? null,
@@ -774,27 +800,46 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
     (async () => {
       try {
+        const chainQuery = preferredChain ? `?chain=${encodeURIComponent(preferredChain)}` : "";
         const [walletResponse, templateResponse, optionsResponse] = await Promise.all([
-          fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details`),
+          fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${chainQuery}`),
           fetch(`${TEMPLATE_API_URL}/api/templates`),
-          fetch(`${TEMPLATE_API_URL}/api/templates/options`),
+          fetch(`${TEMPLATE_API_URL}/api/templates/options${chainQuery}`),
         ]);
         const [walletPayload, templatePayload, optionsPayload] = await Promise.all([
-          walletResponse.json(),
-          templateResponse.json(),
-          optionsResponse.json(),
+          readApiPayload(walletResponse),
+          readApiPayload(templateResponse),
+          readApiPayload(optionsResponse),
         ]);
 
-        if (!walletResponse.ok) throw new Error(walletPayload.detail ?? "Failed to load wallet");
-        if (!templateResponse.ok) throw new Error(templatePayload.detail ?? "Failed to load templates");
-        if (!optionsResponse.ok) throw new Error(optionsPayload.detail ?? "Failed to load template options");
+        if (!walletResponse.ok) {
+          throw new Error((walletPayload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
+        }
+        if (!templateResponse.ok) {
+          throw new Error((templatePayload as { detail?: string } | null)?.detail ?? "Failed to load templates");
+        }
+        if (!optionsResponse.ok) {
+          throw new Error((optionsPayload as { detail?: string } | null)?.detail ?? "Failed to load template options");
+        }
 
         if (active) {
-          const nextTemplates = Array.isArray(templatePayload.templates) ? templatePayload.templates : [];
-          setWallet(walletPayload);
+          const nextTemplates: Template[] = Array.isArray((templatePayload as { templates?: Template[] } | null)?.templates)
+            ? (templatePayload as { templates: Template[] }).templates
+            : [];
+          const nextWalletPayload = walletPayload as WalletDetails;
+          const nextOptionsPayload = optionsPayload as TemplateOptions;
+          const desiredChain = preferredChain ?? normalizeTemplateChain(nextWalletPayload.chain);
+          const matchingTemplateId = nextTemplates.find((template) => template.chain === desiredChain)?.id ?? "";
+          setWallet(nextWalletPayload);
           setTemplates(nextTemplates);
-          setOptions(optionsPayload);
-          setSelectedTemplateId((current) => current || nextTemplates[0]?.id || "");
+          setOptions(nextOptionsPayload);
+          setSelectedTemplateId((current) => {
+            const currentTemplate = nextTemplates.find((template) => template.id === current) ?? null;
+            if (currentTemplate && (!preferredChain || currentTemplate.chain === desiredChain)) {
+              return currentTemplate.id;
+            }
+            return matchingTemplateId || (preferredChain ? "" : nextTemplates[0]?.id || "");
+          });
           setLoadError(null);
           setTemplatesError(null);
         }
@@ -815,7 +860,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     return () => {
       active = false;
     };
-  }, [walletId]);
+  }, [walletId, preferredChain]);
 
   useEffect(() => {
     if (!selectedTemplate?.chain) return;
@@ -827,12 +872,12 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         const response = await fetch(
           `${TEMPLATE_API_URL}/api/wallets/${walletId}/details?chain=${encodeURIComponent(selectedTemplate.chain)}`,
         );
-        const payload = await response.json();
+        const payload = await readApiPayload(response);
         if (!response.ok) {
-          throw new Error(payload.detail ?? "Failed to load wallet");
+          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
         }
         if (active) {
-          setWallet(payload);
+          setWallet(payload as WalletDetails);
           setLoadError(null);
         }
       } catch (error) {
@@ -955,11 +1000,14 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   };
 
   const fetchWalletDetails = async (chain?: Template["chain"]) => {
-    const query = chain ? `?chain=${encodeURIComponent(chain)}` : "";
+    const effectiveChain = chain ?? preferredChain ?? undefined;
+    const query = effectiveChain ? `?chain=${encodeURIComponent(effectiveChain)}` : "";
     const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail ?? "Failed to refresh wallet balances");
-    setWallet(payload);
+    const payload = await readApiPayload(response);
+    if (!response.ok) {
+      throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to refresh wallet balances");
+    }
+    setWallet(payload as WalletDetails);
     return payload as WalletDetails;
   };
 
@@ -980,24 +1028,27 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${wallet.id}`, {
         method: "DELETE",
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "Failed to delete wallet");
+      const payload = await readApiPayload(response);
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to delete wallet");
+      }
+      const deletePayload = payload as { deleted_subwallet_count?: number };
       toast({
         title: locale === "en" ? "Wallet deleted" : locale === "zn" ? "钱包已删除" : "Đã xóa ví",
         description:
-          payload.deleted_subwallet_count > 0
+          (deletePayload.deleted_subwallet_count ?? 0) > 0
             ? locale === "en"
-              ? `Deleted wallet and ${payload.deleted_subwallet_count} linked subwallet(s).`
+              ? `Deleted wallet and ${deletePayload.deleted_subwallet_count} linked subwallet(s).`
               : locale === "zn"
-                ? `已删除钱包和 ${payload.deleted_subwallet_count} 个关联子钱包。`
-                : `Đã xóa ví và ${payload.deleted_subwallet_count} ví con liên kết.`
+                ? `已删除钱包和 ${deletePayload.deleted_subwallet_count} 个关联子钱包。`
+                : `Đã xóa ví và ${deletePayload.deleted_subwallet_count} ví con liên kết.`
             : locale === "en"
               ? "Deleted wallet."
               : locale === "zn"
                 ? "钱包已删除。"
                 : "Đã xóa ví.",
       });
-      router.push("/");
+      router.push(dashboardPath);
     } catch (error) {
       toast({
         title: locale === "en" ? "Delete failed" : locale === "zn" ? "删除失败" : "Xóa thất bại",
@@ -1031,13 +1082,16 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       const response = await fetch(`${TEMPLATE_API_URL}/api/templates/${template.id}`, {
         method: "DELETE",
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "Failed to delete template");
+      const payload = await readApiPayload(response);
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to delete template");
+      }
 
       const nextTemplates = templates.filter((item) => item.id !== template.id);
       setTemplates(nextTemplates);
       if (selectedTemplateId === template.id) {
-        setSelectedTemplateId(nextTemplates[0]?.id ?? "");
+        const desiredChain = preferredChain ?? normalizeTemplateChain(wallet?.chain);
+        setSelectedTemplateId(nextTemplates.find((item) => item.chain === desiredChain)?.id ?? (preferredChain ? "" : nextTemplates[0]?.id ?? ""));
       }
       toast({
         title: locale === "en" ? "Template deleted" : locale === "zn" ? "模板已删除" : "Đã xóa mẫu",
@@ -1084,14 +1138,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           contract_count: contractCountValue,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to prepare run preview");
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to prepare run preview");
       }
-      if (!payload.can_proceed) {
-        throw new Error(payload.shortfall_reason ?? "This main wallet cannot support the selected template right now.");
+      const previewPayload = payload as TemplateWalletSupportPreview;
+      if (!previewPayload.can_proceed) {
+        throw new Error(previewPayload.shortfall_reason ?? "This main wallet cannot support the selected template right now.");
       }
-      setReviewPreview(payload);
+      setReviewPreview(previewPayload);
       setRunReviewOpen(true);
     } catch (error) {
       toast({
@@ -1124,17 +1179,18 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           count: activePreview.contract_count,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to execute run");
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to execute run");
       }
+      const runPayload = payload as { status?: string };
 
       setRunReviewOpen(false);
       setWalletViewTab("runs");
       setRunHistoryRefreshKey((current) => current + 1);
       setReviewPreview(null);
 
-      const runStatus = `${payload.status ?? ""}`.toLowerCase();
+      const runStatus = `${runPayload.status ?? ""}`.toLowerCase();
       toast({
         title:
           runStatus === "queued" || runStatus === "running"
@@ -1188,7 +1244,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         activeSection={activeSection}
         onSectionChange={(section) => {
           setActiveSection(section);
-          router.push("/");
+          router.push(dashboardPath);
         }}
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
@@ -1199,7 +1255,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
         <main className="flex-1 overflow-auto p-6">
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-            <Link href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground">
+            <Link href={dashboardPath} className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground">
               <ArrowLeft className="h-4 w-4" />
               {locale === "en" ? "Back to dashboard" : locale === "zn" ? "返回仪表盘" : "Quay lại bảng điều khiển"}
             </Link>
@@ -1370,14 +1426,14 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       </div>
                       {wallet.parent_id ? (
                         <div className="mt-5">
-                          <Button type="button" variant="outline" onClick={() => router.push(`/wallets/${wallet.parent_id}`)}>
+                          <Button type="button" variant="outline" onClick={() => router.push(walletPathWithPreferredChain(wallet.parent_id ?? ""))}>
                             {locale === "en" ? "Open parent wallet" : locale === "zn" ? "打开父钱包" : "Mở ví cha"}
                           </Button>
                         </div>
                       ) : null}
                     </SectionBlock>
 
-                    <WalletAssetMonitoring walletId={wallet.id} />
+                    <WalletAssetMonitoring walletId={wallet.id} chain={selectedTemplate?.chain ?? preferredChain ?? wallet.chain} />
                   </div>
                 ) : (
                 <Tabs value={walletViewTab} onValueChange={setWalletViewTab} className="space-y-5">
@@ -1674,10 +1730,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                             <tr>
                                               <td colSpan={4} className="px-4 py-6 text-center text-sm text-slate-500">
                                                 {locale === "en"
-                                                  ? `No token swap routes are configured. The run will keep the funding flow ${nativeSymbol}-first and only deploy distributors if direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding is configured.`
+                                                  ? `No token swap routes are configured. The run will keep the funding flow ${nativeSymbol}-first and only deploy treasury contracts if direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding is configured.`
                                                   : locale === "zn"
-                                                    ? `当前没有配置代币兑换路由。此运行将保持 ${nativeSymbol} 优先注资流程，只有在配置了直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资时才会部署分发合约。`
-                                                    : `Chưa có tuyến swap token nào được cấu hình. Lượt chạy sẽ giữ luồng cấp vốn ưu tiên ${nativeSymbol} và chỉ triển khai hợp đồng phân phối nếu có cấp vốn ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng.`}
+                                                    ? `当前没有配置代币兑换路由。此运行将保持 ${nativeSymbol} 优先注资流程，只有在配置了直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资时才会部署资金库合约。`
+                                                    : `Chưa có tuyến swap token nào được cấu hình. Lượt chạy sẽ giữ luồng cấp vốn ưu tiên ${nativeSymbol} và chỉ triển khai treasury nếu có cấp vốn ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng.`}
                                               </td>
                                             </tr>
                                           )}
@@ -1698,10 +1754,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       </p>
                                       <p className="text-sm text-slate-500">
                                         {locale === "en"
-                                          ? "Funding, local wrap, swap, deploy, and distributor funding costs for the selected wallet count."
+                                          ? "Funding, local wrap, swap, treasury deployment, and treasury funding costs for the selected wallet count."
                                           : locale === "zn"
-                                            ? "按所选钱包数量估算注资、本地包装、兑换、部署和合约注资成本。"
-                                            : "Chi phí cấp vốn, wrap cục bộ, swap, triển khai và cấp vốn hợp đồng theo số lượng ví đã chọn."}
+                                            ? "按所选钱包数量估算注资、本地包装、兑换、资金库部署和资金库注资成本。"
+                                            : "Chi phí cấp vốn, wrap cục bộ, swap, triển khai treasury và cấp vốn treasury theo số lượng ví đã chọn."}
                                       </p>
                                     </div>
                                   </div>
@@ -1742,10 +1798,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? "Contract funding" : locale === "zn" ? "合约注资" : "Cấp vốn hợp đồng"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">
                                           {locale === "en"
-                                            ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} to distributor`
+                                            ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} to treasury`
                                             : locale === "zn"
-                                              ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} 注入分发合约`
-                                              : `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} vào hợp đồng phân phối`}
+                                              ? `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} 注入资金库合约`
+                                              : `${formatCryptoMetric(selectedTemplate.direct_contract_native_eth_per_contract, nativeSymbol)} ${nativeSymbol} + ${formatCryptoMetric(selectedTemplate.direct_contract_weth_per_contract, wrappedNativeSymbol)} ${wrappedNativeSymbol} vào treasury`}
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500">
                                           {locale === "en" ? `The main wallet transfers direct contract ${nativeSymbol} and direct contract ${wrappedNativeSymbol} into BatchTreasuryDistributor after deployment.` : locale === "zn" ? `部署后会由主钱包把直接合约 ${nativeSymbol} 和直接合约 ${wrappedNativeSymbol} 转入 BatchTreasuryDistributor。` : `Sau khi triển khai, ví chính sẽ chuyển ${nativeSymbol} và ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng vào BatchTreasuryDistributor.`}
@@ -1761,7 +1817,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                       <div className="rounded-2xl bg-amber-50 px-4 py-3">
                                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">{locale === "en" ? "Testing Batch Send" : locale === "zn" ? "测试批量发送" : "Batch send thử nghiệm"}</p>
                                         <p className="mt-1 text-sm font-semibold text-slate-900">{buildTestingExecuteSummary(selectedTemplate, locale)}</p>
-                                        {selectedTemplate.test_auto_execute_after_funding ? (
+                                        {getTestAutoBatchSendEnabled(selectedTemplate) ? (
                                           <p className="mt-1 text-xs text-amber-800">{locale === "en" ? "Testing only. Each funded batch treasury will immediately call batchSend()." : locale === "zn" ? "仅测试。每个已注资的批量金库合约都会立即调用 batchSend()。" : "Chỉ để thử nghiệm. Mỗi batch treasury được cấp vốn sẽ gọi batchSend() ngay lập tức."}</p>
                                         ) : null}
                                       </div>
@@ -1877,13 +1933,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       mainWalletId={wallet.id}
                       refreshKey={runHistoryRefreshKey}
                       title={locale === "en" ? "Run history" : locale === "zn" ? "运行记录" : "Lịch sử chạy"}
-                      description={locale === "en" ? `Each run creates a fresh batch of wallets, funds them with ${nativeSymbol}, wraps locally, approves and swaps when configured, deploys distributor contracts, transfers tokens into them, and stores a detailed movement log here.` : locale === "zn" ? `每次运行都会创建一批新的钱包、用 ${nativeSymbol} 注资、本地包装、按配置授权和兑换、部署分发合约、把代币转入其中，并在这里保存详细日志。` : `Mỗi lượt chạy sẽ tạo một lô ví mới, cấp vốn bằng ${nativeSymbol}, wrap cục bộ, phê duyệt và swap khi được cấu hình, triển khai hợp đồng phân phối, chuyển token vào đó và lưu nhật ký chi tiết tại đây.`}
+                      description={locale === "en" ? `Each run creates a fresh batch of wallets, funds them with ${nativeSymbol}, wraps locally, approves and swaps when configured, deploys treasury contracts, transfers assets into them, and stores a detailed movement log here.` : locale === "zn" ? `每次运行都会创建一批新的钱包、用 ${nativeSymbol} 注资、本地包装、按配置授权和兑换、部署资金库合约、把资产转入其中，并在这里保存详细日志。` : `Mỗi lượt chạy sẽ tạo một lô ví mới, cấp vốn bằng ${nativeSymbol}, wrap cục bộ, phê duyệt và swap khi được cấu hình, triển khai treasury, chuyển tài sản vào đó và lưu nhật ký chi tiết tại đây.`}
                       emptyMessage={locale === "en" ? "No runs for this main wallet yet. Execute one from the Plan run tab and it will appear here." : locale === "zn" ? "这个主钱包还没有运行记录。请在“运行规划”标签中执行一次，记录就会显示在这里。" : "Ví chính này chưa có lượt chạy nào. Hãy thực hiện một lần trong tab lập kế hoạch chạy và nó sẽ xuất hiện ở đây."}
                     />
                   </TabsContent>
 
                   <TabsContent value="monitoring" className="space-y-0">
-                    <WalletAssetMonitoring walletId={wallet.id} enabled={walletViewTab === "monitoring"} />
+                    <WalletAssetMonitoring walletId={wallet.id} enabled={walletViewTab === "monitoring"} chain={selectedTemplate?.chain ?? preferredChain ?? wallet.chain} />
                   </TabsContent>
                 </Tabs>
                 )}

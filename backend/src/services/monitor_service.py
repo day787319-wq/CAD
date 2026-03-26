@@ -6,11 +6,13 @@ from uuid import uuid4
 from web3 import Web3
 
 from src.config.database import db
+from src.services.template_chain_config import TEMPLATE_CHAIN_ETHEREUM, normalize_template_chain
 from src.services.wallet_service import (
     ERC20_ABI,
-    TOKEN_CONFIG,
     format_decimal,
+    get_chain_runtime_config,
     get_onchain_token_metadata,
+    get_wallet_summary_tracked_tokens,
     get_wallet_record,
     get_web3,
     list_wallet_records,
@@ -19,7 +21,7 @@ from src.services.wallet_service import (
     wei_to_decimal,
 )
 
-CHAIN_NAME = "ETH"
+DEFAULT_MONITOR_CHAIN = TEMPLATE_CHAIN_ETHEREUM
 DEFAULT_EVENT_LIMIT = 20
 MAX_EVENT_LIMIT = 200
 MONITOR_POLL_INTERVAL_SECONDS = max(int(os.getenv("ASSET_MONITOR_POLL_INTERVAL_SECONDS", "15")), 5)
@@ -187,8 +189,8 @@ def _build_target_label(target: dict) -> str:
     if "managed_token_distributor" in roles:
         token_symbols = sorted(target.get("token_symbols") or [])
         if token_symbols:
-            return f"ManagedTokenDistributor ({', '.join(token_symbols)})"
-        return "ManagedTokenDistributor"
+            return f"BatchTreasuryDistributor ({', '.join(token_symbols)})"
+        return "BatchTreasuryDistributor"
     if "return_wallet" in roles and "recipient_wallet" in roles:
         return "Return / recipient wallet"
     if "return_wallet" in roles:
@@ -372,43 +374,135 @@ def _discover_scope(wallet_id: str | None = None, address: str | None = None) ->
     }
 
 
-def _collect_tracked_tokens(runs: list[dict]) -> list[dict]:
+def _normalize_monitor_chain(chain: str | None = None) -> str:
+    return normalize_template_chain(chain or DEFAULT_MONITOR_CHAIN)
+
+
+def _infer_run_chain(run: dict, template_chain_cache: dict[str, str]) -> str:
+    direct_chain = (
+        run.get("chain")
+        or run.get("template_chain")
+        or ((run.get("template") or {}).get("chain") if isinstance(run.get("template"), dict) else None)
+        or ((run.get("preview") or {}).get("chain") if isinstance(run.get("preview"), dict) else None)
+        or ((run.get("contract_execution") or {}).get("template", {}).get("chain") if isinstance(run.get("contract_execution"), dict) else None)
+    )
+    if direct_chain:
+        return _normalize_monitor_chain(direct_chain)
+
+    template_id = str(run.get("template_id") or "").strip()
+    if template_id:
+        cached_chain = template_chain_cache.get(template_id)
+        if cached_chain:
+            return cached_chain
+        template_record = db.get_template(template_id)
+        if template_record and template_record.get("chain"):
+            resolved_chain = _normalize_monitor_chain(template_record.get("chain"))
+            template_chain_cache[template_id] = resolved_chain
+            return resolved_chain
+
+    return DEFAULT_MONITOR_CHAIN
+
+
+def _register_tracked_token(
+    tokens: dict[str, dict],
+    *,
+    chain: str,
+    address: str | None,
+    symbol: str | None = None,
+    name: str | None = None,
+    decimals: int | str | None = None,
+):
+    if not address or not Web3.is_address(address):
+        return
+
+    checksum_address = Web3.to_checksum_address(address)
+    existing = tokens.get(checksum_address.lower())
+    resolved_symbol = symbol or (existing or {}).get("symbol") or checksum_address[-6:].upper()
+    resolved_name = name or (existing or {}).get("name") or resolved_symbol
+    resolved_decimals = existing.get("decimals") if existing else None
+
+    if decimals is not None:
+        try:
+            resolved_decimals = int(decimals)
+        except (TypeError, ValueError):
+            resolved_decimals = resolved_decimals
+
+    if resolved_decimals is None or not resolved_symbol or not resolved_name:
+        try:
+            metadata = get_onchain_token_metadata(checksum_address, chain)
+        except Exception:
+            metadata = None
+        if metadata:
+            resolved_symbol = metadata.get("symbol") or resolved_symbol
+            resolved_name = metadata.get("name") or resolved_name
+            resolved_decimals = int(metadata.get("decimals") if metadata.get("decimals") is not None else (resolved_decimals or 18))
+
+    tokens[checksum_address.lower()] = {
+        "address": checksum_address,
+        "symbol": resolved_symbol,
+        "name": resolved_name,
+        "decimals": int(resolved_decimals if resolved_decimals is not None else 18),
+    }
+
+
+def _iter_run_token_records(run: dict):
+    for contract in _iter_run_deployed_contracts(run):
+        yield {
+            "address": contract.get("token_address"),
+            "symbol": contract.get("token_symbol"),
+            "decimals": contract.get("token_decimals"),
+        }
+        for asset in contract.get("funded_assets") or []:
+            yield {
+                "address": asset.get("token_address"),
+                "symbol": asset.get("token_symbol"),
+                "decimals": asset.get("token_decimals"),
+            }
+
+    for sub_wallet in run.get("sub_wallets") or []:
+        for swap in sub_wallet.get("swap_transactions") or []:
+            yield {
+                "address": swap.get("token_address"),
+                "symbol": swap.get("token_symbol"),
+                "decimals": swap.get("token_decimals"),
+            }
+
+
+def _collect_tracked_tokens(chain: str | None = None, runs: list[dict] | None = None) -> list[dict]:
+    normalized_chain = _normalize_monitor_chain(chain)
+    runtime = get_chain_runtime_config(normalized_chain)
     tokens: dict[str, dict] = {}
 
-    for symbol, token in TOKEN_CONFIG.items():
-        if symbol == "ETH":
-            continue
-        checksum_address = Web3.to_checksum_address(token["address"])
-        tokens[checksum_address.lower()] = {
-            "address": checksum_address,
-            "symbol": token["symbol"],
-            "name": token["name"],
-            "decimals": int(token["decimals"]),
-        }
+    wrapped_native_address = Web3.to_checksum_address(runtime["wrapped_native_address"])
+    tokens[wrapped_native_address.lower()] = {
+        "address": wrapped_native_address,
+        "symbol": runtime["wrapped_native_symbol"],
+        "name": f"Wrapped {runtime['native_symbol']}",
+        "decimals": 18,
+    }
 
-    for run in runs:
-        for contract in _iter_run_deployed_contracts(run):
-            token_address = contract.get("token_address")
-            if not token_address or not Web3.is_address(token_address):
-                continue
-            checksum_address = Web3.to_checksum_address(token_address)
-            if checksum_address.lower() in tokens:
-                continue
-            try:
-                metadata = get_onchain_token_metadata(checksum_address)
-            except Exception:
-                metadata = {
-                    "address": checksum_address,
-                    "symbol": contract.get("token_symbol") or checksum_address[-6:].upper(),
-                    "name": contract.get("token_symbol") or checksum_address[-6:].upper(),
-                    "decimals": 18,
-                }
-            tokens[checksum_address.lower()] = {
-                "address": metadata["address"],
-                "symbol": metadata["symbol"],
-                "name": metadata["name"],
-                "decimals": int(metadata["decimals"]),
-            }
+    for token in get_wallet_summary_tracked_tokens(normalized_chain):
+        _register_tracked_token(
+            tokens,
+            chain=normalized_chain,
+            address=token.get("address"),
+            symbol=token.get("symbol"),
+            name=token.get("name"),
+            decimals=token.get("decimals"),
+        )
+
+    template_chain_cache: dict[str, str] = {}
+    for run in runs or []:
+        if _infer_run_chain(run, template_chain_cache) != normalized_chain:
+            continue
+        for token_record in _iter_run_token_records(run):
+            _register_tracked_token(
+                tokens,
+                chain=normalized_chain,
+                address=token_record.get("address"),
+                symbol=token_record.get("symbol"),
+                decimals=token_record.get("decimals"),
+            )
 
     return sorted(tokens.values(), key=lambda item: item["symbol"])
 
@@ -427,6 +521,7 @@ def _fetch_snapshot(
     web3_client: Web3,
     target: dict,
     *,
+    runtime: dict,
     latest_block: int,
     chain_id: int,
     tracked_tokens: list[dict],
@@ -440,7 +535,7 @@ def _fetch_snapshot(
     try:
         native_raw_balance = int(web3_client.eth.get_balance(address, block_identifier=latest_block))
     except Exception as exc:
-        errors.append(f"ETH balance unavailable: {str(exc)[:160]}")
+        errors.append(f"{runtime['native_symbol']} balance unavailable: {str(exc)[:160]}")
 
     tracked_token_balances = []
     for token in tracked_tokens:
@@ -473,7 +568,8 @@ def _fetch_snapshot(
     return {
         "address": address,
         "updated_at": observed_at,
-        "chain": CHAIN_NAME,
+        "chain": runtime["chain"],
+        "chain_label": runtime["chain_label"],
         "chain_id": chain_id,
         "block_number": latest_block,
         "status": status,
@@ -488,7 +584,7 @@ def _fetch_snapshot(
         "index": target.get("index"),
         "token_symbols": target.get("token_symbols") or [],
         "native_balance": {
-            "symbol": "ETH",
+            "symbol": runtime["native_symbol"],
             "raw_balance": str(native_raw_balance) if native_raw_balance is not None else None,
             "balance": format_decimal(wei_to_decimal(native_raw_balance)) if native_raw_balance is not None else None,
             "error": None if native_raw_balance is not None else "Unavailable",
@@ -516,7 +612,7 @@ def _build_first_observed_changes(snapshot: dict) -> list[dict]:
         changes.append(
             {
                 "asset_type": "native",
-                "symbol": "ETH",
+                "symbol": native_balance.get("symbol") or "NATIVE",
                 "token_address": None,
                 "before_raw_balance": None,
                 "after_raw_balance": native_raw,
@@ -561,7 +657,7 @@ def _build_balance_changes(previous_snapshot: dict | None, current_snapshot: dic
         changes.append(
             {
                 "asset_type": "native",
-                "symbol": "ETH",
+                "symbol": current_native.get("symbol") or previous_native.get("symbol") or "NATIVE",
                 "token_address": None,
                 "before_raw_balance": previous_native_raw,
                 "after_raw_balance": current_native_raw,
@@ -619,12 +715,13 @@ def _append_snapshot_event(snapshot: dict, changes: list[dict], *, event_type: s
     )
 
 
-def _merge_snapshot_with_target(snapshot: dict | None, target: dict) -> dict:
+def _merge_snapshot_with_target(snapshot: dict | None, target: dict, runtime: dict) -> dict:
     if snapshot is None:
         return {
             "address": target["address"],
             "updated_at": None,
-            "chain": CHAIN_NAME,
+            "chain": runtime["chain"],
+            "chain_label": runtime["chain_label"],
             "chain_id": None,
             "block_number": None,
             "status": "pending",
@@ -638,7 +735,7 @@ def _merge_snapshot_with_target(snapshot: dict | None, target: dict) -> dict:
             "wallet_type": target.get("wallet_type"),
             "index": target.get("index"),
             "token_symbols": target.get("token_symbols") or [],
-            "native_balance": {"symbol": "ETH", "raw_balance": None, "balance": None, "error": None},
+            "native_balance": {"symbol": runtime["native_symbol"], "raw_balance": None, "balance": None, "error": None},
             "tracked_tokens": [],
         }
     merged = dict(snapshot)
@@ -681,6 +778,7 @@ def _summarize_status(snapshots: list[dict], fallback_status: str = "online") ->
 
 def _build_monitor_response(
     *,
+    chain: str | None,
     scope: dict,
     targets: list[dict],
     tracked_tokens: list[dict],
@@ -691,10 +789,12 @@ def _build_monitor_response(
     synced_at: str | None = None,
     error: str | None = None,
 ) -> dict:
+    normalized_chain = _normalize_monitor_chain(chain)
+    runtime = get_chain_runtime_config(normalized_chain)
     address_map = {target["address"].lower(): target for target in targets}
     addresses = [target["address"] for target in targets]
-    snapshot_records = db.list_asset_monitor_snapshots(addresses=addresses) if addresses else []
-    event_records = db.list_asset_monitor_events(addresses=addresses, limit=events_limit) if addresses else []
+    snapshot_records = db.list_asset_monitor_snapshots(addresses=addresses, chain=normalized_chain) if addresses else []
+    event_records = db.list_asset_monitor_events(addresses=addresses, limit=events_limit, chain=normalized_chain) if addresses else []
 
     snapshot_map = {
         str(snapshot.get("address") or "").lower(): snapshot
@@ -702,7 +802,7 @@ def _build_monitor_response(
         if snapshot.get("address")
     }
     merged_snapshots = [
-        _merge_snapshot_with_target(snapshot_map.get(target["address"].lower()), target)
+        _merge_snapshot_with_target(snapshot_map.get(target["address"].lower()), target, runtime)
         for target in targets
     ]
     merged_events = [
@@ -719,8 +819,11 @@ def _build_monitor_response(
         "error": error,
         "synced_at": synced_at,
         "latest_block": latest_block,
-        "chain": CHAIN_NAME,
+        "chain": runtime["chain"],
+        "chain_label": runtime["chain_label"],
         "chain_id": chain_id,
+        "native_symbol": runtime["native_symbol"],
+        "wrapped_native_symbol": runtime["wrapped_native_symbol"],
         "poll_interval_seconds": MONITOR_POLL_INTERVAL_SECONDS,
         "target_count": len(targets),
         "tracked_token_count": len(tracked_tokens),
@@ -732,18 +835,21 @@ def _build_monitor_response(
     }
 
 
-def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, *, limit: int) -> dict:
+def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, *, limit: int, chain: str | None = None) -> dict:
+    normalized_chain = _normalize_monitor_chain(chain)
+    runtime = get_chain_runtime_config(normalized_chain)
     scope_data = _discover_scope(wallet_id=wallet_id, address=address)
     targets = scope_data["targets"]
-    tracked_tokens = _collect_tracked_tokens(scope_data["runs"])
+    tracked_tokens = _collect_tracked_tokens(normalized_chain, scope_data["runs"])
     synced_at = _utcnow_iso()
 
-    web3_client = get_web3()
+    web3_client = get_web3(normalized_chain)
     if not web3_client or not web3_client.is_connected():
-        error = "Ethereum RPC is unavailable"
+        error = f"{runtime['chain_label']} RPC is unavailable"
         if wallet_id is None and address is None:
             _set_worker_state(status="offline", latest_block=None, error=error)
         return _build_monitor_response(
+            chain=normalized_chain,
             scope=scope_data["scope"],
             targets=targets,
             tracked_tokens=tracked_tokens,
@@ -761,7 +867,10 @@ def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, 
     previous_snapshots = (
         {
             str(snapshot.get("address") or "").lower(): snapshot
-            for snapshot in db.list_asset_monitor_snapshots(addresses=[target["address"] for target in targets])
+            for snapshot in db.list_asset_monitor_snapshots(
+                addresses=[target["address"] for target in targets],
+                chain=normalized_chain,
+            )
         }
         if targets
         else {}
@@ -771,6 +880,7 @@ def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, 
         current_snapshot = _fetch_snapshot(
             web3_client,
             target,
+            runtime=runtime,
             latest_block=latest_block,
             chain_id=chain_id,
             tracked_tokens=tracked_tokens,
@@ -787,6 +897,7 @@ def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, 
         _set_worker_state(status="online", latest_block=latest_block, error=None)
 
     return _build_monitor_response(
+        chain=normalized_chain,
         scope=scope_data["scope"],
         targets=targets,
         tracked_tokens=tracked_tokens,
@@ -798,15 +909,17 @@ def _run_monitor_sync(wallet_id: str | None = None, address: str | None = None, 
     )
 
 
-def get_wallet_asset_monitoring(wallet_id: str, *, sync: bool = True, limit: int = DEFAULT_EVENT_LIMIT) -> dict:
+def get_wallet_asset_monitoring(wallet_id: str, *, sync: bool = True, limit: int = DEFAULT_EVENT_LIMIT, chain: str | None = None) -> dict:
+    normalized_chain = _normalize_monitor_chain(chain)
     normalized_limit = _normalize_event_limit(limit)
     with _asset_monitor_sync_lock:
         if sync:
-            return _run_monitor_sync(wallet_id=wallet_id, limit=normalized_limit)
+            return _run_monitor_sync(wallet_id=wallet_id, limit=normalized_limit, chain=normalized_chain)
 
         scope_data = _discover_scope(wallet_id=wallet_id)
-        tracked_tokens = _collect_tracked_tokens(scope_data["runs"])
+        tracked_tokens = _collect_tracked_tokens(normalized_chain, scope_data["runs"])
         return _build_monitor_response(
+            chain=normalized_chain,
             scope=scope_data["scope"],
             targets=scope_data["targets"],
             tracked_tokens=tracked_tokens,
@@ -819,17 +932,19 @@ def get_wallet_asset_monitoring(wallet_id: str, *, sync: bool = True, limit: int
         )
 
 
-def get_address_asset_monitoring(address: str, *, sync: bool = True, limit: int = DEFAULT_EVENT_LIMIT) -> dict:
+def get_address_asset_monitoring(address: str, *, sync: bool = True, limit: int = DEFAULT_EVENT_LIMIT, chain: str | None = None) -> dict:
+    normalized_chain = _normalize_monitor_chain(chain)
     normalized_limit = _normalize_event_limit(limit)
     with _asset_monitor_sync_lock:
         if sync:
-            return _run_monitor_sync(address=address, limit=normalized_limit)
+            return _run_monitor_sync(address=address, limit=normalized_limit, chain=normalized_chain)
 
         scope_data = _discover_scope(address=address)
         return _build_monitor_response(
+            chain=normalized_chain,
             scope=scope_data["scope"],
             targets=scope_data["targets"],
-            tracked_tokens=_collect_tracked_tokens([]),
+            tracked_tokens=_collect_tracked_tokens(normalized_chain, scope_data["runs"]),
             latest_block=_get_worker_state().get("latest_block"),
             chain_id=None,
             events_limit=normalized_limit,
@@ -839,16 +954,18 @@ def get_address_asset_monitoring(address: str, *, sync: bool = True, limit: int 
         )
 
 
-def get_asset_monitoring_overview(*, sync: bool = False, limit: int = DEFAULT_EVENT_LIMIT) -> dict:
+def get_asset_monitoring_overview(*, sync: bool = False, limit: int = DEFAULT_EVENT_LIMIT, chain: str | None = None) -> dict:
+    normalized_chain = _normalize_monitor_chain(chain)
     normalized_limit = _normalize_event_limit(limit)
     with _asset_monitor_sync_lock:
         if sync:
-            return _run_monitor_sync(limit=normalized_limit)
+            return _run_monitor_sync(limit=normalized_limit, chain=normalized_chain)
 
         scope_data = _discover_scope()
-        tracked_tokens = _collect_tracked_tokens(scope_data["runs"])
+        tracked_tokens = _collect_tracked_tokens(normalized_chain, scope_data["runs"])
         worker_state = _get_worker_state()
         return _build_monitor_response(
+            chain=normalized_chain,
             scope=scope_data["scope"],
             targets=scope_data["targets"],
             tracked_tokens=tracked_tokens,

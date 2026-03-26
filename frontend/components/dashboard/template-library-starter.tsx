@@ -2,6 +2,7 @@
 
 import { MouseEvent, useEffect, useMemo, useState } from "react";
 import { Fuel, Pencil, PlusCircle, Trash2 } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -15,6 +16,7 @@ import {
   formatFeeTier,
   getTemplateChainMeta,
   getStablecoinDistributionRows,
+  normalizeTemplateChain,
 } from "@/lib/template";
 
 const copy = {
@@ -31,9 +33,9 @@ const copy = {
     vn: "Một mẫu tương ứng một hợp đồng / một ví con",
   },
   introBody: {
-    en: "Define the native-first funding plan here: gas reserve, direct contract funding, direct main-wallet wrapped-native distributor funding, and token swap budgets. A main wallet is not needed yet.",
-    zn: "在这里定义以原生代币为核心的资金计划：Gas 预留、直接合约注资、由主钱包提供的包装原生代币分发合约资金以及代币兑换预算。此阶段还不需要主钱包。",
-    vn: "Xác định kế hoạch cấp vốn ưu tiên tài sản gốc tại đây: dự trữ gas, cấp vốn trực tiếp cho hợp đồng, cấp wrapped-native trực tiếp từ ví chính cho hợp đồng phân phối và ngân sách hoán đổi token. Chưa cần ví chính ở bước này.",
+    en: "Define the native-first funding plan here: gas reserve, direct contract funding, direct main-wallet wrapped-native treasury funding, and token swap budgets. A main wallet is not needed yet.",
+    zn: "在这里定义以原生代币为核心的资金计划：Gas 预留、直接合约注资、由主钱包提供的包装原生代币资金库注资以及代币兑换预算。此阶段还不需要主钱包。",
+    vn: "Xác định kế hoạch cấp vốn ưu tiên tài sản gốc tại đây: dự trữ gas, cấp vốn trực tiếp cho hợp đồng, cấp wrapped-native trực tiếp từ ví chính cho treasury và ngân sách hoán đổi token. Chưa cần ví chính ở bước này.",
   },
   loading: { en: "Loading templates...", zn: "正在加载模板...", vn: "Đang tải mẫu..." },
   empty: {
@@ -82,6 +84,7 @@ function SummaryPill({ label, value }: { label: string; value: string }) {
 }
 
 export function TemplateLibraryStarter() {
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const { locale, interpolate } = useI18n();
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -90,15 +93,17 @@ export function TemplateLibraryStarter() {
   const [error, setError] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
+  const preferredChain = normalizeTemplateChain(searchParams.get("chain"));
 
   useEffect(() => {
     let active = true;
 
     (async () => {
       try {
+        const optionsQuery = preferredChain ? `?chain=${encodeURIComponent(preferredChain)}` : "";
         const [templateResponse, optionsResponse] = await Promise.all([
           fetch(`${TEMPLATE_API_URL}/api/templates`),
-          fetch(`${TEMPLATE_API_URL}/api/templates/options`),
+          fetch(`${TEMPLATE_API_URL}/api/templates/options${optionsQuery}`),
         ]);
         const [templatePayload, optionsPayload] = await Promise.all([
           templateResponse.json(),
@@ -125,7 +130,7 @@ export function TemplateLibraryStarter() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [locale, preferredChain]);
 
   const visibleTemplates = useMemo(() => templates.slice(0, 4), [templates]);
 

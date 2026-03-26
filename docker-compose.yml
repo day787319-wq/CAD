@@ -22,7 +22,7 @@ services:
       SCYLLA_CONTACT_POINTS: scylla
       SCYLLA_PORT: 9042
       PORT: 8006
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8006", "--reload", "--reload-exclude", "data/*", "--reload-exclude", "runtime/*"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8006"]
     volumes:
       - ./backend:/app
     ports:
