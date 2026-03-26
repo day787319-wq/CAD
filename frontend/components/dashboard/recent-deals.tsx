@@ -127,6 +127,7 @@ type ImportedWallet = {
     raw_balance?: string | null;
     balance?: string | null;
     error?: string | null;
+    chain_label?: string | null;
   }>;
   balances_live?: boolean;
   created_at?: string | null;
@@ -466,6 +467,9 @@ export function RecentDeals() {
                           <p className="mt-1 text-sm font-semibold text-foreground">
                             {holding.error ? `Unavailable ${holding.symbol}` : formatBalance(holding.balance, holding.symbol)}
                           </p>
+                          {holding.chain_label ? (
+                            <p className="mt-1 text-[11px] text-muted-foreground">{holding.chain_label}</p>
+                          ) : null}
                         </div>
                       ))}
                     </div>

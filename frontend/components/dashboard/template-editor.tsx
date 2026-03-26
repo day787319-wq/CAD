@@ -14,6 +14,7 @@ import {
   TEMPLATE_API_URL,
   Template,
   TemplateChain,
+  getTemplateChainCaveats,
   TemplateEditorForm,
   TemplateOptions,
   TemplatePriceSnapshot,
@@ -130,6 +131,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     currentOptions?.fallback_swap_backend_labels ??
     currentChain.fallback_swap_backend_labels ??
     [];
+  const chainCaveats = getTemplateChainCaveats(form.chain);
   const selectedStablecoinAddresses = useMemo(
     () => new Set(form.stablecoin_allocations.map((allocation) => allocation.token_address.toLowerCase())),
     [form.stablecoin_allocations],
@@ -150,6 +152,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     (topUpTargetMustExceedThreshold
       ? topUpTargetValue <= topUpThresholdValue
       : topUpTargetValue < topUpThresholdValue);
+  const directContractNativeValue = toFiniteNumber(form.direct_contract_native_eth_per_contract) ?? 0;
+  const directContractWrappedValue = toFiniteNumber(form.direct_contract_weth_per_contract) ?? 0;
 
   const loadChainOptions = async (chain: TemplateChain) => {
     const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?chain=${encodeURIComponent(chain)}`, {
@@ -243,6 +247,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     [effectiveSwapBudgetString, marketSnapshot?.weth_usd],
   );
   const swapBudgetValue = toFiniteNumber(effectiveSwapBudgetString) ?? 0;
+  const fundedTreasuryEnabled =
+    (hasStablecoinSwap && swapBudgetValue > 0) ||
+    directContractNativeValue > 0 ||
+    directContractWrappedValue > 0;
   const manualDistributionAssignedValue = useMemo(() => {
     if (form.stablecoin_distribution_mode === "manual_weth_amount") {
       return manualExactSwapBudgetValue;
@@ -618,6 +626,18 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                       ? "先选择网络，再选择该链上的兑换代币。"
                       : "Chọn mạng trước, rồi chọn token swap của chain đó."}
                 </p>
+                {chainCaveats.length > 0 ? (
+                  <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <p className="font-semibold">
+                      {locale === "en" ? "Chain caveats" : locale === "zn" ? "链上注意事项" : "Lưu ý theo chain"}
+                    </p>
+                    <div className="mt-2 space-y-1 text-xs">
+                      {chainCaveats.map((caveat) => (
+                        <p key={caveat}>• {caveat}</p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="cad-panel-soft space-y-3 px-4 py-3 sm:col-span-2">
@@ -754,6 +774,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             {form.test_auto_execute_after_funding ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 {locale === "en" ? "Testing only. This bypasses the normal hold-in-contract behavior by calling `batchSend()` to the testing recipient address after funding." : locale === "zn" ? "仅测试用途。该模式会在注资后调用 `batchSend()` 把资产发送到测试接收地址，从而绕过常规的合约持仓行为。" : "Chỉ để thử nghiệm. Chế độ này bỏ qua cơ chế giữ tiền trong hợp đồng bình thường bằng cách gọi `batchSend()` đến địa chỉ nhận thử nghiệm sau khi cấp vốn."}
+              </div>
+            ) : fundedTreasuryEnabled ? (
+              <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {locale === "en"
+                  ? "This template funds BatchTreasuryDistributor. Keep testing auto batch send enabled until the product has a real later release path, or assets can remain parked in the contract."
+                  : locale === "zn"
+                    ? "此模板会为 BatchTreasuryDistributor 注资。在产品具备真实的后续释放路径之前，请保持启用自动批量发送，否则资产可能会停留在合约中。"
+                    : "Mẫu này sẽ cấp vốn cho BatchTreasuryDistributor. Hãy giữ bật tự động batch send cho đến khi sản phẩm có luồng giải phóng tài sản thực sự về sau, nếu không tài sản có thể bị giữ lại trong hợp đồng."}
               </div>
             ) : null}
           </SectionCard>

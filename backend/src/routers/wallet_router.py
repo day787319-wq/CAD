@@ -182,6 +182,8 @@ async def delete_wallet_run_endpoint(run_id: str):
 async def list_wallets_endpoint(chain: str | None = Query(default=None)):
     try:
         return {"wallets": list_saved_wallets_service(chain=chain)}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

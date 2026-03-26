@@ -436,6 +436,12 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         )
     if test_auto_execute_after_funding and testing_recipient_address is None:
         raise ValueError("testing_recipient_address is required when test_auto_batch_send_after_funding is enabled")
+    if requires_recipient and not test_auto_execute_after_funding:
+        raise ValueError(
+            "Testing only currently requires test_auto_batch_send_after_funding when token swaps or direct contract "
+            "funding are enabled, because the app does not yet expose a later release path for funded "
+            "BatchTreasuryDistributor contracts."
+        )
     slippage_percent = _parse_slippage_percent(payload.get("slippage_percent", "0.5"))
     fee_tier = _parse_fee_tier(payload.get("fee_tier"), chain)
     auto_top_up = _parse_auto_top_up_settings(payload, chain)
@@ -1242,7 +1248,11 @@ def get_template_options(chain: str | None = None):
                 f"If set, the run sweeps leftover {chain_config['native_symbol']}, {chain_config['wrapped_native_symbol']}, "
                 f"and supported token balances from each sub-wallet into this address after execution. This is a sub-wallet cleanup destination, not the testing payout target."
             ),
-            "test_auto_execute_note": "Testing only. After BatchTreasuryDistributor is deployed and funded, the sub-wallet immediately calls batchSend() and sends every funded asset entry to testing_recipient_address.",
+            "test_auto_execute_note": (
+                "Testing only. This must stay enabled whenever BatchTreasuryDistributor will be funded. "
+                "After deployment and funding, the sub-wallet immediately calls batchSend() and sends every funded "
+                "asset entry to testing_recipient_address."
+            ),
         },
         "contract_sync": get_registry_integration_status(),
     }
@@ -1383,6 +1393,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     execution_estimate = cost_snapshot["execution_estimate"]
     deployment_contracts_per_wallet = int(execution_estimate["deployment_targets_per_wallet"])
     requires_recipient = deployment_contracts_per_wallet > 0
+    test_auto_batch_send_enabled = _get_test_auto_batch_send_enabled(template)
 
     available_eth = Decimal(str(wallet["eth_balance"]))
     available_weth = Decimal(str(wallet["weth_balance"]))
@@ -1468,6 +1479,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     can_proceed = (
         available_eth >= total_eth_required_with_fees
         and (not requires_recipient or bool(recipient_address))
+        and (not requires_recipient or test_auto_batch_send_enabled)
         and route_preflight["available"]
     )
 
@@ -1476,6 +1488,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         shortfall_reason = (
             "testing_recipient_address is required for templates that swap into BatchTreasuryDistributor "
             f"or fund direct contract {chain_config['native_symbol']}/{chain_config['wrapped_native_symbol']} distributors."
+        )
+    elif requires_recipient and not test_auto_batch_send_enabled:
+        shortfall_reason = (
+            "Testing only currently requires test_auto_batch_send_after_funding for templates that fund "
+            "BatchTreasuryDistributor, because the app does not yet expose a later release path for those assets."
         )
     elif available_eth < required_eth_total:
         shortfall_reason = (
@@ -1509,8 +1526,8 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "contract_count": contract_count,
         "testing_recipient_address": recipient_address,
         "return_wallet_address": template.get("return_wallet_address"),
-        "test_auto_execute_after_funding": _get_test_auto_batch_send_enabled(template),
-        "test_auto_batch_send_after_funding": _get_test_auto_batch_send_enabled(template),
+        "test_auto_execute_after_funding": test_auto_batch_send_enabled,
+        "test_auto_batch_send_after_funding": test_auto_batch_send_enabled,
         "can_proceed": can_proceed,
         "shortfall_reason": shortfall_reason,
         "balances": {

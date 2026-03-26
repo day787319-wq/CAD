@@ -954,11 +954,13 @@ def get_wallet_summary_token_holdings(address: str, chain: str | None = None) ->
     normalized_chain = normalize_template_chain(chain)
     owner_address = Web3.to_checksum_address(address)
     token_holdings: list[dict] = []
-    source_chains = [normalized_chain]
-
-    for configured_chain in WALLET_SUMMARY_TOKEN_SYMBOLS:
-        if configured_chain not in source_chains:
-            source_chains.append(configured_chain)
+    if chain is None:
+        source_chains = [normalized_chain]
+        for configured_chain in WALLET_SUMMARY_TOKEN_SYMBOLS:
+            if configured_chain not in source_chains:
+                source_chains.append(configured_chain)
+    else:
+        source_chains = [normalized_chain]
 
     for source_chain in source_chains:
         identifiers = WALLET_SUMMARY_TOKEN_SYMBOLS.get(source_chain, [])
@@ -3307,6 +3309,11 @@ def execute_wallet_run(
         )
     if test_auto_execute_after_funding and not recipient_address:
         raise ValueError("testing_recipient_address is required when test_auto_batch_send_after_funding is enabled")
+    if requires_recipient and not test_auto_execute_after_funding:
+        raise ValueError(
+            "Testing only currently requires test_auto_batch_send_after_funding when BatchTreasuryDistributor "
+            "will be funded, because the app does not yet expose a later release path for those assets."
+        )
 
     should_execute_deployment_flow = requires_recipient and bool(recipient_address)
     if not requires_recipient:
@@ -5985,7 +5992,8 @@ def get_wallet_details(wallet_id: str, chain: str | None = None):
         for record in sub_wallet_records
     ]
 
-    details = serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=True)
+    details = serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=False)
+    details['token_holdings'] = get_wallet_summary_token_holdings(wallet['address'], chain=chain)
     details['sub_wallets'] = sub_wallets
     return details
 

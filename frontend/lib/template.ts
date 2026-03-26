@@ -102,8 +102,40 @@ export const TEMPLATE_CHAIN_META: Record<
   },
 };
 
+export const TEMPLATE_CHAIN_CAVEATS: Record<TemplateChain, string[]> = {
+  ethereum_mainnet: [
+    "Ethereum is the most expensive chain in this set, so tiny multi-token baskets can be inefficient.",
+  ],
+  bnb: [
+    "Bridge variants are separate assets here. Choose carefully between tokens like USDC vs anyUSDC and USDT vs anyUSDT.",
+    "BNB currently has the only configured fallback backend, so route coverage is stronger here than on the other non-Ethereum chains.",
+  ],
+  arbitrum: [
+    "Bridge variants are separate assets. Watch USDC vs USDC.e and use the exact token you intend to hold.",
+  ],
+  avalanche: [
+    "Avalanche has multiple wrapper and bridge variants such as USDC vs USDC.e, BTC.b vs WBTC, and WETH.e vs other ETH wrappers.",
+  ],
+  base: [
+    "Base has multiple BTC wrappers like cbBTC, clBTC, LBTC, and WBTC. They are not interchangeable.",
+  ],
+  optimism: [
+    "Optimism currently has only one configured swap backend, so long-tail pairs have less fallback coverage than BNB.",
+  ],
+  polygon: [
+    "Polygon has separate bridge flavors like USDC and USDC.e. Pick the exact asset variant you want.",
+  ],
+  xlayer: [
+    "X Layer currently has a smaller curated token universe and only one configured swap backend, so route coverage can be thinner than on the larger chains.",
+  ],
+};
+
 export function getTemplateChainMeta(chain: TemplateChain) {
   return TEMPLATE_CHAIN_META[chain] ?? TEMPLATE_CHAIN_META.ethereum_mainnet;
+}
+
+export function getTemplateChainCaveats(chain: TemplateChain) {
+  return TEMPLATE_CHAIN_CAVEATS[chain] ?? [];
 }
 
 export type Template = {
@@ -756,6 +788,7 @@ export function buildTemplateWalletSupportPreview(input: {
   const availableWeth = wallet.weth_balance ?? 0;
   const directContractNativeEthTotal = directContractNativeEth * contractCount;
   const directContractWethTotal = directWeth * contractCount;
+  const fundedTreasuryEnabled = routeCount > 0 || directContractNativeEth > 0 || directWeth > 0;
   const wethFromMainWallet = directContractWethTotal;
   const wethFromExistingMainWallet = Math.min(availableWeth, wethFromMainWallet);
   const mainWalletWethWrapped = Math.max(wethFromMainWallet - availableWeth, 0);
@@ -835,11 +868,17 @@ export function buildTemplateWalletSupportPreview(input: {
   const remainingEthAfterFunding = availableEth - totalEthDeducted;
   const remainingEthAfterRun = availableEth - totalEthRequiredWithFees;
   const remainingWethAfterFunding = Math.max(availableWeth - wethFromExistingMainWallet, 0);
-  const canProceed = availableEth >= totalEthRequiredWithFees && (!requiresRecipient || Boolean(testingRecipientAddress));
+  const canProceed =
+    availableEth >= totalEthRequiredWithFees &&
+    (!requiresRecipient || Boolean(testingRecipientAddress)) &&
+    (!fundedTreasuryEnabled || Boolean(testAutoExecuteAfterFunding));
 
   let shortfallReason: string | null = null;
   if (requiresRecipient && !testingRecipientAddress) {
     shortfallReason = `testing_recipient_address is required when token swaps or direct contract ${nativeSymbol}/${wrappedNativeSymbol} are enabled.`;
+  } else if (fundedTreasuryEnabled && !testAutoExecuteAfterFunding) {
+    shortfallReason =
+      "Testing only currently requires test_auto_batch_send_after_funding when BatchTreasuryDistributor will be funded, because the app does not yet expose a later release path for those assets.";
   } else if (availableEth < requiredEthTotal) {
     shortfallReason =
       `Not enough ${nativeSymbol} in the main wallet. Need ${toAmountString(requiredEthTotal - availableEth)} more ${nativeSymbol} ` +
