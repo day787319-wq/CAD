@@ -39,17 +39,26 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+
+def _env_or_default(*names: str, default: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return default
+
+
 POA_CHAINS = {"BNB", "POLYGON", "OP", "BASE", "XLAYER"}
 
 CHAINS = {
-    "ETH":     {"type": "EVM",    "rpc": "http://100.100.0.35:8545"},
-    "BNB":     {"type": "EVM",    "rpc": "http://100.100.0.50:8545"},
-    "ARB":     {"type": "EVM",    "rpc": "http://100.100.0.13:8547"},
-    "OP":      {"type": "EVM",    "rpc": "http://100.100.0.8:8545"},
-    "BASE":    {"type": "EVM",    "rpc": "http://100.100.0.8:9545"},
-    "AVAX":    {"type": "EVM",    "rpc": "http://100.100.0.10:9650/ext/bc/C/rpc"},
-    "XLAYER":  {"type": "EVM",    "rpc": "http://100.100.0.10:10545"},
-    "POLYGON": {"type": "EVM",    "rpc": "http://100.100.0.10:11545"},
+    "ETH":     {"type": "EVM",    "rpc": _env_or_default("ETHEREUM_RPC_URL", "ETH_RPC_URL", default="http://100.100.0.35:8545")},
+    "BNB":     {"type": "EVM",    "rpc": _env_or_default("BNB_RPC_URL", "BSC_RPC_URL", default="http://100.100.0.50:8545")},
+    "ARB":     {"type": "EVM",    "rpc": _env_or_default("ARB_RPC_URL", default="http://100.100.0.13:8547")},
+    "OP":      {"type": "EVM",    "rpc": _env_or_default("OP_RPC_URL", default="http://100.100.0.8:8545")},
+    "BASE":    {"type": "EVM",    "rpc": _env_or_default("BASE_RPC_URL", default="http://100.100.0.8:9545")},
+    "AVAX":    {"type": "EVM",    "rpc": _env_or_default("AVAX_RPC_URL", default="http://100.100.0.10:9650/ext/bc/C/rpc")},
+    "XLAYER":  {"type": "EVM",    "rpc": _env_or_default("XLAYER_RPC_URL", default="http://100.100.0.10:10545")},
+    "POLYGON": {"type": "EVM",    "rpc": _env_or_default("POLYGON_RPC_URL", default="http://100.100.0.10:11545")},
     "BTC":     {"type": "BTC",    "rpc": "http://100.100.0.8:8332"},
     "SOLANA":  {"type": "SOLANA", "rpc": "http://100.100.0.4:8899"},
     "TRON":    {"type": "TRON",   "rpc": "http://100.100.0.13:8090"},

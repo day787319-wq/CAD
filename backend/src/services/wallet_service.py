@@ -6,10 +6,13 @@ import re
 import time
 import zipfile
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from threading import Lock
 import xml.etree.ElementTree as ET
 
 from mnemonic import Mnemonic
@@ -270,6 +273,21 @@ DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_SECONDS = 180
 WETH_WRAP_MAX_ATTEMPTS = 3
 TOKEN_APPROVAL_MAX_ATTEMPTS = 3
 TOKEN_TRANSFER_MAX_ATTEMPTS = 3
+DEFAULT_WALLET_RUN_MAX_PARALLEL_SUBWALLETS = 4
+MAX_WALLET_RUN_MAX_PARALLEL_SUBWALLETS = 12
+
+
+def get_wallet_run_max_parallel_subwallets() -> int:
+    raw_value = (os.getenv("WALLET_RUN_MAX_PARALLEL_SUBWALLETS") or "").strip()
+    if not raw_value:
+        return DEFAULT_WALLET_RUN_MAX_PARALLEL_SUBWALLETS
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return DEFAULT_WALLET_RUN_MAX_PARALLEL_SUBWALLETS
+
+    return max(1, min(parsed, MAX_WALLET_RUN_MAX_PARALLEL_SUBWALLETS))
 TOKEN_SWAP_MAX_ATTEMPTS = 3
 MANAGED_TOKEN_DISTRIBUTOR_DEPLOY_MAX_ATTEMPTS = 3
 MANAGED_TOKEN_DISTRIBUTOR_EXECUTE_MAX_ATTEMPTS = 3
@@ -2573,7 +2591,7 @@ def create_wallet_run(main_id: str, template_id: str, count: int = 1):
     if count < 1 or count > 100:
         raise ValueError("Count must be between 1 and 100")
 
-    from src.services.template_service import get_template, preview_template
+    from src.services.template_service import get_template, normalize_template_stablecoin_allocations, preview_template
     from src.services.contract_service import build_contract_execution_snapshot
 
     main_wallet = get_wallet(main_id)
@@ -2583,6 +2601,7 @@ def create_wallet_run(main_id: str, template_id: str, count: int = 1):
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
+    template = normalize_template_stablecoin_allocations(template, persist_repaired=True)
     ensure_supported_template_chain(template)
     template_chain = normalize_template_chain(template.get("chain"))
     chain_config = get_template_chain_config(template_chain)
@@ -2708,7 +2727,12 @@ def execute_wallet_run(
     if count < 1 or count > 100:
         raise ValueError("Count must be between 1 and 100")
 
-    from src.services.template_service import build_template_stablecoin_routes, get_template, preview_template
+    from src.services.template_service import (
+        build_template_stablecoin_routes,
+        get_template,
+        normalize_template_stablecoin_allocations,
+        preview_template,
+    )
     from src.services.contract_service import build_contract_execution_snapshot
     from src.services.solidity_service import get_managed_token_distributor_interface
 
@@ -2719,6 +2743,7 @@ def execute_wallet_run(
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
+    template = normalize_template_stablecoin_allocations(template, persist_repaired=True)
     ensure_supported_template_chain(template)
     template_chain = normalize_template_chain(template.get("chain"))
     chain_config = get_template_chain_config(template_chain)
@@ -2791,12 +2816,29 @@ def execute_wallet_run(
         "top_up_network_fee_eth",
     )
     return_sweep_gas_units_per_wallet = int(preview["execution"].get("return_sweep_gas_units_per_wallet") or 0)
-    stablecoin_routes = [
-        route
-        for route in build_template_stablecoin_routes(template, contract_count=1)
-        if parse_decimal_amount(route.get("per_contract_weth_amount") or "0", "per_contract_weth_amount") > 0
-    ]
+    stablecoin_routes = []
+    for route in build_template_stablecoin_routes(template, contract_count=1):
+        amount_in = parse_decimal_amount(
+            route.get("per_contract_weth_amount") or "0",
+            "per_contract_weth_amount",
+        )
+        if amount_in <= 0:
+            continue
+
+        stablecoin_routes.append(
+            {
+                **route,
+                "amount_in": amount_in,
+                "token_out": {
+                    "symbol": route["token_symbol"],
+                    "name": route["token_name"],
+                    "address": route["token_address"],
+                    "decimals": int(route["token_decimals"]),
+                },
+            }
+        )
     recipient_address = template.get("recipient_address")
+    wrapped_native_token = resolve_token(wrapped_native_address, template_chain)
     has_route_distributors = bool(stablecoin_routes)
     has_direct_weth_distributor = distributor_amount > 0
     has_direct_native_eth_distributor = direct_contract_native_eth_per_wallet > 0
@@ -2885,21 +2927,26 @@ def execute_wallet_run(
     funding_submitted_transaction_count = 0
     status = "running"
     deployment_failures: list[str] = []
-    swap_failure_count = 0
-    approval_failure_count = 0
-    approval_success_count = 0
-    swap_success_count = 0
-    top_up_success_count = 0
-    top_up_failure_count = 0
-    execution_failure_count = 0
-    contract_execute_success_count = 0
-    contract_execute_failure_count = 0
-    return_sweep_success_count = 0
-    return_sweep_failure_count = 0
-    deployment_success_count = 0
-    contract_funding_success_count = 0
-    contract_funding_failure_count = 0
-    subwallet_wrap_count = 0
+    parallel_counters = {
+        "swap_failure_count": 0,
+        "approval_failure_count": 0,
+        "approval_success_count": 0,
+        "swap_success_count": 0,
+        "top_up_success_count": 0,
+        "top_up_failure_count": 0,
+        "execution_failure_count": 0,
+        "contract_execute_success_count": 0,
+        "contract_execute_failure_count": 0,
+        "return_sweep_success_count": 0,
+        "return_sweep_failure_count": 0,
+        "deployment_success_count": 0,
+        "contract_funding_success_count": 0,
+        "contract_funding_failure_count": 0,
+        "subwallet_wrap_count": 0,
+    }
+    run_state_lock = Lock()
+    main_wallet_tx_lock = Lock()
+    parallel_subwallet_processing_active = False
     contract_execution = build_contract_execution_snapshot(
         main_wallet={
             "id": main_id,
@@ -2965,9 +3012,37 @@ def execute_wallet_run(
     def persist_run_state():
         return db.upsert_wallet_run(build_run_record())
 
+    def increment_parallel_counter(name: str, amount: int = 1):
+        with run_state_lock:
+            parallel_counters[name] += amount
+            return parallel_counters[name]
+
+    def get_parallel_counter(name: str) -> int:
+        with run_state_lock:
+            return int(parallel_counters.get(name, 0))
+
+    def append_deployed_contract(record: dict):
+        with run_state_lock:
+            deployed_contracts.append(record)
+
+    def append_deployment_failure(message: str):
+        with run_state_lock:
+            deployment_failures.append(message)
+
+    def set_wrap_transaction_once(record: dict | None):
+        nonlocal wrap_transaction
+        if not record:
+            return
+        with run_state_lock:
+            wrap_transaction = wrap_transaction or record
+
     def record_run_log(**kwargs):
-        entry = append_run_log(run_logs, **kwargs)
-        persist_run_state()
+        nonlocal parallel_subwallet_processing_active
+        with run_state_lock:
+            entry = append_run_log(run_logs, **kwargs)
+            should_persist = not parallel_subwallet_processing_active
+        if should_persist:
+            persist_run_state()
         return entry
 
     def get_address_native_balance_decimal(address: str) -> Decimal:
@@ -2991,7 +3066,7 @@ def execute_wallet_run(
         minimum_balance_eth: Decimal = Decimal("0"),
         current_eth_balance: Decimal | None = None,
     ) -> Decimal:
-        nonlocal top_up_success_count
+        nonlocal main_wallet_nonce
 
         current_balance = current_eth_balance if current_eth_balance is not None else get_address_native_balance_decimal(item["address"])
         needs_threshold_refill = auto_top_up_enabled and current_balance <= auto_top_up_threshold_eth
@@ -3007,123 +3082,127 @@ def execute_wallet_run(
             return current_balance
 
         top_up_amount = desired_target_eth - current_balance
-        gas_price_wei = int(web3_client.eth.gas_price)
-        top_up_fee_eth = estimate_gas_fee_eth(ETH_TRANSFER_GAS_LIMIT, gas_price_wei=gas_price_wei)
-        current_main_balance = get_address_native_balance_decimal(sender)
-        required_main_balance = top_up_amount + top_up_fee_eth
-        if current_main_balance < required_main_balance:
-            raise RuntimeError(
-                f"Auto top-up could not continue because the main wallet no longer has enough {native_symbol}. "
-                f"Need {format_decimal(required_main_balance - current_main_balance)} more {native_symbol}."
-            )
+        with main_wallet_tx_lock:
+            gas_price_wei = int(web3_client.eth.gas_price)
+            top_up_fee_eth = estimate_gas_fee_eth(ETH_TRANSFER_GAS_LIMIT, gas_price_wei=gas_price_wei)
+            current_main_balance = get_address_native_balance_decimal(sender)
+            required_main_balance = top_up_amount + top_up_fee_eth
+            if current_main_balance < required_main_balance:
+                raise RuntimeError(
+                    f"Auto top-up could not continue because the main wallet no longer has enough {native_symbol}. "
+                    f"Need {format_decimal(required_main_balance - current_main_balance)} more {native_symbol}."
+                )
 
-        tx_nonce = web3_client.eth.get_transaction_count(sender, "pending")
-        top_up_record = {
-            "tx_hash": None,
-            "status": "pending",
-            "amount": format_decimal(top_up_amount),
-            "balance_before_eth": format_decimal(current_balance),
-            "balance_after_eth": None,
-            "threshold_eth": format_decimal(auto_top_up_threshold_eth),
-            "target_eth": format_decimal(desired_target_eth),
-            "minimum_balance_eth": format_decimal(minimum_balance_eth),
-            "reason": reason,
-            "triggered_by_threshold": needs_threshold_refill,
-            "triggered_by_minimum_balance": needs_minimum_refill,
-        }
-        item.setdefault("top_up_transactions", []).append(top_up_record)
-
-        try:
-            top_up_tx = {
-                **build_transaction_envelope(
-                    web3_client,
-                    sender,
-                    tx_nonce,
-                    gas=ETH_TRANSFER_GAS_LIMIT,
-                    value=decimal_to_wei(top_up_amount),
-                    gas_price_wei=gas_price_wei,
-                ),
-                "to": Web3.to_checksum_address(item["address"]),
+            tx_nonce = main_wallet_nonce if main_wallet_nonce is not None else web3_client.eth.get_transaction_count(sender, "pending")
+            main_wallet_nonce = tx_nonce + 1
+            top_up_record = {
+                "tx_hash": None,
+                "status": "pending",
+                "amount": format_decimal(top_up_amount),
+                "balance_before_eth": format_decimal(current_balance),
+                "balance_after_eth": None,
+                "threshold_eth": format_decimal(auto_top_up_threshold_eth),
+                "target_eth": format_decimal(desired_target_eth),
+                "minimum_balance_eth": format_decimal(minimum_balance_eth),
+                "reason": reason,
+                "triggered_by_threshold": needs_threshold_refill,
+                "triggered_by_minimum_balance": needs_minimum_refill,
             }
-            top_up_hash = send_signed_transaction(web3_client, top_up_tx, sender_private_key)
-            top_up_record["tx_hash"] = top_up_hash
-            top_up_record["status"] = "submitted"
-            record_run_log(
-                stage="top_up",
-                event="subwallet_auto_top_up_submitted",
-                status="submitted",
-                message=f"Submitted auto top-up for subwallet {item['address']}.",
-                tx_hash=top_up_hash,
-                wallet_id=item["wallet_id"],
-                wallet_address=item["address"],
-                movement={
-                    "action": "transfer",
-                    "asset": native_symbol,
-                    "amount": format_decimal(top_up_amount),
-                    "from_address": main_wallet["address"],
-                    "to_address": item["address"],
-                },
-                details={
-                    "reason": reason,
-                    "balance_before_eth": format_decimal(current_balance),
-                    "target_eth": format_decimal(desired_target_eth),
-                    "threshold_eth": format_decimal(auto_top_up_threshold_eth),
-                    "minimum_balance_eth": format_decimal(minimum_balance_eth),
-                    "triggered_by_threshold": needs_threshold_refill,
-                    "triggered_by_minimum_balance": needs_minimum_refill,
-                },
-            )
-            wait_for_transaction_success(web3_client, top_up_hash)
-            balance_after = get_address_native_balance_decimal(item["address"])
-            top_up_record["status"] = "confirmed"
-            top_up_record["balance_after_eth"] = format_decimal(balance_after)
-            item["status"] = "topped_up"
-            top_up_success_count += 1
-            record_run_log(
-                stage="top_up",
-                event="subwallet_auto_top_up_confirmed",
-                status="confirmed",
-                message=f"Confirmed auto top-up for subwallet {item['address']}.",
-                tx_hash=top_up_hash,
-                wallet_id=item["wallet_id"],
-                wallet_address=item["address"],
-                movement={
-                    "action": "transfer",
-                    "asset": native_symbol,
-                    "amount": format_decimal(top_up_amount),
-                    "from_address": main_wallet["address"],
-                    "to_address": item["address"],
-                },
-                details={
-                    "reason": reason,
-                    "balance_before_eth": format_decimal(current_balance),
-                    "balance_after_eth": format_decimal(balance_after),
-                    "target_eth": format_decimal(desired_target_eth),
-                    "threshold_eth": format_decimal(auto_top_up_threshold_eth),
-                    "minimum_balance_eth": format_decimal(minimum_balance_eth),
-                },
-            )
-            return balance_after
-        except Exception as exc:
-            top_up_record["status"] = "failed"
-            top_up_record["error"] = str(exc)
-            record_run_log(
-                stage="top_up",
-                event="subwallet_auto_top_up_failed",
-                status="failed",
-                message=f"Auto top-up failed for subwallet {item['address']}: {exc}",
-                tx_hash=top_up_record.get("tx_hash"),
-                wallet_id=item["wallet_id"],
-                wallet_address=item["address"],
-                details={
-                    "reason": reason,
-                    "balance_before_eth": format_decimal(current_balance),
-                    "target_eth": format_decimal(desired_target_eth),
-                    "threshold_eth": format_decimal(auto_top_up_threshold_eth),
-                    "minimum_balance_eth": format_decimal(minimum_balance_eth),
-                },
-            )
-            raise
+            item.setdefault("top_up_transactions", []).append(top_up_record)
+
+            try:
+                top_up_tx = {
+                    **build_transaction_envelope(
+                        web3_client,
+                        sender,
+                        tx_nonce,
+                        gas=ETH_TRANSFER_GAS_LIMIT,
+                        value=decimal_to_wei(top_up_amount),
+                        gas_price_wei=gas_price_wei,
+                    ),
+                    "to": Web3.to_checksum_address(item["address"]),
+                }
+                top_up_hash = send_signed_transaction(web3_client, top_up_tx, sender_private_key)
+                top_up_record["tx_hash"] = top_up_hash
+                top_up_record["status"] = "submitted"
+                record_run_log(
+                    stage="top_up",
+                    event="subwallet_auto_top_up_submitted",
+                    status="submitted",
+                    message=f"Submitted auto top-up for subwallet {item['address']}.",
+                    tx_hash=top_up_hash,
+                    wallet_id=item["wallet_id"],
+                    wallet_address=item["address"],
+                    movement={
+                        "action": "transfer",
+                        "asset": native_symbol,
+                        "amount": format_decimal(top_up_amount),
+                        "from_address": main_wallet["address"],
+                        "to_address": item["address"],
+                    },
+                    details={
+                        "reason": reason,
+                        "balance_before_eth": format_decimal(current_balance),
+                        "target_eth": format_decimal(desired_target_eth),
+                        "threshold_eth": format_decimal(auto_top_up_threshold_eth),
+                        "minimum_balance_eth": format_decimal(minimum_balance_eth),
+                        "triggered_by_threshold": needs_threshold_refill,
+                        "triggered_by_minimum_balance": needs_minimum_refill,
+                    },
+                )
+                wait_for_transaction_success(web3_client, top_up_hash)
+                balance_after = get_address_native_balance_decimal(item["address"])
+                top_up_record["status"] = "confirmed"
+                top_up_record["balance_after_eth"] = format_decimal(balance_after)
+                item["status"] = "topped_up"
+                increment_parallel_counter("top_up_success_count")
+                record_run_log(
+                    stage="top_up",
+                    event="subwallet_auto_top_up_confirmed",
+                    status="confirmed",
+                    message=f"Confirmed auto top-up for subwallet {item['address']}.",
+                    tx_hash=top_up_hash,
+                    wallet_id=item["wallet_id"],
+                    wallet_address=item["address"],
+                    movement={
+                        "action": "transfer",
+                        "asset": native_symbol,
+                        "amount": format_decimal(top_up_amount),
+                        "from_address": main_wallet["address"],
+                        "to_address": item["address"],
+                    },
+                    details={
+                        "reason": reason,
+                        "balance_before_eth": format_decimal(current_balance),
+                        "balance_after_eth": format_decimal(balance_after),
+                        "target_eth": format_decimal(desired_target_eth),
+                        "threshold_eth": format_decimal(auto_top_up_threshold_eth),
+                        "minimum_balance_eth": format_decimal(minimum_balance_eth),
+                    },
+                )
+                return balance_after
+            except Exception as exc:
+                if not top_up_record.get("tx_hash"):
+                    main_wallet_nonce = tx_nonce
+                top_up_record["status"] = "failed"
+                top_up_record["error"] = str(exc)
+                record_run_log(
+                    stage="top_up",
+                    event="subwallet_auto_top_up_failed",
+                    status="failed",
+                    message=f"Auto top-up failed for subwallet {item['address']}: {exc}",
+                    tx_hash=top_up_record.get("tx_hash"),
+                    wallet_id=item["wallet_id"],
+                    wallet_address=item["address"],
+                    details={
+                        "reason": reason,
+                        "balance_before_eth": format_decimal(current_balance),
+                        "target_eth": format_decimal(desired_target_eth),
+                        "threshold_eth": format_decimal(auto_top_up_threshold_eth),
+                        "minimum_balance_eth": format_decimal(minimum_balance_eth),
+                    },
+                )
+                raise
 
     def ensure_subwallet_eth_headroom(
         item: dict,
@@ -3131,8 +3210,6 @@ def execute_wallet_run(
         reason: str,
         minimum_balance_eth: Decimal = Decimal("0"),
     ) -> tuple[bool, str | None]:
-        nonlocal top_up_failure_count
-
         current_balance = get_address_native_balance_decimal(item["address"])
 
         if auto_top_up_enabled:
@@ -3144,7 +3221,7 @@ def execute_wallet_run(
                     current_eth_balance=current_balance,
                 )
             except Exception as exc:
-                top_up_failure_count += 1
+                increment_parallel_counter("top_up_failure_count")
                 return False, str(exc)
 
         if minimum_balance_eth > 0 and current_balance < minimum_balance_eth:
@@ -3161,8 +3238,6 @@ def execute_wallet_run(
         *,
         sub_wallet: dict,
     ):
-        nonlocal return_sweep_success_count, return_sweep_failure_count, execution_failure_count
-
         if not return_wallet_address:
             return
 
@@ -3172,8 +3247,8 @@ def execute_wallet_run(
         candidate_tokens: list[dict] = []
         seen_tokens: set[str] = set()
         for token in [
-            resolve_token(wrapped_native_address, template_chain),
-            *(resolve_token(route["token_address"], template_chain) for route in stablecoin_routes),
+            wrapped_native_token,
+            *(route["token_out"] for route in stablecoin_routes),
         ]:
             normalized_address = token["address"].lower()
             if normalized_address in seen_tokens:
@@ -3194,8 +3269,8 @@ def execute_wallet_run(
             minimum_balance_eth=estimate_gas_fee_eth(cleanup_gas_units) if cleanup_gas_units > 0 else Decimal("0"),
         )
         if not balance_ready:
-            return_sweep_failure_count += 1
-            execution_failure_count += 1
+            increment_parallel_counter("return_sweep_failure_count")
+            increment_parallel_counter("execution_failure_count")
             raise RuntimeError(balance_error or f"Return sweep {native_symbol} headroom check failed")
 
         for token, balance_units in token_balances_to_sweep:
@@ -3258,7 +3333,7 @@ def execute_wallet_run(
                         "status": sweep_receipt["status"],
                     }
                 )
-                return_sweep_success_count += 1
+                increment_parallel_counter("return_sweep_success_count")
                 record_run_log(
                     stage="cleanup",
                     event="subwallet_leftover_token_returned",
@@ -3276,7 +3351,7 @@ def execute_wallet_run(
                     },
                 )
             except Exception as exc:
-                return_sweep_failure_count += 1
+                increment_parallel_counter("return_sweep_failure_count")
                 item.setdefault("return_sweep_transactions", []).append(
                     {
                         "asset": token["symbol"],
@@ -3335,7 +3410,7 @@ def execute_wallet_run(
                 }
             )
             item["status"] = "returned"
-            return_sweep_success_count += 1
+            increment_parallel_counter("return_sweep_success_count")
             record_run_log(
                 stage="cleanup",
                 event="subwallet_leftover_eth_returned",
@@ -3353,7 +3428,7 @@ def execute_wallet_run(
                 },
             )
         except Exception as exc:
-            return_sweep_failure_count += 1
+            increment_parallel_counter("return_sweep_failure_count")
             record_run_log(
                 stage="cleanup",
                 event="subwallet_leftover_eth_return_failed",
@@ -3801,7 +3876,23 @@ def execute_wallet_run(
             )
         )
 
-        for item in run_sub_wallets:
+        subwallet_worker_count = max(1, min(len(run_sub_wallets), get_wallet_run_max_parallel_subwallets()))
+        if subwallet_worker_count > 1:
+            record_run_log(
+                stage="run",
+                event="subwallet_parallel_execution_prepared",
+                status="ready",
+                message=(
+                    f"Processing {len(run_sub_wallets)} subwallets with up to {subwallet_worker_count} concurrent workers."
+                ),
+                details={
+                    "subwallet_count": len(run_sub_wallets),
+                    "worker_count": subwallet_worker_count,
+                },
+            )
+
+        def process_subwallet(item: dict):
+            nonlocal sender, main_wallet_nonce
             subwallet_errors: list[str] = []
             completed_deployments_for_wallet = 0
             successful_swaps_for_wallet = 0
@@ -4002,8 +4093,8 @@ def execute_wallet_run(
                         "confirmation_source": wrap_receipt.get("confirmation_source"),
                     }
                     item["status"] = "wrapped"
-                    wrap_transaction = wrap_transaction or item["wrap_transaction"]
-                    subwallet_wrap_count += 1
+                    set_wrap_transaction_once(item["wrap_transaction"])
+                    increment_parallel_counter("subwallet_wrap_count")
                     record_run_log(
                         stage="wrapping",
                         event="subwallet_eth_wrap_confirmed",
@@ -4042,7 +4133,7 @@ def execute_wallet_run(
                     )
                     if not balance_ready:
                         abort_wallet_execution = True
-                        execution_failure_count += 1
+                        increment_parallel_counter("execution_failure_count")
                         subwallet_errors.append(balance_error or f"Subwallet {native_symbol} headroom check failed")
                         record_run_log(
                             stage="top_up" if auto_top_up_enabled else "run",
@@ -4184,7 +4275,7 @@ def execute_wallet_run(
                             }
                         )
                         item["status"] = "approved"
-                        approval_success_count += 1
+                        increment_parallel_counter("approval_success_count")
                         approval_ready = True
                         record_run_log(
                             stage="approval",
@@ -4204,7 +4295,7 @@ def execute_wallet_run(
                         )
                         subwallet_nonce += 1
                     except Exception as exc:
-                        approval_failure_count += 1
+                        increment_parallel_counter("approval_failure_count")
                         subwallet_errors.append(str(exc))
                         failed_tx_hash = exc.tx_hash if isinstance(exc, WalletTransactionError) else None
                         item["approval_transactions"].append(
@@ -4245,14 +4336,8 @@ def execute_wallet_run(
 
                 if approval_ready and not abort_wallet_execution:
                     for route_index, route in enumerate(stablecoin_routes):
-                        amount_in = parse_decimal_amount(
-                            route.get("per_contract_weth_amount") or "0",
-                            "per_contract_weth_amount",
-                        )
-                        if amount_in <= 0:
-                            continue
-
-                        token_out = resolve_token(route["token_address"], template_chain)
+                        amount_in = route["amount_in"]
+                        token_out = route["token_out"]
                         remaining_route_count = planned_route_count - route_index
                         remaining_route_deployment_gas_units = remaining_route_count * build_planned_target_gas_units(funding_asset_kind="erc20")
                         remaining_direct_target_gas_units = (
@@ -4286,7 +4371,7 @@ def execute_wallet_run(
                         )
                         if not balance_ready:
                             abort_wallet_execution = True
-                            execution_failure_count += 1
+                            increment_parallel_counter("execution_failure_count")
                             subwallet_errors.append(balance_error or f"Subwallet {native_symbol} headroom check failed")
                             record_run_log(
                                 stage="top_up" if auto_top_up_enabled else "run",
@@ -4439,7 +4524,7 @@ def execute_wallet_run(
                             )
                             item["status"] = "swapped"
                             successful_swaps_for_wallet += 1
-                            swap_success_count += 1
+                            increment_parallel_counter("swap_success_count")
                             record_run_log(
                                 stage="swap",
                                 event="stablecoin_swap_confirmed",
@@ -4489,7 +4574,7 @@ def execute_wallet_run(
                                     tx_hash=swap_receipt["tx_hash"],
                                 )
                         except Exception as exc:
-                            swap_failure_count += 1
+                            increment_parallel_counter("swap_failure_count")
                             subwallet_errors.append(str(exc))
                             failed_tx_hash = exc.tx_hash if isinstance(exc, WalletTransactionError) else None
                             item["swap_transactions"].append(
@@ -4527,7 +4612,7 @@ def execute_wallet_run(
                             "source": "direct_weth",
                             "source_tx_hash": main_wallet_direct_weth_source_tx_hash,
                             "amount_in": format_decimal(distributor_amount),
-                            "token": resolve_token(wrapped_native_address, template_chain),
+                            "token": wrapped_native_token,
                             "amount": distributor_amount,
                             "amount_units": decimal_to_wei(distributor_amount),
                             "funding_asset_kind": "erc20",
@@ -4741,122 +4826,130 @@ def execute_wallet_run(
                         funding_wallet_address = main_wallet["address"] if funding_from_main_wallet else sub_wallet["address"]
                         funding_private_key = main_wallet["private_key"] if funding_from_main_wallet else sub_wallet["private_key"]
                         funding_receipt = None
-                        if funding_from_main_wallet:
-                            if sender is None:
-                                sender = Web3.to_checksum_address(main_wallet["address"])
-                            if main_wallet_nonce is None:
-                                main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
-                            funding_nonce = main_wallet_nonce
-                        else:
-                            funding_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
-                        funding_gas_price_wei = int(web3_client.eth.gas_price)
-                        last_funding_error: WalletTransactionError | None = None
-                        funding_attempt_used = 0
+                        funding_context = main_wallet_tx_lock if funding_from_main_wallet else nullcontext()
+                        with funding_context:
+                            if funding_from_main_wallet:
+                                if sender is None:
+                                    sender = Web3.to_checksum_address(main_wallet["address"])
+                                if main_wallet_nonce is None:
+                                    main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
+                                funding_nonce = main_wallet_nonce
+                            else:
+                                funding_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
+                            funding_gas_price_wei = int(web3_client.eth.gas_price)
+                            last_funding_error: WalletTransactionError | None = None
+                            funding_attempt_used = 0
+                            funding_nonce_consumed = False
 
-                        for funding_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
-                            funding_attempt_used = funding_attempt
-                            try:
-                                if (target.get("funding_asset_kind") or "erc20") == "native_eth":
-                                    funding_receipt = transfer_native_eth_from_wallet(
-                                        web3_client,
-                                        wallet_address=funding_wallet_address,
-                                        private_key=funding_private_key,
-                                        recipient_address=deployed["contract_address"],
-                                        amount_wei=int(target["amount_units"]),
-                                        nonce=funding_nonce,
-                                        gas_price_wei=funding_gas_price_wei,
-                                    )
-                                else:
-                                    funding_receipt = transfer_token_from_wallet(
-                                        web3_client,
-                                        token_address=target["token"]["address"],
-                                        chain=template_chain,
-                                        wallet_address=funding_wallet_address,
-                                        private_key=funding_private_key,
-                                        recipient_address=deployed["contract_address"],
-                                        amount_units=int(target["amount_units"]),
-                                        nonce=funding_nonce,
-                                        gas_price_wei=funding_gas_price_wei,
-                                    )
-                                break
-                            except WalletTransactionError as exc:
-                                last_funding_error = exc
-                                if exc.retryable:
+                            for funding_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
+                                funding_attempt_used = funding_attempt
+                                try:
                                     if (target.get("funding_asset_kind") or "erc20") == "native_eth":
-                                        funding_receipt = recover_native_eth_transfer_after_timeout(
+                                        funding_receipt = transfer_native_eth_from_wallet(
                                             web3_client,
+                                            wallet_address=funding_wallet_address,
+                                            private_key=funding_private_key,
                                             recipient_address=deployed["contract_address"],
                                             amount_wei=int(target["amount_units"]),
-                                            recipient_balance_before_wei=int(exc.details.get("recipient_balance_before_wei") or 0),
-                                            tx_hash=exc.tx_hash,
                                             nonce=funding_nonce,
-                                            gas_price_wei=exc.gas_price_wei,
+                                            gas_price_wei=funding_gas_price_wei,
                                         )
                                     else:
-                                        funding_receipt = recover_token_transfer_after_timeout(
+                                        funding_receipt = transfer_token_from_wallet(
                                             web3_client,
                                             token_address=target["token"]["address"],
+                                            chain=template_chain,
+                                            wallet_address=funding_wallet_address,
+                                            private_key=funding_private_key,
                                             recipient_address=deployed["contract_address"],
                                             amount_units=int(target["amount_units"]),
-                                            token_decimals=int(exc.details.get("token_decimals") or target["token"]["decimals"]),
-                                            recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
-                                            tx_hash=exc.tx_hash,
                                             nonce=funding_nonce,
-                                            gas_price_wei=exc.gas_price_wei,
+                                            gas_price_wei=funding_gas_price_wei,
                                         )
-                                    if funding_receipt:
-                                        record_run_log(
-                                            stage="distribution",
-                                            event="managed_token_distributor_funding_recovered_after_timeout",
-                                            status="confirmed",
-                                            message=(
-                                                f"Funding transfer for {target['token']['symbol']} into the distributor on subwallet "
-                                                f"{item['address']} was recovered after the receipt timeout."
-                                            ),
-                                            tx_hash=exc.tx_hash,
-                                            wallet_id=item["wallet_id"],
-                                            wallet_address=item["address"],
-                                            details={
-                                                "contract_address": deployed["contract_address"],
-                                                "attempt": funding_attempt,
-                                                "max_attempts": TOKEN_TRANSFER_MAX_ATTEMPTS,
-                                                "confirmation_source": funding_receipt.get("confirmation_source") or "receipt",
-                                            },
-                                        )
-                                        break
-                                    if funding_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
-                                        funding_gas_price_wei = get_bumped_gas_price_wei(
-                                            web3_client,
-                                            exc.gas_price_wei,
-                                            multiplier=TOKEN_TRANSFER_GAS_PRICE_BUMP_MULTIPLIER,
-                                        )
-                                        record_run_log(
-                                            stage="distribution",
-                                            event="managed_token_distributor_funding_retry_scheduled",
-                                            status="started",
-                                            message=(
-                                                f"Funding transfer attempt {funding_attempt}/{TOKEN_TRANSFER_MAX_ATTEMPTS} "
-                                                f"for {target['token']['symbol']} into the distributor on subwallet {item['address']} timed out. "
-                                                f"Retrying with a higher gas price."
-                                            ),
-                                            tx_hash=exc.tx_hash,
-                                            wallet_id=item["wallet_id"],
-                                            wallet_address=item["address"],
-                                            details={
-                                                "contract_address": deployed["contract_address"],
-                                                "attempt": funding_attempt,
-                                                "max_attempts": TOKEN_TRANSFER_MAX_ATTEMPTS,
-                                                "replacement_nonce": funding_nonce,
-                                                "next_gas_price_wei": funding_gas_price_wei,
-                                            },
-                                        )
-                                        continue
-                                raise
+                                    funding_nonce_consumed = funding_from_main_wallet
+                                    break
+                                except WalletTransactionError as exc:
+                                    last_funding_error = exc
+                                    if funding_from_main_wallet and exc.tx_hash:
+                                        funding_nonce_consumed = True
+                                    if exc.retryable:
+                                        if (target.get("funding_asset_kind") or "erc20") == "native_eth":
+                                            funding_receipt = recover_native_eth_transfer_after_timeout(
+                                                web3_client,
+                                                recipient_address=deployed["contract_address"],
+                                                amount_wei=int(target["amount_units"]),
+                                                recipient_balance_before_wei=int(exc.details.get("recipient_balance_before_wei") or 0),
+                                                tx_hash=exc.tx_hash,
+                                                nonce=funding_nonce,
+                                                gas_price_wei=exc.gas_price_wei,
+                                            )
+                                        else:
+                                            funding_receipt = recover_token_transfer_after_timeout(
+                                                web3_client,
+                                                token_address=target["token"]["address"],
+                                                recipient_address=deployed["contract_address"],
+                                                amount_units=int(target["amount_units"]),
+                                                token_decimals=int(exc.details.get("token_decimals") or target["token"]["decimals"]),
+                                                recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
+                                                tx_hash=exc.tx_hash,
+                                                nonce=funding_nonce,
+                                                gas_price_wei=exc.gas_price_wei,
+                                            )
+                                        if funding_receipt:
+                                            if funding_from_main_wallet:
+                                                funding_nonce_consumed = True
+                                            record_run_log(
+                                                stage="distribution",
+                                                event="managed_token_distributor_funding_recovered_after_timeout",
+                                                status="confirmed",
+                                                message=(
+                                                    f"Funding transfer for {target['token']['symbol']} into the distributor on subwallet "
+                                                    f"{item['address']} was recovered after the receipt timeout."
+                                                ),
+                                                tx_hash=exc.tx_hash,
+                                                wallet_id=item["wallet_id"],
+                                                wallet_address=item["address"],
+                                                details={
+                                                    "contract_address": deployed["contract_address"],
+                                                    "attempt": funding_attempt,
+                                                    "max_attempts": TOKEN_TRANSFER_MAX_ATTEMPTS,
+                                                    "confirmation_source": funding_receipt.get("confirmation_source") or "receipt",
+                                                },
+                                            )
+                                            break
+                                        if funding_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
+                                            funding_gas_price_wei = get_bumped_gas_price_wei(
+                                                web3_client,
+                                                exc.gas_price_wei,
+                                                multiplier=TOKEN_TRANSFER_GAS_PRICE_BUMP_MULTIPLIER,
+                                            )
+                                            record_run_log(
+                                                stage="distribution",
+                                                event="managed_token_distributor_funding_retry_scheduled",
+                                                status="started",
+                                                message=(
+                                                    f"Funding transfer attempt {funding_attempt}/{TOKEN_TRANSFER_MAX_ATTEMPTS} "
+                                                    f"for {target['token']['symbol']} into the distributor on subwallet {item['address']} timed out. "
+                                                    f"Retrying with a higher gas price."
+                                                ),
+                                                tx_hash=exc.tx_hash,
+                                                wallet_id=item["wallet_id"],
+                                                wallet_address=item["address"],
+                                                details={
+                                                    "contract_address": deployed["contract_address"],
+                                                    "attempt": funding_attempt,
+                                                    "max_attempts": TOKEN_TRANSFER_MAX_ATTEMPTS,
+                                                    "replacement_nonce": funding_nonce,
+                                                    "next_gas_price_wei": funding_gas_price_wei,
+                                                },
+                                            )
+                                            continue
+                                    raise
 
-                        if not funding_receipt:
-                            raise last_funding_error or RuntimeError("ManagedTokenDistributor funding transfer did not produce a confirmation")
-                        if funding_from_main_wallet:
-                            main_wallet_nonce = funding_nonce + 1
+                            if not funding_receipt:
+                                raise last_funding_error or RuntimeError("ManagedTokenDistributor funding transfer did not produce a confirmation")
+                            if funding_from_main_wallet and funding_nonce_consumed:
+                                main_wallet_nonce = funding_nonce + 1
 
                         deployment_info["funding_tx_hash"] = funding_receipt["tx_hash"]
                         deployment_info["funding_status"] = funding_receipt["status"]
@@ -4864,11 +4957,11 @@ def execute_wallet_run(
                         deployment_info["status"] = "completed"
                         item["deployed_contracts"].append(deployment_info)
                         item["deployed_contract"] = item["deployed_contract"] or deployment_info
-                        deployed_contracts.append(deployment_info)
+                        append_deployed_contract(deployment_info)
                         item["status"] = "completed"
                         completed_deployments_for_wallet += 1
-                        deployment_success_count += 1
-                        contract_funding_success_count += 1
+                        increment_parallel_counter("deployment_success_count")
+                        increment_parallel_counter("contract_funding_success_count")
 
                         record_run_log(
                             stage="distribution",
@@ -5093,7 +5186,7 @@ def execute_wallet_run(
                                         "confirmation_source": execution_receipt.get("confirmation_source"),
                                     }
                                 )
-                                contract_execute_success_count += 1
+                                increment_parallel_counter("contract_execute_success_count")
                                 record_run_log(
                                     stage="distribution",
                                     event="managed_token_distributor_execute_confirmed",
@@ -5135,8 +5228,8 @@ def execute_wallet_run(
                                         "error": str(exc),
                                     }
                                 )
-                                contract_execute_failure_count += 1
-                                execution_failure_count += 1
+                                increment_parallel_counter("contract_execute_failure_count")
+                                increment_parallel_counter("execution_failure_count")
                                 subwallet_errors.append(str(exc))
                                 record_run_log(
                                     stage="distribution",
@@ -5177,12 +5270,12 @@ def execute_wallet_run(
                                 int(locals().get("funding_attempt_used") or 0),
                                 1,
                             )
-                            contract_funding_failure_count += 1
+                            increment_parallel_counter("contract_funding_failure_count")
                         else:
                             deployment_info["status"] = "failed"
                         item["deployed_contracts"].append(deployment_info)
                         item["deployed_contract"] = item["deployed_contract"] or deployment_info
-                        deployed_contracts.append(deployment_info)
+                        append_deployed_contract(deployment_info)
                         subwallet_errors.append(str(exc))
                         if is_post_deploy_failure:
                             record_run_log(
@@ -5203,7 +5296,7 @@ def execute_wallet_run(
                                 },
                             )
                         else:
-                            deployment_failures.append(str(exc))
+                            append_deployment_failure(str(exc))
                             record_run_log(
                                 stage="deployment",
                                 event="managed_token_distributor_deployment_failed",
@@ -5246,7 +5339,7 @@ def execute_wallet_run(
                     item["status"] = item.get("status") or "created"
             except Exception as exc:
                 item["status"] = "failed"
-                execution_failure_count += 1
+                increment_parallel_counter("execution_failure_count")
                 record_run_log(
                     stage="run",
                     event="subwallet_execution_failed",
@@ -5256,37 +5349,66 @@ def execute_wallet_run(
                     wallet_address=item["address"],
                 )
 
+        if subwallet_worker_count == 1:
+            for item in run_sub_wallets:
+                process_subwallet(item)
+        else:
+            parallel_subwallet_processing_active = True
+            try:
+                with ThreadPoolExecutor(max_workers=subwallet_worker_count, thread_name_prefix="wallet-run") as executor:
+                    futures = [executor.submit(process_subwallet, item) for item in run_sub_wallets]
+                    for future in as_completed(futures):
+                        future.result()
+                parallel_subwallet_processing_active = False
+            except Exception:
+                parallel_subwallet_processing_active = False
+                persist_run_state()
+                raise
+            persist_run_state()
+            record_run_log(
+                stage="run",
+                event="subwallet_parallel_execution_completed",
+                status="completed",
+                message=(
+                    f"Finished concurrent processing for {len(run_sub_wallets)} subwallets with {subwallet_worker_count} workers."
+                ),
+                details={
+                    "subwallet_count": len(run_sub_wallets),
+                    "worker_count": subwallet_worker_count,
+                },
+            )
+
         if (
             deployment_failures
-            or swap_failure_count
-            or approval_failure_count
-            or contract_funding_failure_count
-            or top_up_failure_count
-            or contract_execute_failure_count
-            or return_sweep_failure_count
-            or execution_failure_count
+            or get_parallel_counter("swap_failure_count")
+            or get_parallel_counter("approval_failure_count")
+            or get_parallel_counter("contract_funding_failure_count")
+            or get_parallel_counter("top_up_failure_count")
+            or get_parallel_counter("contract_execute_failure_count")
+            or get_parallel_counter("return_sweep_failure_count")
+            or get_parallel_counter("execution_failure_count")
         ):
             error_message = error_message or (
                 "Automation finished with "
-                f"{approval_failure_count} approval failure(s), "
-                f"{swap_failure_count} swap failure(s), and "
+                f"{get_parallel_counter('approval_failure_count')} approval failure(s), "
+                f"{get_parallel_counter('swap_failure_count')} swap failure(s), and "
                 f"{len(deployment_failures)} deployment failure(s), "
-                f"{contract_funding_failure_count} contract funding failure(s), "
-                f"{contract_execute_failure_count} test execute failure(s), "
-                f"{top_up_failure_count} auto top-up failure(s), and "
-                f"{return_sweep_failure_count} return sweep failure(s), and "
-                f"{execution_failure_count} execution failure(s)."
+                f"{get_parallel_counter('contract_funding_failure_count')} contract funding failure(s), "
+                f"{get_parallel_counter('contract_execute_failure_count')} test execute failure(s), "
+                f"{get_parallel_counter('top_up_failure_count')} auto top-up failure(s), and "
+                f"{get_parallel_counter('return_sweep_failure_count')} return sweep failure(s), and "
+                f"{get_parallel_counter('execution_failure_count')} execution failure(s)."
             )
             successful_activity = (
                 funding_submitted_transaction_count
-                + subwallet_wrap_count
-                + top_up_success_count
-                + contract_execute_success_count
-                + return_sweep_success_count
-                + approval_success_count
-                + swap_success_count
-                + deployment_success_count
-                + contract_funding_success_count
+                + get_parallel_counter("subwallet_wrap_count")
+                + get_parallel_counter("top_up_success_count")
+                + get_parallel_counter("contract_execute_success_count")
+                + get_parallel_counter("return_sweep_success_count")
+                + get_parallel_counter("approval_success_count")
+                + get_parallel_counter("swap_success_count")
+                + get_parallel_counter("deployment_success_count")
+                + get_parallel_counter("contract_funding_success_count")
             )
             status = "partial" if successful_activity > 0 else "failed"
         else:
@@ -5333,21 +5455,21 @@ def execute_wallet_run(
             "run_status": status,
             "subwallet_count": len(created_sub_wallets),
             "funding_submitted_transaction_count": funding_submitted_transaction_count,
-            "subwallet_wrap_count": subwallet_wrap_count,
-            "top_up_success_count": top_up_success_count,
-            "top_up_failure_count": top_up_failure_count,
-            "contract_execute_success_count": contract_execute_success_count,
-            "contract_execute_failure_count": contract_execute_failure_count,
-            "return_sweep_success_count": return_sweep_success_count,
-            "return_sweep_failure_count": return_sweep_failure_count,
-            "execution_failure_count": execution_failure_count,
-            "approval_success_count": approval_success_count,
-            "approval_failure_count": approval_failure_count,
-            "swap_success_count": swap_success_count,
-            "swap_failure_count": swap_failure_count,
-            "deployed_contract_count": deployment_success_count,
-            "contract_funding_success_count": contract_funding_success_count,
-            "contract_funding_failure_count": contract_funding_failure_count,
+            "subwallet_wrap_count": get_parallel_counter("subwallet_wrap_count"),
+            "top_up_success_count": get_parallel_counter("top_up_success_count"),
+            "top_up_failure_count": get_parallel_counter("top_up_failure_count"),
+            "contract_execute_success_count": get_parallel_counter("contract_execute_success_count"),
+            "contract_execute_failure_count": get_parallel_counter("contract_execute_failure_count"),
+            "return_sweep_success_count": get_parallel_counter("return_sweep_success_count"),
+            "return_sweep_failure_count": get_parallel_counter("return_sweep_failure_count"),
+            "execution_failure_count": get_parallel_counter("execution_failure_count"),
+            "approval_success_count": get_parallel_counter("approval_success_count"),
+            "approval_failure_count": get_parallel_counter("approval_failure_count"),
+            "swap_success_count": get_parallel_counter("swap_success_count"),
+            "swap_failure_count": get_parallel_counter("swap_failure_count"),
+            "deployed_contract_count": get_parallel_counter("deployment_success_count"),
+            "contract_funding_success_count": get_parallel_counter("contract_funding_success_count"),
+            "contract_funding_failure_count": get_parallel_counter("contract_funding_failure_count"),
         },
     )
     record_run_log(
@@ -5362,22 +5484,22 @@ def execute_wallet_run(
         details={
             "error": error_message,
             "funding_submitted_transaction_count": funding_submitted_transaction_count,
-            "subwallet_wrap_count": subwallet_wrap_count,
-            "top_up_success_count": top_up_success_count,
-            "top_up_failure_count": top_up_failure_count,
-            "contract_execute_success_count": contract_execute_success_count,
-            "contract_execute_failure_count": contract_execute_failure_count,
-            "return_sweep_success_count": return_sweep_success_count,
-            "return_sweep_failure_count": return_sweep_failure_count,
-            "execution_failure_count": execution_failure_count,
-            "approval_success_count": approval_success_count,
-            "approval_failure_count": approval_failure_count,
-            "swap_success_count": swap_success_count,
-            "swap_failure_count": swap_failure_count,
-            "deployed_contract_count": deployment_success_count,
+            "subwallet_wrap_count": get_parallel_counter("subwallet_wrap_count"),
+            "top_up_success_count": get_parallel_counter("top_up_success_count"),
+            "top_up_failure_count": get_parallel_counter("top_up_failure_count"),
+            "contract_execute_success_count": get_parallel_counter("contract_execute_success_count"),
+            "contract_execute_failure_count": get_parallel_counter("contract_execute_failure_count"),
+            "return_sweep_success_count": get_parallel_counter("return_sweep_success_count"),
+            "return_sweep_failure_count": get_parallel_counter("return_sweep_failure_count"),
+            "execution_failure_count": get_parallel_counter("execution_failure_count"),
+            "approval_success_count": get_parallel_counter("approval_success_count"),
+            "approval_failure_count": get_parallel_counter("approval_failure_count"),
+            "swap_success_count": get_parallel_counter("swap_success_count"),
+            "swap_failure_count": get_parallel_counter("swap_failure_count"),
+            "deployed_contract_count": get_parallel_counter("deployment_success_count"),
             "deployment_failure_count": len(deployment_failures),
-            "contract_funding_success_count": contract_funding_success_count,
-            "contract_funding_failure_count": contract_funding_failure_count,
+            "contract_funding_success_count": get_parallel_counter("contract_funding_success_count"),
+            "contract_funding_failure_count": get_parallel_counter("contract_funding_failure_count"),
         },
     )
 

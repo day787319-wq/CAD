@@ -131,17 +131,99 @@ def _parse_auto_top_up_settings(payload: dict, chain: str) -> dict:
     }
 
 
+def _normalize_text_field(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _allocation_field_path(index: int, field_name: str) -> str:
+    return f"stablecoin_allocations[{index}].{field_name}"
+
+
 def _normalize_stablecoin(
     chain: str,
     address: str | None = None,
     symbol: str | None = None,
 ):
+    normalized_address = _normalize_text_field(address)
+    normalized_symbol = _normalize_text_field(symbol)
+
     try:
-        return get_template_chain_token(chain, address=address, symbol=symbol)
+        if normalized_address:
+            checksum_address = Web3.to_checksum_address(normalized_address)
+            try:
+                return get_template_chain_token(chain, address=checksum_address)
+            except ValueError:
+                return resolve_token(checksum_address, chain)
+        if normalized_symbol:
+            return get_template_chain_token(chain, symbol=normalized_symbol)
     except ValueError:
-        if address and Web3.is_address(address):
-            return resolve_token(address, chain)
         raise
+
+    raise ValueError("Token is required")
+
+
+def _normalize_allocation_token(chain: str, raw_allocation: dict, index: int) -> dict:
+    field_token_address = _allocation_field_path(index, "token_address")
+    field_token_symbol = _allocation_field_path(index, "token_symbol")
+    chain_config = get_template_chain_config(chain)
+    normalized_address = _normalize_text_field(raw_allocation.get("token_address"))
+    normalized_symbol = _normalize_text_field(raw_allocation.get("token_symbol"))
+
+    if normalized_address and not Web3.is_address(normalized_address):
+        raise ValueError(f"{field_token_address} must be a valid EVM address")
+
+    if normalized_address:
+        try:
+            return _normalize_stablecoin(chain, normalized_address, normalized_symbol)
+        except RuntimeError:
+            raise
+        except ValueError as exc:
+            detail = str(exc)
+            if detail == "Token decimals unavailable on current chain":
+                raise ValueError(
+                    f"{field_token_address} is not deployed as an ERC20 token on {chain_config['label']}"
+                ) from exc
+            raise ValueError(f"{field_token_address} could not be resolved on {chain_config['label']}") from exc
+
+    if normalized_symbol:
+        try:
+            return _normalize_stablecoin(chain, symbol=normalized_symbol)
+        except ValueError as exc:
+            raise ValueError(
+                f"{field_token_symbol} is not supported on {chain_config['label']}; "
+                "provide token_address for custom tokens"
+            ) from exc
+
+    raise ValueError(f"{field_token_address} is required when {field_token_symbol} is blank")
+
+
+def _coerce_allocation_token_record(chain: str, allocation: dict, index: int | None = None) -> dict:
+    normalized_address = _normalize_text_field(allocation.get("token_address"))
+    normalized_symbol = _normalize_text_field(allocation.get("token_symbol"))
+    normalized_name = _normalize_text_field(allocation.get("token_name"))
+    decimals_value = allocation.get("token_decimals")
+
+    if normalized_address and Web3.is_address(normalized_address) and normalized_symbol:
+        try:
+            decimals = int(decimals_value)
+        except (TypeError, ValueError):
+            decimals = None
+        if decimals is not None and decimals >= 0:
+            return {
+                "symbol": normalized_symbol,
+                "name": normalized_name or normalized_symbol,
+                "address": Web3.to_checksum_address(normalized_address),
+                "decimals": decimals,
+                "logo_url": allocation.get("token_logo_url"),
+            }
+
+    if index is None:
+        return _normalize_stablecoin(chain, normalized_address, normalized_symbol)
+    return _normalize_allocation_token(chain, allocation, index)
 
 
 def resolve_template_token(address: str, chain: str | None = None):
@@ -178,32 +260,34 @@ def _parse_allocations(
     allocations = []
     seen_addresses = set()
 
-    for raw_allocation in allocations_payload:
+    for index, raw_allocation in enumerate(allocations_payload):
         if not isinstance(raw_allocation, dict):
-            raise ValueError("Invalid stablecoin allocation")
+            raise ValueError(f"stablecoin_allocations[{index}] must be an object")
 
-        token = _normalize_stablecoin(
-            chain,
-            raw_allocation.get("token_address"),
-            raw_allocation.get("token_symbol"),
-        )
+        token = _normalize_allocation_token(chain, raw_allocation, index)
         if token["address"] in seen_addresses:
-            raise ValueError("Duplicate stablecoin allocation")
+            raise ValueError(f"{_allocation_field_path(index, 'token_address')} duplicates a previous allocation")
         seen_addresses.add(token["address"])
 
         allocation = {
             "token_symbol": token["symbol"],
+            "token_name": token["name"],
             "token_address": token["address"],
+            "token_decimals": int(token["decimals"]),
         }
 
         if distribution_mode == "manual_percent":
-            percent = _parse_decimal(raw_allocation.get("percent"), "percent", allow_zero=False)
+            percent = _parse_decimal(
+                raw_allocation.get("percent"),
+                _allocation_field_path(index, "percent"),
+                allow_zero=False,
+            )
             allocation["percent"] = _format_decimal(percent)
             allocation["weth_amount_per_contract"] = None
         elif distribution_mode == "manual_weth_amount":
             weth_amount = _parse_decimal(
                 raw_allocation.get("weth_amount_per_contract"),
-                "weth_amount_per_contract",
+                _allocation_field_path(index, "weth_amount_per_contract"),
                 allow_zero=False,
             )
             allocation["percent"] = None
@@ -236,6 +320,25 @@ def _parse_allocations(
         return allocations
 
     raise ValueError("Unsupported stablecoin distribution mode")
+
+
+def normalize_template_stablecoin_allocations(template: dict, *, persist_repaired: bool = False):
+    normalized_template = dict(template)
+    normalized_template["stablecoin_allocations"] = _parse_allocations(
+        normalized_template.get("stablecoin_allocations"),
+        normalized_template.get("stablecoin_distribution_mode") or "none",
+        Decimal(str(normalized_template.get("swap_budget_eth_per_contract") or "0")),
+        normalize_template_chain(normalized_template.get("chain")),
+    )
+
+    if not persist_repaired:
+        return normalized_template
+
+    if normalized_template["stablecoin_allocations"] == (template.get("stablecoin_allocations") or []):
+        return normalized_template
+
+    stored_record = db.upsert_template(_serialize_template_for_storage(normalized_template))
+    return _deserialize_template_record(stored_record) or normalized_template
 
 
 def _build_template_payload(template_id: str, payload: dict, created_at: str | None = None):
@@ -432,10 +535,9 @@ def _build_allocation_preview(
     include_live_market: bool = False,
 ):
     chain_config = get_template_chain_config(template.get("chain"))
-    token = _normalize_stablecoin(
+    token = _coerce_allocation_token_record(
         template.get("chain") or DEFAULT_TEMPLATE_CHAIN,
-        allocation.get("token_address"),
-        allocation.get("token_symbol"),
+        allocation,
     )
     contract_count_decimal = Decimal(contract_count)
 
@@ -506,6 +608,7 @@ def _build_allocation_preview(
         "token_symbol": token["symbol"],
         "token_name": token["name"],
         "token_address": token["address"],
+        "token_decimals": int(token["decimals"]),
         "percent": _format_decimal(percent),
         "per_contract_weth_amount": _format_decimal(per_contract_weth),
         "total_weth_amount": _format_decimal(total_weth),
@@ -1056,19 +1159,20 @@ def get_template(template_id: str):
 
 
 def build_template_stablecoin_routes(template: dict, contract_count: int = 1):
-    swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
+    normalized_template = normalize_template_stablecoin_allocations(template, persist_repaired=False)
+    swap_budget = Decimal(str(normalized_template["swap_budget_eth_per_contract"]))
     market_snapshot = _empty_market_snapshot()
     return [
         _build_allocation_preview(
-            template,
+            normalized_template,
             allocation,
-            template["stablecoin_distribution_mode"],
+            normalized_template["stablecoin_distribution_mode"],
             swap_budget,
             contract_count,
             market_snapshot,
             include_live_market=False,
         )
-        for allocation in template.get("stablecoin_allocations") or []
+        for allocation in normalized_template.get("stablecoin_allocations") or []
     ]
 
 
@@ -1092,6 +1196,7 @@ def market_check_template(template_id: str, contract_count: int = 1):
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
+    template = normalize_template_stablecoin_allocations(template, persist_repaired=True)
 
     return {
         "template_id": template["id"],
@@ -1136,6 +1241,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
+    template = normalize_template_stablecoin_allocations(template, persist_repaired=True)
     chain_config = get_template_chain_config(template.get("chain"))
 
     from src.services.wallet_service import get_wallet_details

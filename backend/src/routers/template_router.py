@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 class StablecoinAllocationRequest(BaseModel):
     token_symbol: str | None = None
-    token_address: str
+    token_address: str | None = None
     percent: str | None = None
     weth_amount_per_contract: str | None = None
 
