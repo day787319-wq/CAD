@@ -341,12 +341,14 @@ def resolve_template_token(address: str, chain: str | None = None):
             f"{chain_config['wrapped_native_symbol']} is reserved for wrapping on {chain_config['label']}. "
             "It cannot be added as a swap target."
         )
+    saved_token = db.get_template_token(normalized_chain, token["address"])
     return {
         "symbol": token["symbol"],
         "name": token["name"],
         "address": token["address"],
         "decimals": int(token["decimals"]),
         "official_source": None,
+        "is_custom": bool(saved_token.get("is_custom", False)) if saved_token else False,
         **_probe_template_token_route(
             normalized_chain,
             token["address"],
@@ -354,6 +356,113 @@ def resolve_template_token(address: str, chain: str | None = None):
             slippage_percent="0.5",
         ),
     }
+
+
+def _merge_template_token_option(token: dict, saved_token: dict | None = None):
+    merged = {
+        "symbol": token["symbol"],
+        "name": token["name"],
+        "address": token["address"],
+        "decimals": int(token["decimals"]) if token.get("decimals") is not None else None,
+        "official_source": token.get("official_source"),
+        "tested": None,
+        "route_status": None,
+        "route_error": None,
+        "is_custom": False,
+    }
+    if saved_token:
+        merged.update(
+            {
+                "symbol": saved_token.get("symbol") or merged["symbol"],
+                "name": saved_token.get("name") or merged["name"],
+                "address": saved_token.get("address") or merged["address"],
+                "decimals": saved_token.get("decimals")
+                if saved_token.get("decimals") is not None
+                else merged["decimals"],
+                "official_source": saved_token.get("official_source"),
+                "tested": saved_token.get("tested"),
+                "route_status": saved_token.get("route_status"),
+                "route_error": saved_token.get("route_error"),
+                "is_custom": bool(saved_token.get("is_custom", False)),
+            }
+        )
+    return merged
+
+
+def get_template_chain_token_options(chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    saved_tokens = {
+        (record.get("address") or "").lower(): record
+        for record in db.list_template_tokens(normalized_chain)
+        if record.get("address")
+    }
+    merged_tokens = []
+    seen_addresses = set()
+
+    for token in get_template_chain_tokens(normalized_chain):
+        normalized_address = token["address"].lower()
+        seen_addresses.add(normalized_address)
+        merged_tokens.append(_merge_template_token_option(token, saved_tokens.get(normalized_address)))
+
+    for normalized_address, saved_token in saved_tokens.items():
+        if normalized_address in seen_addresses or not saved_token.get("is_custom"):
+            continue
+        merged_tokens.append(
+            {
+                "symbol": saved_token.get("symbol"),
+                "name": saved_token.get("name") or saved_token.get("symbol"),
+                "address": saved_token.get("address"),
+                "decimals": saved_token.get("decimals"),
+                "official_source": saved_token.get("official_source"),
+                "tested": saved_token.get("tested"),
+                "route_status": saved_token.get("route_status"),
+                "route_error": saved_token.get("route_error"),
+                "is_custom": True,
+            }
+        )
+
+    return merged_tokens
+
+
+def recheck_template_token(
+    address: str,
+    chain: str | None = None,
+    *,
+    persist: bool = False,
+    is_custom: bool = False,
+):
+    checked_token = resolve_template_token(address, chain)
+    normalized_chain = normalize_template_chain(chain)
+    if persist:
+        existing = db.get_template_token(normalized_chain, checked_token["address"]) or {}
+        db.upsert_template_token(
+            {
+                "chain": normalized_chain,
+                "symbol": checked_token["symbol"],
+                "name": checked_token["name"],
+                "address": checked_token["address"],
+                "decimals": checked_token["decimals"],
+                "official_source": checked_token.get("official_source"),
+                "tested": checked_token.get("tested"),
+                "route_status": checked_token.get("route_status"),
+                "route_error": checked_token.get("route_error"),
+                "is_custom": bool(is_custom or existing.get("is_custom", False)),
+            }
+        )
+        checked_token["is_custom"] = bool(is_custom or existing.get("is_custom", False))
+    return checked_token
+
+
+def delete_template_token(address: str, chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    normalized_address = (address or "").strip()
+    if not Web3.is_address(normalized_address):
+        raise ValueError("token_address must be a valid EVM address")
+
+    deleted = db.delete_template_token(normalized_chain, Web3.to_checksum_address(normalized_address))
+    if deleted is None:
+        return {"deleted": False}
+    return {"deleted": True, "token": deleted}
 
 
 def get_template_chain_token_route_statuses(chain: str | None = None):
@@ -1497,7 +1606,7 @@ def get_template_options(chain: str | None = None):
         "primary_swap_backend_label": primary_backend_label,
         "fallback_swap_backends": swap_backends[1:],
         "fallback_swap_backend_labels": fallback_backend_labels,
-        "stablecoins": get_template_chain_tokens(normalized_chain),
+        "stablecoins": get_template_chain_token_options(normalized_chain),
         "distribution_modes": [
             {
                 "value": "none",

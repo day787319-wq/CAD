@@ -200,6 +200,19 @@ function TemplateMetric({
   );
 }
 
+function NoRouteTokenBadge({
+  symbol,
+}: {
+  symbol: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 ring-1 ring-rose-200/70">
+      <span>{symbol}</span>
+      <span>No route found</span>
+    </span>
+  );
+}
+
 const WRAP_GAS_UNITS = 120_000;
 const ETH_TRANSFER_GAS_UNITS = 21_000;
 const APPROVE_GAS_UNITS = 70_000;
@@ -1719,9 +1732,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 <p className="mt-3 line-clamp-2 text-xs text-muted-foreground">{template.notes}</p>
                               ) : null}
                               {noRouteAllocations.length > 0 ? (
-                                <p className="mt-3 text-xs text-rose-700">
-                                  {noRouteAllocations.map((allocation) => allocation.token_symbol).join(", ")}
-                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {noRouteAllocations.map((allocation) => (
+                                    <NoRouteTokenBadge key={allocation.token_address} symbol={allocation.token_symbol} />
+                                  ))}
+                                </div>
                               ) : null}
                             </div>
                           );
@@ -1734,11 +1749,18 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <div className="space-y-6">
                       {getTemplateNoRouteAllocations(selectedTemplate).length > 0 ? (
                         <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 ring-1 ring-rose-100">
-                          {locale === "en"
-                            ? `No route found: ${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`
-                            : locale === "zn"
-                              ? `No route found：${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`
-                              : `No route found: ${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`}
+                          <p className="font-medium">
+                            {locale === "en"
+                              ? "Tokens without routes"
+                              : locale === "zn"
+                                ? "无路由代币"
+                                : "Token không có tuyến"}
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => (
+                              <NoRouteTokenBadge key={allocation.token_address} symbol={allocation.token_symbol} />
+                            ))}
+                          </div>
                         </div>
                       ) : null}
                       <div className="cad-panel-accent p-4 shadow-[0_28px_60px_-44px_rgba(14,165,233,0.45)] sm:p-5">

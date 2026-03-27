@@ -148,6 +148,7 @@ class ScyllaDB:
             Path(__file__).resolve().parents[2] / "runtime" / "template_store.json",
             Path(__file__).resolve().parents[2] / "data" / "template_store.json",
         )
+        self.template_token_storage_path = Path(__file__).resolve().parents[2] / "data" / "template_token_store.json"
         self.run_storage_path = resolve_local_store_path(
             "LOCAL_WALLET_RUN_STORE",
             Path(__file__).resolve().parents[2] / "runtime" / "wallet_run_store.json",
@@ -192,6 +193,7 @@ class ScyllaDB:
 
         self._ensure_session()
         ensure_private_file(self.template_storage_path)
+        ensure_private_file(self.template_token_storage_path)
         ensure_private_file(self.run_storage_path)
         ensure_private_file(self.asset_monitor_storage_path, default_contents='{"snapshots": {}, "events": []}')
         ensure_private_file(self.balance_rule_storage_path, default_contents='{"rules": {}, "events": []}')
@@ -359,6 +361,14 @@ class ScyllaDB:
     def _write_local_templates(self, payload: dict):
         self.template_storage_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def _read_local_template_tokens(self) -> dict:
+        ensure_private_file(self.template_token_storage_path)
+        payload = json.loads(self.template_token_storage_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_local_template_tokens(self, payload: dict):
+        self.template_token_storage_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     def _read_local_runs(self) -> dict:
         ensure_private_file(self.run_storage_path)
         return json.loads(self.run_storage_path.read_text(encoding="utf-8"))
@@ -406,6 +416,16 @@ class ScyllaDB:
         created_at = payload.get("created_at")
         if isinstance(created_at, datetime):
             payload["created_at"] = created_at.isoformat()
+        return payload
+
+    def _serialize_template_token_record(self, record: dict | None):
+        if record is None:
+            return None
+
+        payload = dict(record)
+        updated_at = payload.get("updated_at")
+        if isinstance(updated_at, datetime):
+            payload["updated_at"] = updated_at.isoformat()
         return payload
 
     def _serialize_wallet_run_record(self, record: dict | None):
@@ -649,6 +669,75 @@ class ScyllaDB:
 
         templates.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         return templates
+
+    def get_template_token(self, chain: str, address: str):
+        self.connect_keyspace()
+        normalized_chain = (chain or "").strip().lower()
+        normalized_address = (address or "").strip().lower()
+        if not normalized_chain or not normalized_address:
+            return None
+
+        payload = self._read_local_template_tokens()
+        chain_payload = payload.get(normalized_chain) or {}
+        return self._serialize_template_token_record(chain_payload.get(normalized_address))
+
+    def upsert_template_token(self, token_record: dict):
+        self.connect_keyspace()
+        normalized_chain = (token_record.get("chain") or "").strip().lower()
+        normalized_address = (token_record.get("address") or "").strip().lower()
+        if not normalized_chain or not normalized_address:
+            raise ValueError("Template token chain and address are required")
+
+        updated_at = token_record.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at)
+        if updated_at is None:
+            updated_at = datetime.utcnow()
+
+        payload = self._read_local_template_tokens()
+        chain_payload = payload.setdefault(normalized_chain, {})
+        existing = chain_payload.get(normalized_address) or {}
+        chain_payload[normalized_address] = {
+            **existing,
+            **token_record,
+            "chain": normalized_chain,
+            "address": token_record.get("address"),
+            "is_custom": bool(token_record.get("is_custom", existing.get("is_custom", False))),
+            "updated_at": updated_at.isoformat(),
+        }
+        self._write_local_template_tokens(payload)
+        return self._serialize_template_token_record(chain_payload[normalized_address])
+
+    def list_template_tokens(self, chain: str | None = None):
+        self.connect_keyspace()
+        payload = self._read_local_template_tokens()
+        normalized_chain = (chain or "").strip().lower()
+
+        if normalized_chain:
+            chain_payload = payload.get(normalized_chain) or {}
+            return [self._serialize_template_token_record(record) for record in chain_payload.values()]
+
+        tokens = []
+        for chain_payload in payload.values():
+            tokens.extend(self._serialize_template_token_record(record) for record in chain_payload.values())
+        return tokens
+
+    def delete_template_token(self, chain: str, address: str):
+        self.connect_keyspace()
+        normalized_chain = (chain or "").strip().lower()
+        normalized_address = (address or "").strip().lower()
+        if not normalized_chain or not normalized_address:
+            return None
+
+        payload = self._read_local_template_tokens()
+        chain_payload = payload.get(normalized_chain) or {}
+        record = chain_payload.pop(normalized_address, None)
+        if record is None:
+            return None
+        if not chain_payload and normalized_chain in payload:
+            payload.pop(normalized_chain, None)
+        self._write_local_template_tokens(payload)
+        return self._serialize_template_token_record(record)
 
     def upsert_wallet_run(self, run_record: dict):
         self.connect_keyspace()

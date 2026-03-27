@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from src.services.template_service import (
     create_template as create_template_service,
+    delete_template_token as delete_template_token_service,
     get_template_editor_market_snapshot as get_template_editor_market_snapshot_service,
     get_template_chain_token_route_statuses as get_template_chain_token_route_statuses_service,
     get_template as get_template_service,
@@ -10,7 +11,7 @@ from src.services.template_service import (
     list_templates as list_templates_service,
     market_check_template as market_check_template_service,
     preview_template as preview_template_service,
-    resolve_template_token as resolve_template_token_service,
+    recheck_template_token as recheck_template_token_service,
     soft_delete_template as soft_delete_template_service,
     update_template as update_template_service,
 )
@@ -76,9 +77,24 @@ def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
 
 
 @router.get("/token/resolve")
-def resolve_template_token_endpoint(address: str, chain: str | None = None):
+def resolve_template_token_endpoint(
+    address: str,
+    chain: str | None = None,
+    persist: bool = False,
+    custom: bool = False,
+):
     try:
-        return resolve_template_token_service(address, chain)
+        return recheck_template_token_service(address, chain, persist=persist, is_custom=custom)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/token")
+def delete_template_token_endpoint(address: str, chain: str | None = None):
+    try:
+        return delete_template_token_service(address, chain)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

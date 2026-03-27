@@ -27,6 +27,7 @@ export type StablecoinOption = {
   tested?: boolean;
   route_status?: string | null;
   route_error?: string | null;
+  is_custom?: boolean;
 };
 
 export type StablecoinAllocation = {
