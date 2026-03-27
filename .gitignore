@@ -18,6 +18,7 @@ backend/venv/
 frontend/node_modules/
 frontend/.next/
 **/*.tsbuildinfo
+backend/.local/
 backend/runtime/
 
 # Logs

@@ -127,7 +127,7 @@
     "auto_top_up_target_eth": "0",
     "auto_wrap_eth_to_weth": true,
     "stablecoin_distribution_mode": "equal",
-    "stablecoin_allocations": "[{\"token_symbol\": \"USDC\", \"token_address\": \"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"USDT\", \"token_address\": \"0xdac17f958d2ee523a2206206994597c13d831ec7\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"USDE\", \"token_address\": \"0x4c9edd5852cd905f086c759e8383e09bff1e68b3\", \"percent\": null, \"weth_amount_per_contract\": null, \"route_status\": \"No route found\", \"route_error\": \"No route found\"}, {\"token_symbol\": \"DAI\", \"token_address\": \"0x6b175474e89094c44da98b954eedeac495271d0f\", \"percent\": null, \"weth_amount_per_contract\": null}]"
+    "stablecoin_allocations": "[{\"token_symbol\": \"USDC\", \"token_address\": \"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"USDT\", \"token_address\": \"0xdac17f958d2ee523a2206206994597c13d831ec7\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"DAI\", \"token_address\": \"0x6b175474e89094c44da98b954eedeac495271d0f\", \"percent\": null, \"weth_amount_per_contract\": null}]"
   },
   "template_1773976515_9276e8e2": {
     "id": "template_1773976515_9276e8e2",
@@ -325,7 +325,7 @@
     "auto_top_up_target_eth": "0",
     "auto_wrap_eth_to_weth": true,
     "stablecoin_distribution_mode": "equal",
-    "stablecoin_allocations": "[{\"token_symbol\": \"USDC\", \"token_address\": \"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"DAI\", \"token_address\": \"0x50c5725949a6f0c72e6c4a641f24049a917db0cb\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"USDe\", \"token_address\": \"0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34\", \"percent\": null, \"weth_amount_per_contract\": null, \"route_status\": \"No route found\", \"route_error\": \"No route found\"}]"
+    "stablecoin_allocations": "[{\"token_symbol\": \"USDC\", \"token_address\": \"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\", \"percent\": null, \"weth_amount_per_contract\": null}, {\"token_symbol\": \"DAI\", \"token_address\": \"0x50c5725949a6f0c72e6c4a641f24049a917db0cb\", \"percent\": null, \"weth_amount_per_contract\": null}]"
   },
   "template_builtin_optimism_core_basket": {
     "id": "template_builtin_optimism_core_basket",

@@ -150,7 +150,7 @@ BUILTIN_TEMPLATE_DEFINITIONS = [
         "id": "template_builtin_base_core_basket",
         "name": "Base Core Basket",
         "chain": TEMPLATE_CHAIN_BASE,
-        "allocation_symbols": ["USDC", "DAI", "USDe"],
+        "allocation_symbols": ["USDC", "DAI"],
     },
     {
         "id": "template_builtin_optimism_core_basket",

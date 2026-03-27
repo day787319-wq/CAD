@@ -29,16 +29,62 @@ def ensure_private_file(path: Path, default_contents: str = "{}"):
         pass
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def prepare_private_file(path: Path, default_contents: str = "{}") -> bool:
+    try:
+        ensure_private_directory(path.parent)
+        if _path_exists(path):
+            with path.open("r+", encoding="utf-8"):
+                pass
+        else:
+            path.write_text(default_contents, encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def resolve_local_store_path(env_name: str, default_path: Path, legacy_path: Path) -> Path:
     configured_path = os.getenv(env_name)
     path = Path(configured_path) if configured_path else default_path
+    fallback_path = Path(__file__).resolve().parents[2] / ".local" / path.name
 
-    if not configured_path and not path.exists() and legacy_path.exists():
-        ensure_private_directory(path.parent)
-        shutil.copy2(legacy_path, path)
+    if configured_path:
+        if prepare_private_file(path):
+            return path
+        raise PermissionError(f"Unable to access configured store path for {env_name}: {path}")
 
-    ensure_private_file(path)
-    return path
+    path_previously_existed = _path_exists(path)
+    if prepare_private_file(path):
+        if not path_previously_existed and legacy_path != path and _path_exists(legacy_path):
+            try:
+                shutil.copy2(legacy_path, path)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            except OSError:
+                pass
+        return path
+
+    if legacy_path != path and _path_exists(legacy_path) and prepare_private_file(legacy_path):
+        return legacy_path
+
+    if prepare_private_file(fallback_path):
+        return fallback_path
+
+    raise PermissionError(
+        f"Unable to access local store paths for {env_name}: {path}, {legacy_path}, or {fallback_path}"
+    )
 
 
 class LocalRow:
@@ -148,7 +194,11 @@ class ScyllaDB:
             Path(__file__).resolve().parents[2] / "runtime" / "template_store.json",
             Path(__file__).resolve().parents[2] / "data" / "template_store.json",
         )
-        self.template_token_storage_path = Path(__file__).resolve().parents[2] / "data" / "template_token_store.json"
+        self.template_token_storage_path = resolve_local_store_path(
+            "LOCAL_TEMPLATE_TOKEN_STORE",
+            Path(__file__).resolve().parents[2] / "runtime" / "template_token_store.json",
+            Path(__file__).resolve().parents[2] / "data" / "template_token_store.json",
+        )
         self.run_storage_path = resolve_local_store_path(
             "LOCAL_WALLET_RUN_STORE",
             Path(__file__).resolve().parents[2] / "runtime" / "wallet_run_store.json",

@@ -487,7 +487,7 @@ TEMPLATE_CHAIN_CONFIG = {
         "swap_protocol": SWAP_BACKEND_UNISWAP_V3,
         "swap_backends": [SWAP_BACKEND_UNISWAP_V3],
         "fee_tiers": [500, 3000, 10000],
-        "route_intermediary_symbols": ["USDC", "DAI", "USDe"],
+        "route_intermediary_symbols": ["USDC", "DAI"],
         "tokens": BASE_SWAP_TOKENS,
     },
     TEMPLATE_CHAIN_OPTIMISM: {
