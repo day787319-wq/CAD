@@ -35,7 +35,7 @@ class BalanceRuleUpsertRequest(BaseModel):
 
 
 @router.get("")
-async def list_balance_rules_endpoint():
+def list_balance_rules_endpoint():
     try:
         return {"rules": list_balance_rules_service()}
     except Exception as exc:
@@ -43,7 +43,7 @@ async def list_balance_rules_endpoint():
 
 
 @router.post("/evaluate")
-async def evaluate_balance_rules_endpoint(sync: bool = Query(True)):
+def evaluate_balance_rules_endpoint(sync: bool = Query(True)):
     try:
         return evaluate_balance_rules_service(sync_monitoring=sync)
     except ValueError as exc:
@@ -55,7 +55,7 @@ async def evaluate_balance_rules_endpoint(sync: bool = Query(True)):
 
 
 @router.post("")
-async def create_balance_rule_endpoint(request: BalanceRuleUpsertRequest):
+def create_balance_rule_endpoint(request: BalanceRuleUpsertRequest):
     try:
         return create_balance_rule_service(request.model_dump())
     except ValueError as exc:
@@ -65,7 +65,7 @@ async def create_balance_rule_endpoint(request: BalanceRuleUpsertRequest):
 
 
 @router.get("/{rule_id}")
-async def get_balance_rule_endpoint(rule_id: str):
+def get_balance_rule_endpoint(rule_id: str):
     try:
         rule = get_balance_rule_service(rule_id)
         if not rule:
@@ -78,7 +78,7 @@ async def get_balance_rule_endpoint(rule_id: str):
 
 
 @router.put("/{rule_id}")
-async def update_balance_rule_endpoint(rule_id: str, request: BalanceRuleUpsertRequest):
+def update_balance_rule_endpoint(rule_id: str, request: BalanceRuleUpsertRequest):
     try:
         return update_balance_rule_service(rule_id, request.model_dump())
     except ValueError as exc:
@@ -89,7 +89,7 @@ async def update_balance_rule_endpoint(rule_id: str, request: BalanceRuleUpsertR
 
 
 @router.delete("/{rule_id}")
-async def delete_balance_rule_endpoint(rule_id: str):
+def delete_balance_rule_endpoint(rule_id: str):
     try:
         return delete_balance_rule_service(rule_id)
     except ValueError as exc:
@@ -99,7 +99,7 @@ async def delete_balance_rule_endpoint(rule_id: str):
 
 
 @router.get("/{rule_id}/events")
-async def list_balance_rule_events_endpoint(
+def list_balance_rule_events_endpoint(
     rule_id: str,
     limit: int = Query(50, ge=0, le=200),
 ):

@@ -778,6 +778,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [refreshingWallet, setRefreshingWallet] = useState(false);
+  const [loadingTemplateBalances, setLoadingTemplateBalances] = useState(false);
   const [creatingSubWallets, setCreatingSubWallets] = useState(false);
   const [deletingWallet, setDeletingWallet] = useState(false);
   const [runReviewOpen, setRunReviewOpen] = useState(false);
@@ -794,17 +795,45 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     [selectedTemplateId, templates],
   );
   const walletMatchesSelectedChain = !selectedTemplate?.chain || !wallet?.chain || wallet.chain === selectedTemplate.chain;
+  const hasSelectedTemplate = Boolean(selectedTemplate);
+
+  const buildWalletDetailsQuery = ({
+    chain,
+    liveBalances,
+    includeTokenHoldings,
+    includeSubwallets,
+  }: {
+    chain?: Template["chain"];
+    liveBalances: boolean;
+    includeTokenHoldings: boolean;
+    includeSubwallets: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (chain) {
+      params.set("chain", chain);
+    }
+    params.set("live_balances", liveBalances ? "true" : "false");
+    params.set("include_token_holdings", includeTokenHoldings ? "true" : "false");
+    params.set("include_subwallets", includeSubwallets ? "true" : "false");
+    return `?${params.toString()}`;
+  };
 
   useEffect(() => {
     let active = true;
 
     (async () => {
       try {
-        const chainQuery = preferredChain ? `?chain=${encodeURIComponent(preferredChain)}` : "";
+        const walletQuery = buildWalletDetailsQuery({
+          chain: preferredChain ?? undefined,
+          liveBalances: false,
+          includeTokenHoldings: false,
+          includeSubwallets: false,
+        });
+        setLoadingTemplateBalances(false);
         const [walletResponse, templateResponse, optionsResponse] = await Promise.all([
-          fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${chainQuery}`),
+          fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${walletQuery}`),
           fetch(`${TEMPLATE_API_URL}/api/templates`),
-          fetch(`${TEMPLATE_API_URL}/api/templates/options${chainQuery}`),
+          fetch(`${TEMPLATE_API_URL}/api/templates/options${preferredChain ? `?chain=${encodeURIComponent(preferredChain)}` : ""}`),
         ]);
         const [walletPayload, templatePayload, optionsPayload] = await Promise.all([
           readApiPayload(walletResponse),
@@ -828,18 +857,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
             : [];
           const nextWalletPayload = walletPayload as WalletDetails;
           const nextOptionsPayload = optionsPayload as TemplateOptions;
-          const desiredChain = preferredChain ?? normalizeTemplateChain(nextWalletPayload.chain);
-          const matchingTemplateId = nextTemplates.find((template) => template.chain === desiredChain)?.id ?? "";
           setWallet(nextWalletPayload);
           setTemplates(nextTemplates);
           setOptions(nextOptionsPayload);
-          setSelectedTemplateId((current) => {
-            const currentTemplate = nextTemplates.find((template) => template.id === current) ?? null;
-            if (currentTemplate && (!preferredChain || currentTemplate.chain === desiredChain)) {
-              return currentTemplate.id;
-            }
-            return matchingTemplateId || (preferredChain ? "" : nextTemplates[0]?.id || "");
-          });
+          setSelectedTemplateId((current) => (nextTemplates.some((template) => template.id === current) ? current : ""));
           setLoadError(null);
           setTemplatesError(null);
         }
@@ -868,9 +889,16 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     let active = true;
 
     (async () => {
+      setLoadingTemplateBalances(true);
       try {
+        const query = buildWalletDetailsQuery({
+          chain: selectedTemplate.chain,
+          liveBalances: true,
+          includeTokenHoldings: false,
+          includeSubwallets: false,
+        });
         const response = await fetch(
-          `${TEMPLATE_API_URL}/api/wallets/${walletId}/details?chain=${encodeURIComponent(selectedTemplate.chain)}`,
+          `${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`,
         );
         const payload = await readApiPayload(response);
         if (!response.ok) {
@@ -884,6 +912,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         if (active) {
           const message = error instanceof Error ? error.message : "Failed to load wallet details";
           setLoadError(message);
+        }
+      } finally {
+        if (active) {
+          setLoadingTemplateBalances(false);
         }
       }
     })();
@@ -937,6 +969,21 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
   const walletBalanceStatusMessage = useMemo(() => {
     if (!wallet) return null;
+    if (!selectedTemplate) {
+      return locale === "en"
+        ? "Select a template to load live balances for that chain."
+        : locale === "zn"
+          ? "请选择模板后再加载该链的实时余额。"
+          : "Hãy chọn một mẫu để tải số dư trực tiếp cho chain đó.";
+    }
+    if (loadingTemplateBalances) {
+      const switchingChainUi = getChainUiContext(selectedTemplate, wallet, locale);
+      return locale === "en"
+        ? `Loading ${switchingChainUi.chainLabel} balances...`
+        : locale === "zn"
+          ? `正在加载 ${switchingChainUi.chainLabel} 余额...`
+          : `Đang tải số dư ${switchingChainUi.chainLabel}...`;
+    }
     if (!walletMatchesSelectedChain) {
       const switchingChainUi = getChainUiContext(selectedTemplate, wallet, locale);
       return locale === "en"
@@ -959,7 +1006,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
             : "Số dư trực tiếp đã được lấy từ RPC.";
     }
     return wallet.balance_error ?? (locale === "en" ? "Live wallet balances are unavailable." : locale === "zn" ? "实时钱包余额不可用。" : "Số dư ví trực tiếp chưa khả dụng.");
-  }, [wallet, walletMatchesSelectedChain, selectedTemplate, locale]);
+  }, [wallet, walletMatchesSelectedChain, selectedTemplate, loadingTemplateBalances, locale]);
 
   const handleCopyAddress = async () => {
     if (!wallet?.address || !navigator.clipboard) return;
@@ -971,6 +1018,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   };
 
   const handleRefreshWallet = async () => {
+    if (!selectedTemplate?.chain) return;
     setRefreshingWallet(true);
     try {
       const payload = await fetchWalletDetails(selectedTemplate?.chain);
@@ -1001,7 +1049,12 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
   const fetchWalletDetails = async (chain?: Template["chain"]) => {
     const effectiveChain = chain ?? preferredChain ?? undefined;
-    const query = effectiveChain ? `?chain=${encodeURIComponent(effectiveChain)}` : "";
+    const query = buildWalletDetailsQuery({
+      chain: effectiveChain,
+      liveBalances: true,
+      includeTokenHoldings: false,
+      includeSubwallets: false,
+    });
     const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`);
     const payload = await readApiPayload(response);
     if (!response.ok) {
@@ -1090,8 +1143,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       const nextTemplates = templates.filter((item) => item.id !== template.id);
       setTemplates(nextTemplates);
       if (selectedTemplateId === template.id) {
-        const desiredChain = preferredChain ?? normalizeTemplateChain(wallet?.chain);
-        setSelectedTemplateId(nextTemplates.find((item) => item.chain === desiredChain)?.id ?? (preferredChain ? "" : nextTemplates[0]?.id ?? ""));
+        setSelectedTemplateId("");
       }
       toast({
         title: locale === "en" ? "Template deleted" : locale === "zn" ? "模板已删除" : "Đã xóa mẫu",
@@ -1177,6 +1229,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           main_id: wallet.id,
           template_id: selectedTemplate.id,
           count: activePreview.contract_count,
+          preview: activePreview,
         }),
       });
       const payload = await readApiPayload(response);
@@ -1234,7 +1287,6 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const reviewStablecoinRoutes = activeRunPreview?.stablecoin_routes ?? [];
   const previewStatusNote = preview && selectedTemplate ? getPreviewStatusNote(preview, selectedTemplate, locale) : null;
   const selectedChainUi = getChainUiContext(selectedTemplate, wallet, locale);
-  const walletTokenHoldings = wallet?.token_holdings ?? [];
   const nativeSymbol = selectedChainUi.nativeSymbol;
   const wrappedNativeSymbol = selectedChainUi.wrappedNativeSymbol;
 
@@ -1294,7 +1346,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" variant="outline" onClick={handleRefreshWallet} disabled={refreshingWallet}>
+                      <Button type="button" variant="outline" onClick={handleRefreshWallet} disabled={refreshingWallet || !hasSelectedTemplate}>
                         <RefreshCw className={`h-4 w-4 ${refreshingWallet ? "animate-spin" : ""}`} />
                         {locale === "en" ? "Refresh balances" : locale === "zn" ? "刷新余额" : "Làm mới số dư"}
                       </Button>
@@ -1321,8 +1373,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                   <div
                     className={`mt-5 rounded-xl border px-4 py-3 text-sm ${
-                      wallet.balances_live
+                      hasSelectedTemplate && wallet.balances_live
                         ? "border-sky-200 bg-sky-50 text-sky-700"
+                        : !hasSelectedTemplate
+                          ? "border-slate-200 bg-slate-50 text-slate-700"
                         : "border-amber-500/30 bg-amber-500/10 text-amber-800"
                     }`}
                   >
@@ -1374,30 +1428,40 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     />
                     <InfoCard
                       label={locale === "en" ? `${nativeSymbol} balance` : locale === "zn" ? `${nativeSymbol} 余额` : `Số dư ${nativeSymbol}`}
-                      value={walletMatchesSelectedChain ? formatTokenBalance(wallet.eth_balance, nativeSymbol) : (locale === "en" ? "Refreshing..." : locale === "zn" ? "刷新中..." : "Đang làm mới...")}
+                      value={
+                        !hasSelectedTemplate
+                          ? locale === "en"
+                            ? "Select a template"
+                            : locale === "zn"
+                              ? "请选择模板"
+                              : "Hãy chọn một mẫu"
+                          : loadingTemplateBalances || !walletMatchesSelectedChain
+                            ? locale === "en"
+                              ? "Loading..."
+                              : locale === "zn"
+                                ? "加载中..."
+                                : "Đang tải..."
+                            : formatTokenBalance(wallet.eth_balance, nativeSymbol)
+                      }
                     />
                     <InfoCard
                       label={locale === "en" ? `${wrappedNativeSymbol} balance` : locale === "zn" ? `${wrappedNativeSymbol} 余额` : `Số dư ${wrappedNativeSymbol}`}
-                      value={walletMatchesSelectedChain ? formatTokenBalance(wallet.weth_balance, wrappedNativeSymbol) : (locale === "en" ? "Refreshing..." : locale === "zn" ? "刷新中..." : "Đang làm mới...")}
-                    />
-                    {walletTokenHoldings.map((holding) => (
-                      <InfoCard
-                        key={holding.address}
-                        label={
-                          locale === "en"
-                            ? `${holding.symbol} token`
+                      value={
+                        !hasSelectedTemplate
+                          ? locale === "en"
+                            ? "Select a template"
                             : locale === "zn"
-                              ? `${holding.symbol} 代币`
-                              : `Token ${holding.symbol}`
-                        }
-                        value={
-                          holding.error
-                            ? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")
-                            : formatTokenBalance(holding.balance, holding.symbol)
-                        }
-                        hint={holding.chain_label ? `${holding.chain_label} • ${shortAddress(holding.address)}` : shortAddress(holding.address)}
-                      />
-                    ))}
+                              ? "请选择模板"
+                              : "Hãy chọn một mẫu"
+                          : loadingTemplateBalances || !walletMatchesSelectedChain
+                            ? locale === "en"
+                              ? "Loading..."
+                              : locale === "zn"
+                                ? "加载中..."
+                                : "Đang tải..."
+                            : formatTokenBalance(wallet.weth_balance, wrappedNativeSymbol)
+                      }
+                    />
                   </div>
                 </SectionBlock>
 
@@ -1781,7 +1845,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   </div>
                                 </div>
 
-                                {!wallet.balances_live ? (
+                                {selectedTemplate && !loadingTemplateBalances && !wallet.balances_live ? (
                                   <div className="rounded-2xl bg-amber-50 px-4 py-4 text-sm text-amber-800">
                                     {wallet.balance_error ?? (locale === "en" ? "Live wallet balances are unavailable, so the support preview is paused." : locale === "zn" ? "实时钱包余额不可用，因此支持预览已暂停。" : "Số dư ví trực tiếp chưa khả dụng nên bản xem trước hỗ trợ đang tạm dừng.")}
                                   </div>
@@ -1918,10 +1982,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                   ) : (
                     <SectionBlock
                       title={locale === "en" ? "Template details" : locale === "zn" ? "模板详情" : "Chi tiết mẫu"}
-                      description={locale === "en" ? "Select a template from the library to see its plan, routing split, and wallet support preview." : locale === "zn" ? "从模板库中选择模板以查看其计划、路由分配和钱包支持预览。" : "Chọn một mẫu từ thư viện để xem kế hoạch, phân bổ tuyến và bản xem trước hỗ trợ ví."}
+                      description={locale === "en" ? "Select a template from the library to load live balances for that chain, then review its plan and support preview." : locale === "zn" ? "从模板库中选择模板后，会为该链加载实时余额，然后显示其计划和支持预览。" : "Chọn một mẫu từ thư viện để tải số dư trực tiếp cho chain đó, rồi xem kế hoạch và bản xem trước hỗ trợ ví."}
                     >
                       <div className="cad-panel-soft px-4 py-6 text-sm text-muted-foreground">
-                        {locale === "en" ? "Select a template to preview wallet support and per-route totals." : locale === "zn" ? "选择模板以预览钱包支持情况和每条路由的总额。" : "Chọn một mẫu để xem trước hỗ trợ ví và tổng theo từng tuyến."}
+                        {locale === "en" ? "No live balance check runs yet. Choose a template to load only the balances needed for that template chain." : locale === "zn" ? "当前还不会执行实时余额检查。请选择模板，仅加载该模板所属链所需的余额。" : "Hiện chưa có kiểm tra số dư trực tiếp nào chạy. Hãy chọn một mẫu để chỉ tải các số dư cần cho chain của mẫu đó."}
                       </div>
                     </SectionBlock>
                   )}

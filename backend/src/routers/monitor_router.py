@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
 
 
 @router.get("/overview")
-async def get_asset_monitoring_overview_endpoint(
+def get_asset_monitoring_overview_endpoint(
     sync: bool = Query(False),
     limit: int = Query(20, ge=0, le=200),
     chain: str | None = Query(default=None),
@@ -24,7 +24,7 @@ async def get_asset_monitoring_overview_endpoint(
 
 
 @router.get("/wallet/{wallet_id}")
-async def get_wallet_asset_monitoring_endpoint(
+def get_wallet_asset_monitoring_endpoint(
     wallet_id: str,
     sync: bool = Query(True),
     limit: int = Query(20, ge=0, le=200),
@@ -40,7 +40,7 @@ async def get_wallet_asset_monitoring_endpoint(
 
 
 @router.get("/address/{address}")
-async def get_address_asset_monitoring_endpoint(
+def get_address_asset_monitoring_endpoint(
     address: str,
     sync: bool = Query(True),
     limit: int = Query(20, ge=0, le=200),

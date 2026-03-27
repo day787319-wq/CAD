@@ -55,6 +55,7 @@ class WalletRunRequest(BaseModel):
     main_id: str
     template_id: str
     count: int = 1
+    preview: dict | None = None
 
 
 class WalletKeystoreExportRequest(BaseModel):
@@ -62,7 +63,7 @@ class WalletKeystoreExportRequest(BaseModel):
     export_passphrase: str
 
 @router.post("/main/import")
-async def import_main_wallet_endpoint(request: ImportMainWalletRequest):
+def import_main_wallet_endpoint(request: ImportMainWalletRequest):
     try:
         wallet_data = import_main_wallet_service(request.seed_phrase)
         wallet_id = f"imported_main_{int(datetime.now().timestamp())}"
@@ -86,7 +87,7 @@ async def import_main_wallet_endpoint(request: ImportMainWalletRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/main/generate")
-async def generate_main_wallet_endpoint():
+def generate_main_wallet_endpoint():
     try:
         wallet_data = generate_main_wallet_service()
         wallet_id = f"generated_main_{int(datetime.now().timestamp())}"
@@ -108,7 +109,7 @@ async def generate_main_wallet_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/private-key/import")
-async def import_private_key_wallet_endpoint(request: ImportPrivateKeyWalletRequest):
+def import_private_key_wallet_endpoint(request: ImportPrivateKeyWalletRequest):
     try:
         wallet_data = import_private_key_wallet_service(request.private_key)
         wallet_id = f"imported_pk_{int(datetime.now().timestamp())}"
@@ -130,7 +131,7 @@ async def import_private_key_wallet_endpoint(request: ImportPrivateKeyWalletRequ
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/sub")
-async def create_sub_wallets(request: SubWalletRequest):
+def create_sub_wallets(request: SubWalletRequest):
     try:
         if request.count < 1 or request.count > 100:  # Limit to prevent abuse
             raise HTTPException(status_code=400, detail="Count must be between 1 and 100")
@@ -146,9 +147,14 @@ async def create_sub_wallets(request: SubWalletRequest):
 
 
 @router.post("/runs")
-async def execute_wallet_run_endpoint(request: WalletRunRequest, background_tasks: BackgroundTasks):
+def execute_wallet_run_endpoint(request: WalletRunRequest, background_tasks: BackgroundTasks):
     try:
-        run_record = create_wallet_run_service(request.main_id, request.template_id, request.count)
+        run_record = create_wallet_run_service(
+            request.main_id,
+            request.template_id,
+            request.count,
+            preview=request.preview,
+        )
         background_tasks.add_task(
             run_wallet_run_job_service,
             run_record,
@@ -166,14 +172,14 @@ async def execute_wallet_run_endpoint(request: WalletRunRequest, background_task
 
 
 @router.get("/runs")
-async def list_wallet_runs_endpoint(main_wallet_id: str | None = None):
+def list_wallet_runs_endpoint(main_wallet_id: str | None = None):
     try:
         return {"runs": list_wallet_runs_service(main_wallet_id=main_wallet_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/runs/{run_id}")
-async def delete_wallet_run_endpoint(run_id: str):
+def delete_wallet_run_endpoint(run_id: str):
     try:
         return delete_wallet_run_service(run_id)
     except ValueError as ve:
@@ -182,7 +188,7 @@ async def delete_wallet_run_endpoint(run_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("")
-async def list_wallets_endpoint(chain: str | None = Query(default=None)):
+def list_wallets_endpoint(chain: str | None = Query(default=None)):
     try:
         return {"wallets": list_saved_wallets_service(chain=chain)}
     except ValueError as ve:
@@ -191,7 +197,7 @@ async def list_wallets_endpoint(chain: str | None = Query(default=None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{wallet_id}")
-async def delete_wallet_endpoint(wallet_id: str):
+def delete_wallet_endpoint(wallet_id: str):
     try:
         return delete_wallet_service(wallet_id)
     except ValueError as ve:
@@ -201,7 +207,7 @@ async def delete_wallet_endpoint(wallet_id: str):
 
 
 @router.post("/{wallet_id}/keystore")
-async def export_wallet_keystore_endpoint(wallet_id: str, request: WalletKeystoreExportRequest):
+def export_wallet_keystore_endpoint(wallet_id: str, request: WalletKeystoreExportRequest):
     try:
         return export_wallet_keystore_service(wallet_id, request.access_passphrase, request.export_passphrase)
     except ValueError as ve:
@@ -213,14 +219,14 @@ async def export_wallet_keystore_endpoint(wallet_id: str, request: WalletKeystor
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/swap/tokens")
-async def get_swap_tokens_endpoint():
+def get_swap_tokens_endpoint():
     try:
         return {"tokens": get_supported_tokens_service()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/swap/quote")
-async def get_swap_quote_endpoint(request: SwapQuoteRequest):
+def get_swap_quote_endpoint(request: SwapQuoteRequest):
     try:
         quote = quote_uniswap_swap_service(
             request.token_in,
@@ -239,7 +245,7 @@ async def get_swap_quote_endpoint(request: SwapQuoteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/swap/batch-quote")
-async def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
+def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
     try:
         quote = quote_wallet_batch_swap_service(
             request.wallet_id,
@@ -257,9 +263,21 @@ async def get_batch_swap_quote_endpoint(request: BatchSwapQuoteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{wallet_id}/details")
-async def get_wallet_details_endpoint(wallet_id: str, chain: str | None = Query(default=None)):
+def get_wallet_details_endpoint(
+    wallet_id: str,
+    chain: str | None = Query(default=None),
+    live_balances: bool = Query(default=True),
+    include_token_holdings: bool = Query(default=True),
+    include_subwallets: bool = Query(default=True),
+):
     try:
-        wallet = get_wallet_details_service(wallet_id, chain=chain)
+        wallet = get_wallet_details_service(
+            wallet_id,
+            chain=chain,
+            live_balances=live_balances,
+            include_token_holdings=include_token_holdings,
+            include_subwallets=include_subwallets,
+        )
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
         return wallet
@@ -269,7 +287,7 @@ async def get_wallet_details_endpoint(wallet_id: str, chain: str | None = Query(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{wallet_id}")
-async def get_wallet_endpoint(wallet_id: str):
+def get_wallet_endpoint(wallet_id: str):
     try:
         wallet = get_wallet_service(wallet_id)
         if not wallet:

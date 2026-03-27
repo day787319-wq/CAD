@@ -820,15 +820,19 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     try:
         web3_client = get_web3(chain)
         if web3_client and web3_client.is_connected():
-            wrap_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_WRAP)["submitted_gas_price_wei"])
-            approval_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_APPROVAL)["submitted_gas_price_wei"])
-            swap_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_SWAP)["submitted_gas_price_wei"])
-            deployment_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_DEPLOY_TREASURY)["submitted_gas_price_wei"])
-            fund_treasury_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_FUND_TREASURY)["submitted_gas_price_wei"])
-            batch_send_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_BATCH_SEND)["submitted_gas_price_wei"])
-            return_sweep_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP)["submitted_gas_price_wei"])
-            top_up_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_TOP_UP)["submitted_gas_price_wei"])
-            fund_subwallet_gas_price_wei = Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET)["submitted_gas_price_wei"])
+            # Fetch the node gas price once and reuse for all stage calculations
+            # to avoid 9 separate RPC calls that can cause timeouts.
+            cached_gas = int(web3_client.eth.gas_price)
+            _gp = lambda stage: Decimal(resolve_legacy_aggressive_gas_pricing(web3_client, chain=chain, tx_stage=stage, cached_node_gas_price_wei=cached_gas)["submitted_gas_price_wei"])
+            wrap_gas_price_wei = _gp(LEGACY_GAS_STAGE_WRAP)
+            approval_gas_price_wei = _gp(LEGACY_GAS_STAGE_APPROVAL)
+            swap_gas_price_wei = _gp(LEGACY_GAS_STAGE_SWAP)
+            deployment_gas_price_wei = _gp(LEGACY_GAS_STAGE_DEPLOY_TREASURY)
+            fund_treasury_gas_price_wei = _gp(LEGACY_GAS_STAGE_FUND_TREASURY)
+            batch_send_gas_price_wei = _gp(LEGACY_GAS_STAGE_BATCH_SEND)
+            return_sweep_gas_price_wei = _gp(LEGACY_GAS_STAGE_RETURN_SWEEP)
+            top_up_gas_price_wei = _gp(LEGACY_GAS_STAGE_TOP_UP)
+            fund_subwallet_gas_price_wei = _gp(LEGACY_GAS_STAGE_FUND_SUBWALLET)
     except Exception:
         pass
 
@@ -1474,9 +1478,9 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         raise ValueError("Template not found")
     chain_config = get_template_chain_config(template.get("chain"))
 
-    from src.services.wallet_service import get_wallet_details
+    from src.services.wallet_service import get_wallet_summary
 
-    wallet = get_wallet_details(wallet_id, chain=template.get("chain"))
+    wallet = get_wallet_summary(wallet_id, chain=template.get("chain"))
     if not wallet:
         raise ValueError("Wallet not found")
     if wallet.get("type") == "sub":

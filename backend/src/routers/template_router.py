@@ -57,7 +57,7 @@ class TemplatePreviewRequest(BaseModel):
 
 
 @router.get("/options")
-async def get_template_options_endpoint(chain: str | None = None):
+def get_template_options_endpoint(chain: str | None = None):
     try:
         return get_template_options_service(chain)
     except Exception as exc:
@@ -65,7 +65,7 @@ async def get_template_options_endpoint(chain: str | None = None):
 
 
 @router.get("/market-snapshot")
-async def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
+def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
     try:
         return get_template_editor_market_snapshot_service(chain)
     except Exception as exc:
@@ -73,7 +73,7 @@ async def get_template_editor_market_snapshot_endpoint(chain: str | None = None)
 
 
 @router.get("/token/resolve")
-async def resolve_template_token_endpoint(address: str, chain: str | None = None):
+def resolve_template_token_endpoint(address: str, chain: str | None = None):
     try:
         return resolve_template_token_service(address, chain)
     except ValueError as exc:
@@ -83,7 +83,7 @@ async def resolve_template_token_endpoint(address: str, chain: str | None = None
 
 
 @router.get("")
-async def list_templates_endpoint():
+def list_templates_endpoint():
     try:
         return {"templates": list_templates_service()}
     except Exception as exc:
@@ -91,7 +91,7 @@ async def list_templates_endpoint():
 
 
 @router.post("")
-async def create_template_endpoint(request: TemplateUpsertRequest):
+def create_template_endpoint(request: TemplateUpsertRequest):
     try:
         return create_template_service(request.model_dump())
     except ValueError as exc:
@@ -101,7 +101,7 @@ async def create_template_endpoint(request: TemplateUpsertRequest):
 
 
 @router.put("/{template_id}")
-async def update_template_endpoint(template_id: str, request: TemplateUpsertRequest):
+def update_template_endpoint(template_id: str, request: TemplateUpsertRequest):
     try:
         return update_template_service(template_id, request.model_dump())
     except ValueError as exc:
@@ -111,7 +111,7 @@ async def update_template_endpoint(template_id: str, request: TemplateUpsertRequ
 
 
 @router.delete("/{template_id}")
-async def delete_template_endpoint(template_id: str):
+def delete_template_endpoint(template_id: str):
     try:
         return soft_delete_template_service(template_id)
     except ValueError as exc:
@@ -121,7 +121,7 @@ async def delete_template_endpoint(template_id: str):
 
 
 @router.get("/{template_id}")
-async def get_template_endpoint(template_id: str):
+def get_template_endpoint(template_id: str):
     try:
         template = get_template_service(template_id)
         if not template:
@@ -134,7 +134,7 @@ async def get_template_endpoint(template_id: str):
 
 
 @router.get("/{template_id}/market-check")
-async def market_check_template_endpoint(template_id: str, contract_count: int = 1):
+def market_check_template_endpoint(template_id: str, contract_count: int = 1):
     try:
         return market_check_template_service(template_id, contract_count)
     except ValueError as exc:
@@ -144,7 +144,7 @@ async def market_check_template_endpoint(template_id: str, contract_count: int =
 
 
 @router.post("/preview")
-async def preview_template_endpoint(request: TemplatePreviewRequest):
+def preview_template_endpoint(request: TemplatePreviewRequest):
     try:
         return preview_template_service(
             request.wallet_id,

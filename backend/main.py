@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import base64
@@ -7,8 +8,10 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from dotenv import load_dotenv
@@ -272,7 +275,33 @@ def check_chain(chain: str, info: dict) -> dict:
     return {"chain": chain, "type": t, "status": "unknown"}
 
 
+REQUEST_TIMEOUT_SECONDS = 120
+
+
+class RequestTimeoutMiddleware(BaseHTTPMiddleware):
+    """Enforce a maximum wall-clock time per request.
+
+    Prevents slow RPC calls from keeping connections open indefinitely,
+    which causes the 'socket hang up' / ECONNRESET errors on the
+    frontend proxy.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await asyncio.wait_for(
+                call_next(request),
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                content={"detail": "Request timed out — the backend took too long to respond."},
+            )
+
+
 app = FastAPI(title="Treasury V2 Backend", version="1.0.0")
+
+app.add_middleware(RequestTimeoutMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -313,4 +342,4 @@ app.include_router(monitor_router)
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8006))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=2, timeout_keep_alive=65)

@@ -967,11 +967,17 @@ def _build_v2_swap_paths(chain: str, token_in_address: str, token_out_address: s
     return candidate_paths
 
 
+WEB3_RPC_TIMEOUT_SECONDS = 10
+
+
 def get_web3(chain: str | None = None) -> Web3 | None:
     runtime = get_chain_runtime_config(chain)
     if not runtime["rpc_url"]:
         return None
-    return Web3(Web3.HTTPProvider(runtime["rpc_url"]))
+    return Web3(Web3.HTTPProvider(
+        runtime["rpc_url"],
+        request_kwargs={"timeout": WEB3_RPC_TIMEOUT_SECONDS},
+    ))
 
 
 def ensure_supported_template_chain(template: dict):
@@ -1006,11 +1012,8 @@ def get_eth_balance(address: str, web3_client: Web3 | None = None, *, chain: str
         return None
 
 
-def get_wallet_balances(address: str, chain: str | None = None) -> dict:
+def get_wallet_balances(address: str, chain: str | None = None, *, live_balances: bool = True) -> dict:
     runtime = get_chain_runtime_config(chain)
-    web3_client = get_web3(chain)
-    refreshed_at = datetime.now(timezone.utc).isoformat()
-    gas_price_gwei = None
     payload = {
         'chain': runtime["chain"],
         'chain_label': runtime["chain_label"],
@@ -1021,9 +1024,17 @@ def get_wallet_balances(address: str, chain: str | None = None) -> dict:
         'weth_address': runtime["wrapped_native_address"],
         'balances_live': False,
         'balance_error': None,
-        'balance_refreshed_at': refreshed_at,
+        'balance_refreshed_at': None,
         'funding_gas_price_gwei': None,
     }
+
+    if not live_balances:
+        return payload
+
+    web3_client = get_web3(chain)
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    gas_price_gwei = None
+    payload['balance_refreshed_at'] = refreshed_at
 
     if not web3_client:
         payload['balance_error'] = (
@@ -1161,8 +1172,9 @@ def resolve_legacy_aggressive_gas_pricing(
     tx_stage: str,
     attempt: int = 1,
     previous_gas_price_wei: int | None = None,
+    cached_node_gas_price_wei: int | None = None,
 ) -> dict:
-    node_gas_price_wei = int(web3_client.eth.gas_price)
+    node_gas_price_wei = cached_node_gas_price_wei if cached_node_gas_price_wei is not None else int(web3_client.eth.gas_price)
     stage_multiplier = get_legacy_gas_stage_multiplier(chain, tx_stage)
     suggested_gas_price_wei = _apply_gas_price_multiplier(node_gas_price_wei, stage_multiplier)
     retry_multiplier = None
@@ -3402,7 +3414,31 @@ def generate_sub_wallets(main_id: str, count: int = 1):
     return sub_wallets
 
 
-def create_wallet_run(main_id: str, template_id: str, count: int = 1):
+def _is_usable_client_run_preview(
+    preview: dict | None,
+    *,
+    main_id: str,
+    template_id: str,
+    count: int,
+) -> bool:
+    if not isinstance(preview, dict):
+        return False
+    if str(preview.get("wallet_id") or "") != str(main_id):
+        return False
+    if str(preview.get("template_id") or "") != str(template_id):
+        return False
+    if int(preview.get("contract_count") or 0) != int(count):
+        return False
+    if not isinstance(preview.get("execution"), dict):
+        return False
+    if not isinstance(preview.get("funding"), dict):
+        return False
+    if not isinstance(preview.get("per_contract"), dict):
+        return False
+    return True
+
+
+def create_wallet_run(main_id: str, template_id: str, count: int = 1, *, preview: dict | None = None):
     if count < 1 or count > 100:
         raise ValueError("Count must be between 1 and 100")
 
@@ -3423,7 +3459,10 @@ def create_wallet_run(main_id: str, template_id: str, count: int = 1):
     wrapped_native_symbol = chain_config["wrapped_native_symbol"]
     wrapped_native_address = Web3.to_checksum_address(chain_config["wrapped_native_address"])
 
-    preview = preview_template(main_id, template_id, count)
+    if _is_usable_client_run_preview(preview, main_id=main_id, template_id=template_id, count=count):
+        preview = preview or {}
+    else:
+        preview = preview_template(main_id, template_id, count)
     if not preview.get("can_proceed"):
         raise ValueError(preview.get("shortfall_reason") or "This main wallet cannot support the selected template right now.")
 
@@ -6506,6 +6545,7 @@ def serialize_wallet_record(
     index: int | None = None,
     *,
     chain: str | None = None,
+    live_balances: bool = True,
     include_token_holdings: bool = False,
     token_holdings_chain: str | None = None,
 ):
@@ -6515,7 +6555,7 @@ def serialize_wallet_record(
         'address': record['address'],
         'parent_id': record.get('parent_id'),
         'created_at': record.get('created_at'),
-        **get_wallet_balances(record['address'], chain=chain),
+        **get_wallet_balances(record['address'], chain=chain, live_balances=live_balances),
     }
     if include_token_holdings:
         payload['token_holdings'] = get_wallet_summary_token_holdings(record['address'], chain=token_holdings_chain)
@@ -6524,22 +6564,53 @@ def serialize_wallet_record(
         payload['index'] = resolved_index
     return payload
 
-def get_wallet_details(wallet_id: str, chain: str | None = None):
+def get_wallet_details(
+    wallet_id: str,
+    chain: str | None = None,
+    *,
+    live_balances: bool = True,
+    include_token_holdings: bool = True,
+    include_subwallets: bool = True,
+):
     wallet = get_wallet_record(wallet_id)
     if not wallet:
         return None
 
     normalized_chain = normalize_template_chain(chain)
-    sub_wallet_records = _backfill_child_wallet_derivation_indices(wallet, list_wallet_records(wallet_id))
-    sub_wallets = [
-        serialize_wallet_record(record, chain=normalized_chain)
-        for record in sub_wallet_records
-    ]
+    sub_wallets = []
+    if include_subwallets:
+        sub_wallet_records = _backfill_child_wallet_derivation_indices(wallet, list_wallet_records(wallet_id))
+        sub_wallets = [
+            serialize_wallet_record(record, chain=normalized_chain, live_balances=live_balances)
+            for record in sub_wallet_records
+        ]
 
-    details = serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=False)
-    details['token_holdings'] = get_wallet_summary_token_holdings(wallet['address'], chain=chain)
+    details = serialize_wallet_record(
+        wallet,
+        chain=normalized_chain,
+        live_balances=live_balances,
+        include_token_holdings=False,
+    )
+    details['token_holdings'] = (
+        get_wallet_summary_token_holdings(wallet['address'], chain=chain)
+        if include_token_holdings
+        else []
+    )
     details['sub_wallets'] = sub_wallets
     return details
+
+
+def get_wallet_summary(wallet_id: str, chain: str | None = None):
+    """Lightweight wallet fetch: main wallet record + balances only.
+
+    Skips sub-wallet enumeration and token holdings to avoid dozens of
+    RPC calls that are unnecessary for operations like template preview.
+    """
+    wallet = get_wallet_record(wallet_id)
+    if not wallet:
+        return None
+    normalized_chain = normalize_template_chain(chain)
+    return serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=False)
 
 def get_wallet(wallet_id: str):
     row_dict = get_wallet_record(wallet_id)
