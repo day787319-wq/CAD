@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { readApiPayload } from "@/lib/api";
 import {
   TEMPLATE_API_URL,
   Template,
@@ -18,6 +19,7 @@ import {
   TemplateEditorForm,
   TemplateOptions,
   TemplatePriceSnapshot,
+  StablecoinOption,
   defaultTemplateForm,
   formatAmount,
   formatRelativeTimestamp,
@@ -159,9 +161,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?chain=${encodeURIComponent(chain)}`, {
       cache: "no-store",
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail ?? "Failed to load template options");
-    setEditorOptions(payload);
+    const payload = await readApiPayload(response);
+    if (!response.ok) throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load template options");
+    setEditorOptions(payload as TemplateOptions);
     return payload as TemplateOptions;
   };
 
@@ -305,11 +307,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         const response = await fetch(`${TEMPLATE_API_URL}/api/templates/market-snapshot?chain=${encodeURIComponent(form.chain)}`, {
           cache: "no-store",
         });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.detail ?? "Failed to load live market snapshot");
+        const payload = await readApiPayload(response);
+        if (!response.ok) throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load live market snapshot");
         if (!active) return;
-        setMarketSnapshot(payload);
-        setMarketError(payload.error ?? null);
+        setMarketSnapshot(payload as TemplatePriceSnapshot);
+        setMarketError((payload as TemplatePriceSnapshot).error ?? null);
       } catch (loadError) {
         if (!active) return;
         setMarketError(loadError instanceof Error ? loadError.message : "Failed to load live market snapshot");
@@ -408,14 +410,15 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         `${TEMPLATE_API_URL}/api/templates/token/resolve?chain=${encodeURIComponent(form.chain)}&address=${encodeURIComponent(normalizedAddress)}`,
         { cache: "no-store" },
       );
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Failed to resolve token");
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to resolve token");
       }
 
       setManualStablecoins((current) => {
-        const exists = current.some((coin) => coin.address.toLowerCase() === payload.address.toLowerCase());
-        return exists ? current : [...current, payload];
+        const resolved = payload as StablecoinOption;
+        const exists = current.some((coin) => coin.address.toLowerCase() === resolved.address.toLowerCase());
+        return exists ? current : [...current, resolved];
       });
       setHiddenStablecoinAddresses((current) => current.filter((address) => address.toLowerCase() !== payload.address.toLowerCase()));
 
@@ -499,10 +502,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           body: JSON.stringify(payload),
         },
       );
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.detail ?? "Failed to save template");
+      const result = await readApiPayload(response);
+      if (!response.ok) throw new Error((result as { detail?: string } | null)?.detail ?? "Failed to save template");
 
-      onSaved(result);
+      onSaved(result as Template);
       onOpenChange(false);
       toast({
         title: template

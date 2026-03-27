@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { readApiPayload } from "@/lib/api";
 import { TemplateEditor } from "@/components/dashboard/template-editor";
 import { TemplateMarketCheckPanel } from "@/components/dashboard/template-market-check";
 import {
@@ -157,8 +158,8 @@ export function TemplateLibraryStarter() {
       const response = await fetch(`${TEMPLATE_API_URL}/api/templates/${template.id}`, {
         method: "DELETE",
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "Failed to delete template");
+      const payload = await readApiPayload(response);
+      if (!response.ok) throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to delete template");
 
       setTemplates((current) => current.filter((item) => item.id !== template.id));
       toast({

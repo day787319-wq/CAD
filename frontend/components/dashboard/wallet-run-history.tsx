@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { API_URL } from "@/lib/api";
+import { API_URL, readApiPayload } from "@/lib/api";
 import { localeTagByLocale, type SupportedLocale } from "@/lib/i18n";
 
 type FundingTransaction = {
@@ -1401,12 +1401,12 @@ export function WalletRunHistory({
       try {
         const params = mainWalletId ? `?main_wallet_id=${encodeURIComponent(mainWalletId)}` : "";
         const response = await fetch(`${API_URL}/api/wallets/runs${params}`);
-        const payload = await response.json();
+        const payload = await readApiPayload(response);
         if (!response.ok) {
-          throw new Error(payload.detail ?? (locale === "en" ? "Failed to load run history" : locale === "zn" ? "加载运行记录失败" : "Tải lịch sử chạy thất bại"));
+          throw new Error((payload as { detail?: string } | null)?.detail ?? (locale === "en" ? "Failed to load run history" : locale === "zn" ? "加载运行记录失败" : "Tải lịch sử chạy thất bại"));
         }
         if (active) {
-          setRuns(Array.isArray(payload.runs) ? payload.runs : []);
+          setRuns(Array.isArray((payload as { runs?: WalletRun[] } | null)?.runs) ? ((payload as { runs?: WalletRun[] }).runs ?? []) : []);
           setError(null);
         }
       } catch (loadError) {
@@ -1547,12 +1547,12 @@ export function WalletRunHistory({
           export_passphrase: exportPassphrase,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? (locale === "en" ? "Failed to export keystore" : locale === "zn" ? "导出 keystore 失败" : "Xuất keystore thất bại"));
+        throw new Error((payload as { detail?: string } | null)?.detail ?? (locale === "en" ? "Failed to export keystore" : locale === "zn" ? "导出 keystore 失败" : "Xuất keystore thất bại"));
       }
 
-      const keystoreJson = JSON.stringify(payload.keystore, null, 2);
+      const keystoreJson = JSON.stringify((payload as { keystore: unknown }).keystore, null, 2);
       const blob = new Blob([keystoreJson], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -1613,9 +1613,9 @@ export function WalletRunHistory({
       const response = await fetch(`${API_URL}/api/wallets/runs/${run.id}`, {
         method: "DELETE",
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? (locale === "en" ? "Failed to delete run history" : locale === "zn" ? "删除运行记录失败" : "Xóa lịch sử chạy thất bại"));
+        throw new Error((payload as { detail?: string } | null)?.detail ?? (locale === "en" ? "Failed to delete run history" : locale === "zn" ? "删除运行记录失败" : "Xóa lịch sử chạy thất bại"));
       }
 
       setRuns((current) => current.filter((item) => item.id !== run.id));

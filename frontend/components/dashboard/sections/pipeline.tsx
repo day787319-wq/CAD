@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronUp, RefreshCw, WifiOff } from "lucide-react";
 import { ChainIcon } from "@/components/dashboard/chain-icon";
 import { useI18n } from "@/components/i18n-provider";
-import { buildApiUrl } from "@/lib/api";
+import { buildApiUrl, readApiPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 10_000;
@@ -286,7 +286,7 @@ export function PipelineSection() {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const payload = (await response.json()) as StatusResponse;
+      const payload = (await readApiPayload(response)) as StatusResponse;
       setData(payload);
       setLastUpdated(new Date());
       setError(null);

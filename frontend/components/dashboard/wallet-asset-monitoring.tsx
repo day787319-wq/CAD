@@ -5,7 +5,7 @@ import { Activity, AlertTriangle, Blocks, Coins, Loader2, RefreshCw, WalletCards
 
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
-import { buildApiUrl } from "@/lib/api";
+import { buildApiUrl, readApiPayload } from "@/lib/api";
 import { formatRelativeTimestamp } from "@/lib/template";
 
 type AssetMonitorTrackedToken = {
@@ -202,11 +202,11 @@ export function WalletAssetMonitoring({
       const response = await fetch(buildApiUrl(`/api/monitoring/wallet/${walletId}?${query.toString()}`), {
         cache: "no-store",
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(payload.detail ?? (locale === "en" ? "Failed to load asset monitoring" : locale === "zn" ? "加载资产监控失败" : "Tải giám sát tài sản thất bại"));
+        throw new Error((payload as { detail?: string } | null)?.detail ?? (locale === "en" ? "Failed to load asset monitoring" : locale === "zn" ? "加载资产监控失败" : "Tải giám sát tài sản thất bại"));
       }
-      setMonitoring(payload);
+      setMonitoring(payload as WalletAssetMonitoring);
       setError(null);
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : (locale === "en" ? "Failed to load asset monitoring" : locale === "zn" ? "加载资产监控失败" : "Tải giám sát tài sản thất bại"));

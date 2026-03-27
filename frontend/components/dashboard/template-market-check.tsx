@@ -4,6 +4,7 @@ import { MouseEvent, useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
+import { readApiPayload } from "@/lib/api";
 import {
   TEMPLATE_API_URL,
   Template,
@@ -134,10 +135,10 @@ export function TemplateMarketCheckPanel({
       const response = await fetch(`${TEMPLATE_API_URL}/api/templates/${template.id}/market-check?${params.toString()}`, {
         cache: "no-store",
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) throw new Error(payload.detail ?? "Failed to load live market check");
       if (requestId === requestIdRef.current) {
-        setMarketCheck(payload);
+        setMarketCheck(payload as TemplateMarketCheck);
       }
     } catch (loadError) {
       if (requestId === requestIdRef.current) {

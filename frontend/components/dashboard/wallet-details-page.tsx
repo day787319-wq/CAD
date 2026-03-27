@@ -17,6 +17,16 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { buildApiUrl, readApiPayload } from "@/lib/api";
+import {
+  formatChainLag,
+  getAutomationStabilitySummary,
+  getChainLagTone,
+  getTemplateStatusChainKey,
+  isRpcOnline,
+  type RuntimeChainStatus,
+  type RuntimeStatusResponse,
+} from "@/lib/chain-status";
 import {
   TEMPLATE_API_URL,
   Template,
@@ -71,17 +81,6 @@ function formatTokenBalance(value: string | number | null | undefined, symbol: s
 
 function localeText(locale: SupportedLocale, text: Record<SupportedLocale, string>) {
   return text[locale];
-}
-
-async function readApiPayload(response: Response) {
-  const rawText = await response.text();
-  if (!rawText) return null;
-
-  try {
-    return JSON.parse(rawText);
-  } catch {
-    return { detail: rawText };
-  }
 }
 
 function getChainUiContext(
@@ -205,6 +204,7 @@ const ETH_TRANSFER_GAS_UNITS = 21_000;
 const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
+const CHAIN_STATUS_POLL_INTERVAL_MS = 10_000;
 
 type AutomationStepTone = "ready" | "planned" | "attention" | "optional";
 
@@ -786,6 +786,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [runHistoryRefreshKey, setRunHistoryRefreshKey] = useState(0);
   const [reviewPreview, setReviewPreview] = useState<TemplateWalletSupportPreview | null>(null);
   const [preparingRun, setPreparingRun] = useState(false);
+  const [selectedChainStatus, setSelectedChainStatus] = useState<RuntimeChainStatus | null>(null);
+  const [loadingSelectedChainStatus, setLoadingSelectedChainStatus] = useState(false);
+  const [selectedChainStatusError, setSelectedChainStatusError] = useState<string | null>(null);
   const dashboardPath = preferredChain ? `/?chain=${encodeURIComponent(preferredChain)}` : "/";
   const walletPathWithPreferredChain = (targetWalletId: string) =>
     preferredChain ? `/wallets/${targetWalletId}?chain=${encodeURIComponent(preferredChain)}` : `/wallets/${targetWalletId}`;
@@ -924,6 +927,62 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       active = false;
     };
   }, [selectedTemplate?.chain, walletId]);
+
+  useEffect(() => {
+    if (!selectedTemplate?.chain) {
+      setSelectedChainStatus(null);
+      setSelectedChainStatusError(null);
+      setLoadingSelectedChainStatus(false);
+      return;
+    }
+
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const statusChainKey = getTemplateStatusChainKey(selectedTemplate.chain);
+
+    const fetchSelectedChainStatus = async () => {
+      if (!active) return;
+      setLoadingSelectedChainStatus(true);
+      try {
+        const response = await fetch(buildApiUrl("/status"), { cache: "no-store" });
+        const payload = (await readApiPayload(response)) as RuntimeStatusResponse | { detail?: string } | null;
+        if (!response.ok) {
+          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load chain status");
+        }
+
+        const nextStatus =
+          Array.isArray((payload as RuntimeStatusResponse | null)?.status)
+            ? (payload as RuntimeStatusResponse).status.find((item) => `${item.chain}`.toUpperCase() === statusChainKey) ?? null
+            : null;
+
+        if (active) {
+          setSelectedChainStatus(nextStatus);
+          setSelectedChainStatusError(null);
+        }
+      } catch (error) {
+        if (active) {
+          setSelectedChainStatus(null);
+          setSelectedChainStatusError(error instanceof Error ? error.message : "Failed to load chain status");
+        }
+      } finally {
+        if (active) {
+          setLoadingSelectedChainStatus(false);
+        }
+      }
+    };
+
+    void fetchSelectedChainStatus();
+    timer = setInterval(() => {
+      void fetchSelectedChainStatus();
+    }, CHAIN_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      if (timer) {
+        clearInterval(timer);
+      }
+    };
+  }, [selectedTemplate?.chain]);
 
   const contractCountValue = useMemo(() => Number.parseInt(contractCount, 10), [contractCount]);
   const contractCountError = useMemo(() => {
@@ -1289,6 +1348,30 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const selectedChainUi = getChainUiContext(selectedTemplate, wallet, locale);
   const nativeSymbol = selectedChainUi.nativeSymbol;
   const wrappedNativeSymbol = selectedChainUi.wrappedNativeSymbol;
+  const automationStability = getAutomationStabilitySummary(selectedChainStatus);
+  const automationStabilityValue = loadingSelectedChainStatus
+    ? localeText(locale, { en: "Checking...", zn: "检查中...", vn: "Đang kiểm tra..." })
+    : selectedChainStatusError
+      ? localeText(locale, { en: "Status unavailable", zn: "状态不可用", vn: "Không có trạng thái" })
+      : automationStability.label === "Yes"
+        ? localeText(locale, { en: "Yes", zn: "是", vn: "Có" })
+        : automationStability.label === "No"
+          ? localeText(locale, { en: "No", zn: "否", vn: "Không" })
+          : localeText(locale, { en: "Unknown", zn: "未知", vn: "Chưa rõ" });
+  const rpcOnlineValue = loadingSelectedChainStatus
+    ? localeText(locale, { en: "Checking...", zn: "检查中...", vn: "Đang kiểm tra..." })
+    : selectedChainStatusError
+      ? localeText(locale, { en: "Status unavailable", zn: "状态不可用", vn: "Không có trạng thái" })
+      : selectedChainStatus?.status === "unconfigured"
+        ? localeText(locale, { en: "No", zn: "否", vn: "Không" })
+        : isRpcOnline(selectedChainStatus)
+          ? localeText(locale, { en: "Yes", zn: "是", vn: "Có" })
+          : localeText(locale, { en: "No", zn: "否", vn: "Không" });
+  const lagValue = loadingSelectedChainStatus
+    ? localeText(locale, { en: "Checking...", zn: "检查中...", vn: "Đang kiểm tra..." })
+    : selectedChainStatusError
+      ? localeText(locale, { en: "Status unavailable", zn: "状态不可用", vn: "Không có trạng thái" })
+      : formatChainLag(selectedChainStatus);
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -1720,6 +1803,73 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                             <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_320px]">
                               <div className="space-y-5">
+                                <div className="cad-panel-soft px-5 py-5">
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+                                      <Fuel className="h-5 w-5" />
+                                    </div>
+                                    <div>
+                                      <p className="text-lg font-semibold text-slate-950">
+                                        {locale === "en" ? "Chain automation status" : locale === "zn" ? "链自动化状态" : "Trạng thái tự động hóa của chain"}
+                                      </p>
+                                      <p className="text-sm text-slate-500">
+                                        {locale === "en"
+                                          ? "Live RPC status for the selected template chain. Auto-refreshes every 10 seconds."
+                                          : locale === "zn"
+                                            ? "所选模板链的实时 RPC 状态。每 10 秒自动刷新。"
+                                            : "Trạng thái RPC trực tiếp của chain mẫu đã chọn. Tự làm mới mỗi 10 giây."}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                                    <InfoCard
+                                      label={locale === "en" ? "Stable enough to automate" : locale === "zn" ? "是否足够稳定可自动化" : "Đủ ổn định để tự động hóa"}
+                                      value={automationStabilityValue}
+                                      valueClassName={loadingSelectedChainStatus ? "" : automationStability.tone}
+                                      hint={selectedChainStatusError ?? automationStability.hint}
+                                    />
+                                    <InfoCard
+                                      label={locale === "en" ? "How far behind" : locale === "zn" ? "落后多少" : "Đang chậm bao xa"}
+                                      value={lagValue}
+                                      valueClassName={loadingSelectedChainStatus || selectedChainStatusError ? "" : getChainLagTone(selectedChainStatus)}
+                                      hint={
+                                        selectedChainStatus?.timestamp
+                                          ? locale === "en"
+                                            ? `Latest block time ${selectedChainStatus.timestamp} UTC`
+                                            : locale === "zn"
+                                              ? `最新区块时间 ${selectedChainStatus.timestamp} UTC`
+                                              : `Thời gian khối mới nhất ${selectedChainStatus.timestamp} UTC`
+                                          : selectedChainStatusError ?? (locale === "en" ? "Waiting for chain status." : locale === "zn" ? "等待链状态。" : "Đang chờ trạng thái chain.")
+                                      }
+                                    />
+                                    <InfoCard
+                                      label={locale === "en" ? "RPC online" : locale === "zn" ? "RPC 在线" : "RPC trực tuyến"}
+                                      value={rpcOnlineValue}
+                                      valueClassName={
+                                        loadingSelectedChainStatus
+                                          ? ""
+                                          : selectedChainStatusError
+                                            ? "text-rose-700"
+                                            : isRpcOnline(selectedChainStatus)
+                                              ? "text-emerald-700"
+                                              : "text-rose-700"
+                                      }
+                                      hint={
+                                        selectedChainStatus?.error
+                                          ? selectedChainStatus.error
+                                          : selectedChainStatus?.peer_count !== null && selectedChainStatus?.peer_count !== undefined
+                                            ? locale === "en"
+                                              ? `${selectedChainStatus.peer_count} peers reported by the node`
+                                              : locale === "zn"
+                                                ? `节点报告 ${selectedChainStatus.peer_count} 个对等节点`
+                                                : `Node báo cáo ${selectedChainStatus.peer_count} peer`
+                                            : selectedChainStatusError ?? (locale === "en" ? "Checks node reachability and latest chain state." : locale === "zn" ? "检查节点可达性和最新链状态。" : "Kiểm tra khả năng truy cập node và trạng thái chain mới nhất.")
+                                      }
+                                    />
+                                  </div>
+                                </div>
+
                                 <div className="cad-panel-soft px-5 py-5">
                                   <div className="flex items-center gap-3">
                                     <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
