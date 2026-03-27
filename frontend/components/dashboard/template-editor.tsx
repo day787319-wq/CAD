@@ -103,6 +103,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<TemplatePriceSnapshot | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
+  const [loadingTokenRoutes, setLoadingTokenRoutes] = useState(false);
+  const [tokenRouteError, setTokenRouteError] = useState<string | null>(null);
+  const [tokenRouteStatusByAddress, setTokenRouteStatusByAddress] = useState<
+    Record<string, Pick<StablecoinOption, "tested" | "route_status" | "route_error">>
+  >({});
 
   const currentOptions = editorOptions ?? options;
   const stablecoins = currentOptions?.stablecoins ?? [];
@@ -176,6 +181,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     setHiddenStablecoinAddresses([]);
     setManualTokenAddress("");
     setTokenPickerOpen(false);
+    setTokenRouteError(null);
+    setTokenRouteStatusByAddress({});
     const nextForm = template ? templateToForm(template) : defaultTemplateForm(options);
     setForm(nextForm);
     setEditorOptions(options);
@@ -206,6 +213,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
           address: allocation.token_address,
           decimals: null,
           official_source: null,
+          tested: undefined,
+          route_status: allocation.route_status ?? null,
+          route_error: allocation.route_error ?? null,
         })),
     [form.stablecoin_allocations, stablecoins],
   );
@@ -221,8 +231,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       merged.push(coin);
     }
 
-    return merged.filter((coin) => !hidden.has(coin.address.toLowerCase()));
-  }, [hiddenStablecoinAddresses, manualStablecoins, selectedCustomStablecoins, stablecoins]);
+    return merged
+      .filter((coin) => !hidden.has(coin.address.toLowerCase()))
+      .map((coin) => ({
+        ...coin,
+        ...(tokenRouteStatusByAddress[coin.address.toLowerCase()] ?? {}),
+      }));
+  }, [hiddenStablecoinAddresses, manualStablecoins, selectedCustomStablecoins, stablecoins, tokenRouteStatusByAddress]);
 
   const selectedStablecoins = useMemo(
     () => displayStablecoins.filter((coin) => selectedStablecoinAddresses.has(coin.address.toLowerCase())),
@@ -331,6 +346,68 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     };
   }, [open, form.chain]);
 
+  useEffect(() => {
+    if (!open) return;
+    if (form.chain !== "bnb") {
+      setLoadingTokenRoutes(false);
+      setTokenRouteError(null);
+      setTokenRouteStatusByAddress({});
+      return;
+    }
+
+    let active = true;
+    setLoadingTokenRoutes(true);
+    setTokenRouteError(null);
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          `${TEMPLATE_API_URL}/api/templates/token/routes?chain=${encodeURIComponent(form.chain)}`,
+          { cache: "no-store" },
+        );
+        const payload = await readApiPayload(response);
+        if (!response.ok) {
+          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load token routes");
+        }
+        if (!active) return;
+        const routeMap = Object.fromEntries(
+          (((payload as { stablecoins?: StablecoinOption[] } | null)?.stablecoins ?? []).map((coin) => [
+            coin.address.toLowerCase(),
+            {
+              tested: coin.tested,
+              route_status: coin.route_status ?? null,
+              route_error: coin.route_error ?? null,
+            },
+          ])),
+        );
+        setTokenRouteStatusByAddress(routeMap);
+        setForm((current) => ({
+          ...current,
+          stablecoin_allocations: current.stablecoin_allocations.map((allocation) => {
+            const routeState = routeMap[allocation.token_address.toLowerCase()];
+            if (!routeState) return allocation;
+            return {
+              ...allocation,
+              route_status: routeState.route_status ?? null,
+              route_error: routeState.route_error ?? null,
+            };
+          }),
+        }));
+      } catch (error) {
+        if (!active) return;
+        setTokenRouteError(error instanceof Error ? error.message : "Failed to load token routes");
+      } finally {
+        if (active) {
+          setLoadingTokenRoutes(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [open, form.chain]);
+
   const handleChainChange = async (nextChain: TemplateChain) => {
     if (template || nextChain === form.chain) return;
 
@@ -354,23 +431,52 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     }
   };
 
-  const toggleStablecoin = (tokenAddress: string, tokenSymbol: string) => {
+  const getTokenRouteMessage = (token: Pick<StablecoinOption, "route_status" | "route_error">) =>
+    token.route_status ?? token.route_error ?? null;
+
+  const removeStablecoin = (tokenAddress: string) => {
     const normalized = tokenAddress.toLowerCase();
+    setForm((current) => ({
+      ...current,
+      stablecoin_allocations: current.stablecoin_allocations.filter((allocation) => allocation.token_address.toLowerCase() !== normalized),
+    }));
+  };
+
+  const addStablecoin = (token: StablecoinOption) => {
+    const routeMessage = getTokenRouteMessage(token);
+    if (token.route_status === "No route found") {
+      setSaveError(routeMessage ?? "No route found");
+      return;
+    }
+
+    setSaveError(null);
     setForm((current) => {
-      const exists = current.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === normalized);
-      const stablecoin_allocations = exists
-        ? current.stablecoin_allocations.filter((allocation) => allocation.token_address.toLowerCase() !== normalized)
-        : [
-            ...current.stablecoin_allocations,
-            {
-              token_address: tokenAddress,
-              token_symbol: tokenSymbol,
-              percent: null,
-              weth_amount_per_contract: null,
-            },
-          ];
-      return { ...current, stablecoin_allocations };
+      const exists = current.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === token.address.toLowerCase());
+      if (exists) return current;
+      return {
+        ...current,
+        stablecoin_allocations: [
+          ...current.stablecoin_allocations,
+          {
+            token_address: token.address,
+            token_symbol: token.symbol,
+            percent: null,
+            weth_amount_per_contract: null,
+            route_status: token.route_status ?? null,
+            route_error: token.route_error ?? null,
+          },
+        ],
+      };
     });
+  };
+
+  const toggleStablecoin = (token: StablecoinOption) => {
+    const exists = form.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === token.address.toLowerCase());
+    if (exists) {
+      removeStablecoin(token.address);
+      return;
+    }
+    addStablecoin(token);
   };
 
   const updateAllocation = (tokenAddress: string, field: "percent" | "weth_amount_per_contract", value: string) => {
@@ -415,25 +521,39 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to resolve token");
       }
 
+      const resolved = payload as StablecoinOption;
+      if (resolved.route_status === "No route found") {
+        throw new Error(resolved.route_status);
+      }
+
       setManualStablecoins((current) => {
-        const resolved = payload as StablecoinOption;
         const exists = current.some((coin) => coin.address.toLowerCase() === resolved.address.toLowerCase());
         return exists ? current : [...current, resolved];
       });
-      setHiddenStablecoinAddresses((current) => current.filter((address) => address.toLowerCase() !== payload.address.toLowerCase()));
+      setHiddenStablecoinAddresses((current) => current.filter((address) => address.toLowerCase() !== resolved.address.toLowerCase()));
+      setTokenRouteStatusByAddress((current) => ({
+        ...current,
+        [resolved.address.toLowerCase()]: {
+          tested: resolved.tested,
+          route_status: resolved.route_status ?? null,
+          route_error: resolved.route_error ?? null,
+        },
+      }));
 
       setForm((current) => {
-        const exists = current.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === payload.address.toLowerCase());
+        const exists = current.stablecoin_allocations.some((allocation) => allocation.token_address.toLowerCase() === resolved.address.toLowerCase());
         if (exists) return current;
         return {
           ...current,
           stablecoin_allocations: [
             ...current.stablecoin_allocations,
             {
-              token_address: payload.address,
-              token_symbol: payload.symbol,
+              token_address: resolved.address,
+              token_symbol: resolved.symbol,
               percent: null,
               weth_amount_per_contract: null,
+              route_status: resolved.route_status ?? null,
+              route_error: resolved.route_error ?? null,
             },
           ],
         };
@@ -1032,6 +1152,31 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                       ? `${wrappedNativeSymbol} 是此链上的包装输入资产。它会在兑换中内部使用，不能作为篮子代币选择。`
                       : `${wrappedNativeSymbol} là tài sản bọc dùng làm đầu vào trên chain này. Nó được dùng nội bộ cho swap và không thể chọn làm token trong rổ.`}
                 </p>
+                {form.chain === "bnb" ? (
+                  <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      {loadingTokenRoutes
+                        ? locale === "en"
+                          ? "Checking BNB token routes..."
+                          : locale === "zn"
+                            ? "正在检查 BNB 代币路由..."
+                            : "Đang kiểm tra tuyến token BNB..."
+                        : locale === "en"
+                          ? "BNB route audit loaded"
+                          : locale === "zn"
+                            ? "BNB 路由审计已加载"
+                            : "Đã tải kiểm tra tuyến BNB"}
+                    </p>
+                    <p className="mt-1 text-xs">
+                      {locale === "en"
+                        ? "Tokens marked `No route found` are blocked from being added."
+                        : locale === "zn"
+                          ? "标记为 `No route found` 的代币会被禁止添加。"
+                          : "Các token được đánh dấu `No route found` sẽ bị chặn không cho thêm."}
+                    </p>
+                    {tokenRouteError ? <p className="mt-2 text-xs text-amber-800">{tokenRouteError}</p> : null}
+                  </div>
+                ) : null}
 
                 <Collapsible open={tokenPickerOpen} onOpenChange={setTokenPickerOpen} className="space-y-3">
                   <CollapsibleTrigger asChild>
@@ -1059,6 +1204,13 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     {displayStablecoins.map((coin) => {
                       const active = selectedStablecoinAddresses.has(coin.address.toLowerCase());
                       const isCustomToken = !stablecoins.some((item) => item.address.toLowerCase() === coin.address.toLowerCase());
+                      const routeMessage = getTokenRouteMessage(coin);
+                      const blockedForNoRoute = coin.route_status === "No route found";
+                      const waitingForBnbRouteCheck =
+                        form.chain === "bnb" &&
+                        loadingTokenRoutes &&
+                        coin.tested === undefined &&
+                        !routeMessage;
                       return (
                         <div
                           key={coin.address}
@@ -1068,14 +1220,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                               : "bg-card ring-1 ring-border/70 hover:bg-secondary/35"
                           }`}
                         >
-                          <button
-                            type="button"
-                            onClick={() => toggleStablecoin(coin.address, coin.symbol)}
-                            className="block w-full pr-10 text-left"
-                          >
+                          <div className="pr-10 text-left">
                             <p className="text-sm font-semibold text-foreground">{coin.symbol}</p>
                             <p className="mt-1 text-xs text-muted-foreground">{coin.name}</p>
                             <p className="mt-2 break-all font-mono text-[11px] font-semibold text-foreground">{coin.address}</p>
+                            {routeMessage ? (
+                              <p className={`mt-2 text-[11px] font-medium ${blockedForNoRoute ? "text-rose-700" : "text-amber-700"}`}>
+                                {routeMessage}
+                              </p>
+                            ) : waitingForBnbRouteCheck ? (
+                              <p className="mt-2 text-[11px] font-medium text-muted-foreground">
+                                {locale === "en" ? "Checking route..." : locale === "zn" ? "正在检查路由..." : "Đang kiểm tra tuyến..."}
+                              </p>
+                            ) : null}
                             <div className="mt-3 flex items-center justify-between gap-3">
                               <p className="text-[11px] text-muted-foreground">
                                 {isCustomToken ? (locale === "en" ? "Manual token" : locale === "zn" ? "手动添加代币" : "Token thêm thủ công") : `${currentChain.label} token`}
@@ -1084,7 +1241,40 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                 Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
                               </p>
                             </div>
-                          </button>
+                            <div className="mt-3 flex items-center justify-end gap-2">
+                              <Button
+                                type="button"
+                                variant={active ? "outline" : "default"}
+                                size="sm"
+                                disabled={!active && (blockedForNoRoute || waitingForBnbRouteCheck)}
+                                onClick={() => toggleStablecoin(coin)}
+                              >
+                                {active
+                                  ? locale === "en"
+                                    ? "Remove"
+                                    : locale === "zn"
+                                      ? "移除"
+                                      : "Gỡ"
+                                  : blockedForNoRoute
+                                    ? locale === "en"
+                                      ? "Unavailable"
+                                      : locale === "zn"
+                                        ? "不可用"
+                                        : "Không khả dụng"
+                                    : waitingForBnbRouteCheck
+                                      ? locale === "en"
+                                        ? "Checking"
+                                        : locale === "zn"
+                                          ? "检查中"
+                                          : "Đang kiểm tra"
+                                      : locale === "en"
+                                        ? "Add"
+                                        : locale === "zn"
+                                          ? "添加"
+                                          : "Thêm"}
+                              </Button>
+                            </div>
+                          </div>
 
                           <Button
                             type="button"
@@ -1193,6 +1383,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                               <p className="mt-1 text-[11px] font-medium text-sky-700">
                                 Spot {formatUsd(marketSnapshot?.token_prices?.[coin.address.toLowerCase()])}
                               </p>
+                              {allocation.route_status ? (
+                                <p className="mt-1 text-[11px] font-medium text-amber-700">{allocation.route_status}</p>
+                              ) : null}
+                              {!allocation.route_status && allocation.route_error ? (
+                                <p className="mt-1 text-[11px] font-medium text-amber-700">{allocation.route_error}</p>
+                              ) : null}
                             </div>
                             <div className="space-y-2">
                               <Input
@@ -1269,6 +1465,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-foreground">{allocation.token_symbol}</p>
                             <p className="mt-1 font-mono text-[11px] text-muted-foreground">{shortAddress(allocation.token_address)}</p>
+                            {allocation.route_status ? (
+                              <p className="mt-1 text-[11px] font-medium text-amber-700">{allocation.route_status}</p>
+                            ) : null}
+                            {!allocation.route_status && allocation.route_error ? (
+                              <p className="mt-1 text-[11px] font-medium text-amber-700">{allocation.route_error}</p>
+                            ) : null}
                           </div>
                           <div>
                             <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{wrappedNativeSymbol} per contract</p>

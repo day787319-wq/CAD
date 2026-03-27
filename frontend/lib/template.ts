@@ -24,6 +24,9 @@ export type StablecoinOption = {
   address: string;
   decimals?: number | null;
   official_source?: string | null;
+  tested?: boolean;
+  route_status?: string | null;
+  route_error?: string | null;
 };
 
 export type StablecoinAllocation = {
@@ -31,6 +34,8 @@ export type StablecoinAllocation = {
   token_address: string;
   percent?: string | null;
   weth_amount_per_contract?: string | null;
+  route_status?: string | null;
+  route_error?: string | null;
 };
 
 export type TemplateChain =
@@ -471,6 +476,8 @@ export type TemplateStablecoinQuote = {
   token_symbol: string;
   token_name: string;
   token_address: string;
+  route_status?: string | null;
+  route_error?: string | null;
   percent: string | null;
   per_contract_weth_amount: string | null;
   total_weth_amount: string | null;
@@ -533,6 +540,10 @@ export type TemplateMarketCheck = {
   stablecoin_quotes: TemplateStablecoinQuote[];
   price_snapshot: TemplatePriceSnapshot;
 };
+
+export function getTemplateNoRouteAllocations(template: Pick<Template, "stablecoin_allocations">) {
+  return (template.stablecoin_allocations ?? []).filter((allocation) => allocation.route_status === "No route found");
+}
 
 export function formatAmount(value: string | number | null | undefined) {
   const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
@@ -670,6 +681,8 @@ export function getStablecoinDistributionRows(input: {
     return allocations.map((allocation) => ({
       token_symbol: allocation.token_symbol,
       token_address: allocation.token_address,
+      route_status: allocation.route_status ?? null,
+      route_error: allocation.route_error ?? null,
       percent: toDistributionValue(percent),
       weth_amount_per_contract: toDistributionValue(wethAmountPerContract),
     }));
@@ -682,6 +695,8 @@ export function getStablecoinDistributionRows(input: {
       return {
         token_symbol: allocation.token_symbol,
         token_address: allocation.token_address,
+        route_status: allocation.route_status ?? null,
+        route_error: allocation.route_error ?? null,
         percent: toDistributionValue(percent),
         weth_amount_per_contract: toDistributionValue(wethAmountPerContract),
       };
@@ -694,6 +709,8 @@ export function getStablecoinDistributionRows(input: {
     return {
       token_symbol: allocation.token_symbol,
       token_address: allocation.token_address,
+      route_status: allocation.route_status ?? null,
+      route_error: allocation.route_error ?? null,
       percent: toDistributionValue(percent),
       weth_amount_per_contract: toDistributionValue(wethAmountPerContract),
     };

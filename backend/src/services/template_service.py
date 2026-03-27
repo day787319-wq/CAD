@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -71,6 +72,8 @@ CURATED_USD_STABLECOINS = ETHEREUM_SWAP_TOKENS
 CURATED_USD_STABLECOIN_BY_ADDRESS = TEMPLATE_CHAIN_TOKEN_BY_ADDRESS[TEMPLATE_CHAIN_ETHEREUM]
 CURATED_USD_STABLECOIN_BY_SYMBOL = TEMPLATE_CHAIN_TOKEN_BY_SYMBOL[TEMPLATE_CHAIN_ETHEREUM]
 DISTRIBUTION_MODE_VALUES = {"none", "equal", "manual_percent", "manual_weth_amount"}
+ROUTE_STATUS_NO_ROUTE_FOUND = "No route found"
+ROUTE_CHECK_PROBE_WETH_AMOUNT = Decimal("0.001")
 
 
 def _format_decimal(value: Decimal | None):
@@ -79,6 +82,36 @@ def _format_decimal(value: Decimal | None):
     if value == 0:
         return "0"
     return format(value.normalize(), "f")
+
+
+def _normalize_route_status(value) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _normalize_route_error_message(message: str | None) -> str | None:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return None
+    if "no swap route found" in normalized.casefold():
+        return ROUTE_STATUS_NO_ROUTE_FOUND
+    return normalized
+
+
+def _build_allocation_route_metadata(
+    route_status: str | None = None,
+    route_error: str | None = None,
+) -> dict:
+    normalized_status = _normalize_route_status(route_status)
+    normalized_error = _normalize_route_error_message(route_error)
+    if normalized_error == ROUTE_STATUS_NO_ROUTE_FOUND:
+        normalized_status = ROUTE_STATUS_NO_ROUTE_FOUND
+    if normalized_status == ROUTE_STATUS_NO_ROUTE_FOUND and normalized_error is None:
+        normalized_error = ROUTE_STATUS_NO_ROUTE_FOUND
+    return {
+        "route_status": normalized_status,
+        "route_error": normalized_error,
+    }
 
 
 def _get_testing_recipient_address(template: dict) -> str | None:
@@ -314,6 +347,60 @@ def resolve_template_token(address: str, chain: str | None = None):
         "address": token["address"],
         "decimals": int(token["decimals"]),
         "official_source": None,
+        **_probe_template_token_route(
+            normalized_chain,
+            token["address"],
+            token_symbol=token["symbol"],
+            slippage_percent="0.5",
+        ),
+    }
+
+
+def get_template_chain_token_route_statuses(chain: str | None = None):
+    normalized_chain = normalize_template_chain(chain)
+    tokens = get_template_chain_tokens(normalized_chain)
+    chain_config = get_template_chain_config(normalized_chain)
+
+    if not chain_config["quote_supported"]:
+        return {
+            "chain": normalized_chain,
+            "stablecoins": [
+                {
+                    "symbol": token["symbol"],
+                    "name": token["name"],
+                    "address": token["address"],
+                    "decimals": int(token["decimals"]) if token.get("decimals") is not None else None,
+                    "official_source": None,
+                    "tested": False,
+                    "route_status": None,
+                    "route_error": None,
+                }
+                for token in tokens
+            ],
+        }
+
+    def probe_token(token: dict):
+        return {
+            "symbol": token["symbol"],
+            "name": token["name"],
+            "address": token["address"],
+            "decimals": int(token["decimals"]) if token.get("decimals") is not None else None,
+            "official_source": None,
+            **_probe_template_token_route(
+                normalized_chain,
+                token["address"],
+                token_symbol=token["symbol"],
+                slippage_percent="0.5",
+            ),
+        }
+
+    max_workers = min(6, max(1, len(tokens)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        stablecoins = list(executor.map(probe_token, tokens))
+
+    return {
+        "chain": normalized_chain,
+        "stablecoins": stablecoins,
     }
 
 
@@ -352,6 +439,14 @@ def _parse_allocations(
             "token_symbol": token["symbol"],
             "token_address": token["address"],
         }
+        allocation_route_metadata = _build_allocation_route_metadata(
+            raw_allocation.get("route_status"),
+            raw_allocation.get("route_error"),
+        )
+        if allocation_route_metadata["route_status"] is not None:
+            allocation["route_status"] = allocation_route_metadata["route_status"]
+        if allocation_route_metadata["route_error"] is not None:
+            allocation["route_error"] = allocation_route_metadata["route_error"]
 
         if distribution_mode == "manual_percent":
             percent = _parse_decimal(raw_allocation.get("percent"), "percent", allow_zero=False)
@@ -604,6 +699,103 @@ def _empty_market_snapshot():
     }
 
 
+def _build_allocation_budget_snapshot(
+    template: dict,
+    allocation: dict,
+    distribution_mode: str,
+    swap_budget_eth_per_contract: Decimal,
+):
+    allocations = template.get("stablecoin_allocations") or []
+    if distribution_mode == "equal":
+        if not allocations:
+            return Decimal("0"), Decimal("0")
+        percent = Decimal("100") / Decimal(len(allocations))
+        per_contract_weth = swap_budget_eth_per_contract / Decimal(len(allocations))
+    elif distribution_mode == "manual_percent":
+        percent = Decimal(str(allocation["percent"]))
+        per_contract_weth = swap_budget_eth_per_contract * (percent / Decimal("100"))
+    else:
+        per_contract_weth = Decimal(str(allocation["weth_amount_per_contract"]))
+        percent = (
+            per_contract_weth / swap_budget_eth_per_contract * Decimal("100")
+            if swap_budget_eth_per_contract > 0
+            else Decimal("0")
+        )
+    return percent, per_contract_weth
+
+
+def _probe_template_allocation_route(template: dict, allocation: dict) -> dict:
+    chain = template.get("chain") or DEFAULT_TEMPLATE_CHAIN
+    return _probe_template_token_route(
+        chain,
+        allocation.get("token_address"),
+        token_symbol=allocation.get("token_symbol"),
+        fee_tier=template.get("fee_tier"),
+        slippage_percent=template.get("slippage_percent"),
+        minimum_amount=Decimal(
+            str(
+                max(
+                    _build_allocation_budget_snapshot(
+                        template,
+                        allocation,
+                        template.get("stablecoin_distribution_mode") or "none",
+                        Decimal(str(template.get("swap_budget_eth_per_contract") or "0")),
+                    )[1],
+                    ROUTE_CHECK_PROBE_WETH_AMOUNT,
+                )
+            )
+        ),
+    )
+
+
+def _probe_template_token_route(
+    chain: str,
+    token_address: str | None,
+    *,
+    token_symbol: str | None = None,
+    fee_tier: int | None = None,
+    slippage_percent: str | float | Decimal | None = None,
+    minimum_amount: Decimal | None = None,
+):
+    chain_config = get_template_chain_config(chain)
+    if not chain_config["quote_supported"]:
+        return {
+            "tested": False,
+            "route_status": None,
+            "route_error": None,
+        }
+
+    token = _normalize_stablecoin(
+        chain,
+        token_address,
+        token_symbol,
+    )
+    probe_amount = max(minimum_amount or Decimal("0"), ROUTE_CHECK_PROBE_WETH_AMOUNT)
+
+    try:
+        quote_uniswap_swap(
+            chain_config["wrapped_native_symbol"],
+            token["address"],
+            _format_decimal(probe_amount),
+            fee_tier=fee_tier,
+            slippage_percent=slippage_percent,
+            chain=chain,
+        )
+        return {
+            "tested": True,
+            "route_status": None,
+            "route_error": None,
+        }
+    except Exception as exc:
+        route_error = _normalize_route_error_message(str(exc))
+        route_status = ROUTE_STATUS_NO_ROUTE_FOUND if route_error == ROUTE_STATUS_NO_ROUTE_FOUND else None
+        return {
+            "tested": True,
+            "route_status": route_status,
+            "route_error": route_error,
+        }
+
+
 def _build_allocation_preview(
     template: dict,
     allocation: dict,
@@ -621,18 +813,20 @@ def _build_allocation_preview(
         allocation.get("token_symbol"),
     )
     contract_count_decimal = Decimal(contract_count)
-
-    if distribution_mode == "equal":
-        percent = Decimal("100") / Decimal(len(template["stablecoin_allocations"]))
-        per_contract_weth = swap_budget_eth_per_contract / Decimal(len(template["stablecoin_allocations"]))
-    elif distribution_mode == "manual_percent":
-        percent = Decimal(str(allocation["percent"]))
-        per_contract_weth = swap_budget_eth_per_contract * (percent / Decimal("100"))
-    else:
-        per_contract_weth = Decimal(str(allocation["weth_amount_per_contract"]))
-        percent = (per_contract_weth / swap_budget_eth_per_contract * Decimal("100")) if swap_budget_eth_per_contract > 0 else Decimal("0")
+    percent, per_contract_weth = _build_allocation_budget_snapshot(
+        template,
+        allocation,
+        distribution_mode,
+        swap_budget_eth_per_contract,
+    )
 
     total_weth = per_contract_weth * contract_count_decimal
+    route_metadata = _build_allocation_route_metadata(
+        allocation.get("route_status"),
+        allocation.get("route_error"),
+    )
+    route_status = route_metadata["route_status"]
+    route_error = route_metadata["route_error"]
 
     quote = {
         "available": False,
@@ -665,15 +859,20 @@ def _build_allocation_preview(
             total_output = per_contract_output * contract_count_decimal
             per_contract_min_output = Decimal(str(raw_quote["min_amount_out"]))
             total_min_output = per_contract_min_output * contract_count_decimal
+            route_status = None
+            route_error = None
         except Exception as exc:
+            normalized_error = _normalize_route_error_message(str(exc))
             quote = {
                 "available": False,
                 "token_in": chain_config["wrapped_native_symbol"],
                 "token_out": token["symbol"],
-                "error": str(exc),
+                "error": normalized_error,
                 "source": "template-allocation",
                 "slippage_percent": template.get("slippage_percent"),
             }
+            route_status = ROUTE_STATUS_NO_ROUTE_FOUND if normalized_error == ROUTE_STATUS_NO_ROUTE_FOUND else route_status
+            route_error = normalized_error
     elif include_live_market and per_contract_weth > 0:
         quote = {
             "available": False,
@@ -683,12 +882,21 @@ def _build_allocation_preview(
             "source": "template-allocation",
             "slippage_percent": template.get("slippage_percent"),
         }
+    elif include_live_market:
+        route_probe = _probe_template_allocation_route(template, allocation)
+        if route_probe["tested"]:
+            route_status = route_probe["route_status"]
+            route_error = route_probe["route_error"]
+            if route_error and not quote["error"]:
+                quote["error"] = route_error
 
     token_price_usd = market_snapshot.get("token_prices", {}).get(token["address"].lower()) if include_live_market else None
     return {
         "token_symbol": token["symbol"],
         "token_name": token["name"],
         "token_address": token["address"],
+        "route_status": route_status,
+        "route_error": route_error,
         "percent": _format_decimal(percent),
         "per_contract_weth_amount": _format_decimal(per_contract_weth),
         "total_weth_amount": _format_decimal(total_weth),
@@ -947,7 +1155,8 @@ def _build_route_preflight_status(template: dict):
                 chain=chain,
             )
         except Exception as exc:
-            errors.append(f"{route['token_symbol']}: {exc}")
+            normalized_error = _normalize_route_error_message(str(exc)) or str(exc)
+            errors.append(f"{route['token_symbol']}: {normalized_error}")
 
     return {
         "available": len(errors) == 0,
@@ -1410,6 +1619,67 @@ def build_template_stablecoin_routes(template: dict, contract_count: int = 1):
         )
         for allocation in template.get("stablecoin_allocations") or []
     ]
+
+
+def refresh_template_route_statuses(template_id: str | None = None):
+    if template_id:
+        template = get_template(template_id)
+        if not template:
+            raise ValueError("Template not found")
+        templates = [template]
+    else:
+        templates = list_templates()
+
+    refreshed_templates = []
+    for template in templates:
+        updated_allocations = []
+        token_results = []
+        has_changes = False
+
+        for allocation in template.get("stablecoin_allocations") or []:
+            route_probe = _probe_template_allocation_route(template, allocation)
+            next_allocation = {
+                key: value
+                for key, value in allocation.items()
+                if key not in {"route_status", "route_error"}
+            }
+            if not route_probe["tested"]:
+                next_allocation = dict(allocation)
+            else:
+                if route_probe["route_status"] == ROUTE_STATUS_NO_ROUTE_FOUND:
+                    next_allocation["route_status"] = route_probe["route_status"]
+                if route_probe["route_error"] == ROUTE_STATUS_NO_ROUTE_FOUND:
+                    next_allocation["route_error"] = route_probe["route_error"]
+
+            if next_allocation != allocation:
+                has_changes = True
+
+            updated_allocations.append(next_allocation)
+            token_results.append(
+                {
+                    "token_symbol": next_allocation.get("token_symbol"),
+                    "token_address": next_allocation.get("token_address"),
+                    "tested": route_probe["tested"],
+                    "route_status": next_allocation.get("route_status"),
+                    "route_error": next_allocation.get("route_error"),
+                }
+            )
+
+        next_template = {**template, "stablecoin_allocations": updated_allocations}
+        if has_changes:
+            db.upsert_template(_serialize_template_for_storage(next_template))
+
+        refreshed_templates.append(
+            {
+                "template_id": template["id"],
+                "template_name": template["name"],
+                "chain": template.get("chain"),
+                "updated": has_changes,
+                "tokens": token_results,
+            }
+        )
+
+    return {"templates": refreshed_templates}
 
 
 def _normalize_template_name(value: str) -> str:

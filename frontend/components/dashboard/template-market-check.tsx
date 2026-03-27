@@ -312,6 +312,9 @@ export function TemplateMarketCheckPanel({
                       {!quote.quote.available && quote.quote.error ? (
                         <p className="mt-3 text-xs text-muted-foreground">{quote.quote.error}</p>
                       ) : null}
+                      {!quote.quote.available && !quote.quote.error && quote.route_status ? (
+                        <p className="mt-3 text-xs text-muted-foreground">{quote.route_status}</p>
+                      ) : null}
                     </div>
                   ))}
                 </div>

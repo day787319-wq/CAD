@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from src.services.template_service import (
     create_template as create_template_service,
     get_template_editor_market_snapshot as get_template_editor_market_snapshot_service,
+    get_template_chain_token_route_statuses as get_template_chain_token_route_statuses_service,
     get_template as get_template_service,
     get_template_options as get_template_options_service,
     list_templates as list_templates_service,
@@ -23,6 +24,8 @@ class StablecoinAllocationRequest(BaseModel):
     token_address: str
     percent: str | None = None
     weth_amount_per_contract: str | None = None
+    route_status: str | None = None
+    route_error: str | None = None
 
 
 class TemplateUpsertRequest(BaseModel):
@@ -76,6 +79,16 @@ def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
 def resolve_template_token_endpoint(address: str, chain: str | None = None):
     try:
         return resolve_template_token_service(address, chain)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/token/routes")
+def get_template_token_route_statuses_endpoint(chain: str | None = None):
+    try:
+        return get_template_chain_token_route_statuses_service(chain)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

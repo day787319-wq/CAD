@@ -36,6 +36,7 @@ import {
   formatAmount,
   formatFeeTier,
   formatRelativeTimestamp,
+  getTemplateNoRouteAllocations,
   getTemplateChainMeta,
   getStablecoinDistributionRows,
   normalizeTemplateChain,
@@ -684,6 +685,14 @@ function AutomationStepCard({
 
 function buildTemplateSummary(template: Template, locale: SupportedLocale) {
   const { nativeSymbol } = getChainUiContext(template, null, locale);
+  const noRouteAllocations = getTemplateNoRouteAllocations(template);
+  const noRouteSuffix = noRouteAllocations.length > 0
+    ? localeText(locale, {
+        en: ` · ${noRouteAllocations.length} no-route token${noRouteAllocations.length === 1 ? "" : "s"}`,
+        zn: ` · ${noRouteAllocations.length} 个无路由代币`,
+        vn: ` · ${noRouteAllocations.length} token không có tuyến`,
+      })
+    : "";
   const autoTopUpSuffix = template.auto_top_up_enabled
     ? localeText(locale, { en: " · auto top-up", zn: " · 自动补充", vn: " · nạp thêm tự động" })
     : "";
@@ -695,7 +704,7 @@ function buildTemplateSummary(template: Template, locale: SupportedLocale) {
       en: `Gas, sub-wallet ${nativeSymbol}, and direct contract funding only`,
       zn: `仅包含 gas、子钱包 ${nativeSymbol} 和直接合约注资`,
       vn: `Chỉ gồm gas, ${nativeSymbol} ví con và cấp vốn hợp đồng trực tiếp`,
-    })}${autoTopUpSuffix}${testingExecuteSuffix}`;
+    })}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`;
   }
 
   const routeCount = getStablecoinDistributionRows(template).filter(
@@ -703,16 +712,16 @@ function buildTemplateSummary(template: Template, locale: SupportedLocale) {
   ).length;
   if (routeCount === 0) {
     return locale === "en"
-      ? `No funded token routes · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
+      ? `No funded token routes · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`
       : locale === "zn"
-        ? `暂无已注资的代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
-        : `Chưa có tuyến token được cấp vốn · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`;
+        ? `暂无已注资的代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`
+        : `Chưa có tuyến token được cấp vốn · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`;
   }
   return locale === "en"
-    ? `${routeCount} token route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
+    ? `${routeCount} token route${routeCount === 1 ? "" : "s"} · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`
     : locale === "zn"
-      ? `${routeCount} 个代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`
-      : `${routeCount} tuyến token · ${formatFeeTier(template.fee_tier, template.chain)}${autoTopUpSuffix}${testingExecuteSuffix}`;
+      ? `${routeCount} 个代币路由 · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`
+      : `${routeCount} tuyến token · ${formatFeeTier(template.fee_tier, template.chain)}${noRouteSuffix}${autoTopUpSuffix}${testingExecuteSuffix}`;
 }
 
 function buildTemplateChainNote(template: Template, locale: SupportedLocale) {
@@ -1643,6 +1652,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         {templates.map((template) => {
                           const active = template.id === selectedTemplateId;
                           const templateChainUi = getChainUiContext(template, null, locale);
+                          const noRouteAllocations = getTemplateNoRouteAllocations(template);
                           return (
                             <div
                               key={template.id}
@@ -1670,6 +1680,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                   <div className="mt-2 inline-flex rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 ring-1 ring-sky-200/70">
                                     {buildTemplateChainNote(template, locale)}
                                   </div>
+                                  {noRouteAllocations.length > 0 ? (
+                                    <div className="mt-2 inline-flex rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 ring-1 ring-rose-200/70">
+                                      {locale === "en"
+                                        ? `${noRouteAllocations.length} token${noRouteAllocations.length === 1 ? "" : "s"} marked No route found`
+                                        : locale === "zn"
+                                          ? `${noRouteAllocations.length} 个代币标记为 No route found`
+                                          : `${noRouteAllocations.length} token được đánh dấu No route found`}
+                                    </div>
+                                  ) : null}
                                   <p className="mt-1 text-xs text-muted-foreground">{buildTemplateSummary(template, locale)}</p>
                                   <p className="mt-1 text-xs text-muted-foreground">
                                     {`${formatAmount(template.slippage_percent)}% slippage`}
@@ -1699,6 +1718,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                               {template.notes ? (
                                 <p className="mt-3 line-clamp-2 text-xs text-muted-foreground">{template.notes}</p>
                               ) : null}
+                              {noRouteAllocations.length > 0 ? (
+                                <p className="mt-3 text-xs text-rose-700">
+                                  {noRouteAllocations.map((allocation) => allocation.token_symbol).join(", ")}
+                                </p>
+                              ) : null}
                             </div>
                           );
                         })}
@@ -1708,6 +1732,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                   {selectedTemplate ? (
                     <div className="space-y-6">
+                      {getTemplateNoRouteAllocations(selectedTemplate).length > 0 ? (
+                        <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 ring-1 ring-rose-100">
+                          {locale === "en"
+                            ? `No route found: ${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`
+                            : locale === "zn"
+                              ? `No route found：${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`
+                              : `No route found: ${getTemplateNoRouteAllocations(selectedTemplate).map((allocation) => allocation.token_symbol).join(", ")}`}
+                        </div>
+                      ) : null}
                       <div className="cad-panel-accent p-4 shadow-[0_28px_60px_-44px_rgba(14,165,233,0.45)] sm:p-5">
                         <div className="rounded-[24px] bg-white/92 p-5 sm:p-6">
                             <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_320px] xl:items-stretch">

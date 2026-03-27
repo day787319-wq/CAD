@@ -3,7 +3,7 @@ services:
     image: scylladb/scylla:5.4
     command: ["--developer-mode=1", "--overprovisioned", "1"]
     ports:
-      - "9042:9042"
+      - "${SCYLLA_HOST_PORT:-9142}:9042"
     volumes:
       - scylla_data:/var/lib/scylla
     healthcheck:
