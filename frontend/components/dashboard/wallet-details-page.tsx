@@ -58,26 +58,76 @@ type BalanceWallet = {
   funding_gas_price_gwei?: number | null;
   balance_error?: string | null;
   balance_refreshed_at?: string | null;
-  token_holdings?: Array<{
-    symbol: string;
-    name?: string | null;
-    address: string;
-    chain?: string | null;
-    chain_label?: string | null;
-    decimals?: number | null;
-    raw_balance?: string | null;
-    balance?: string | null;
-    error?: string | null;
-  }>;
+  token_holdings?: TokenHolding[];
   index?: number;
+};
+
+type TokenHolding = {
+  symbol: string;
+  name?: string | null;
+  address: string;
+  chain?: string | null;
+  chain_label?: string | null;
+  decimals?: number | null;
+  raw_balance?: string | null;
+  balance?: string | null;
+  error?: string | null;
+};
+
+type LinkedTreasuryContract = {
+  contract_name?: string | null;
+  contract_address: string;
+  chain?: string | null;
+  chain_label?: string | null;
+  owner_address?: string | null;
+  wallet_id?: string | null;
+  wallet_address?: string | null;
+  recipient_address?: string | null;
+  return_wallet_address?: string | null;
+  status?: string | null;
+  funding_status?: string | null;
+  execution_status?: string | null;
+  tx_hash?: string | null;
+  funding_tx_hash?: string | null;
+  funding_tx_hashes?: string[];
+  funded_assets?: Array<{
+    symbol?: string | null;
+    token_symbol?: string | null;
+    address?: string | null;
+    token_address?: string | null;
+    amount?: string | null;
+    kind?: string | null;
+  }>;
+  source_run_id?: string | null;
+  source_run_status?: string | null;
+  source_run_created_at?: string | null;
+  code_present?: boolean;
+  can_withdraw?: boolean;
+  native_symbol?: string | null;
+  wrapped_native_symbol?: string | null;
+  eth_balance: number | null;
+  weth_balance: number | null;
+  balances_live: boolean;
+  funding_gas_price_gwei?: number | null;
+  balance_error?: string | null;
+  balance_refreshed_at?: string | null;
+  token_holdings?: TokenHolding[];
 };
 
 type WalletDetails = BalanceWallet & {
   sub_wallets: BalanceWallet[];
+  linked_contracts?: LinkedTreasuryContract[];
 };
 
 function formatTokenBalance(value: string | number | null | undefined, symbol: string) {
   return value === null || value === undefined ? "Unavailable" : `${formatAmount(value)} ${symbol}`;
+}
+
+function formatLinkedContractStatus(contract: LinkedTreasuryContract) {
+  const parts = [contract.status, contract.funding_status, contract.execution_status]
+    .map((value) => `${value ?? ""}`.trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(" / ") : "Unknown";
 }
 
 function localeText(locale: SupportedLocale, text: Record<SupportedLocale, string>) {
@@ -785,7 +835,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const searchParams = useSearchParams();
   const { toast } = useToast();
   const { locale } = useI18n();
-  const preferredChain = normalizeTemplateChain(searchParams.get("chain"));
+  const requestedChainParam = searchParams.get("chain");
+  const preferredChain = normalizeTemplateChain(requestedChainParam);
+  const hasExplicitPreferredChain = Boolean(requestedChainParam);
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wallet, setWallet] = useState<WalletDetails | null>(null);
@@ -803,6 +855,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [loadingTemplateBalances, setLoadingTemplateBalances] = useState(false);
   const [creatingSubWallets, setCreatingSubWallets] = useState(false);
   const [deletingWallet, setDeletingWallet] = useState(false);
+  const [withdrawingContractAddress, setWithdrawingContractAddress] = useState<string | null>(null);
   const [runReviewOpen, setRunReviewOpen] = useState(false);
   const [walletViewTab, setWalletViewTab] = useState("plan");
   const [runHistoryRefreshKey, setRunHistoryRefreshKey] = useState(0);
@@ -819,8 +872,30 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     () => templates.find((template) => template.id === selectedTemplateId) ?? null,
     [selectedTemplateId, templates],
   );
-  const walletMatchesSelectedChain = !selectedTemplate?.chain || !wallet?.chain || wallet.chain === selectedTemplate.chain;
-  const hasSelectedTemplate = Boolean(selectedTemplate);
+  const walletBalanceChain = useMemo<Template["chain"] | undefined>(() => {
+    if (selectedTemplate?.chain) return selectedTemplate.chain;
+    if (wallet?.type === "sub") {
+      if (hasExplicitPreferredChain) return preferredChain;
+      return (wallet.linked_contracts?.[0]?.chain as Template["chain"] | undefined)
+        ?? (wallet.chain as Template["chain"] | undefined)
+        ?? preferredChain;
+    }
+    return undefined;
+  }, [selectedTemplate?.chain, hasExplicitPreferredChain, preferredChain, wallet?.type, wallet?.linked_contracts, wallet?.chain]);
+  const isSubwallet = wallet?.type === "sub";
+  const hasWalletBalanceContext = Boolean(selectedTemplate || wallet?.type === "sub");
+  const walletMatchesSelectedChain = !walletBalanceChain || !wallet?.chain || wallet.chain === walletBalanceChain;
+  const balanceChainUi = getChainUiContext(
+    selectedTemplate,
+    wallet
+      ? {
+          chain: walletBalanceChain ?? wallet.chain,
+          native_symbol: wallet.native_symbol,
+          wrapped_native_symbol: wallet.wrapped_native_symbol,
+        }
+      : null,
+    locale,
+  );
 
   const buildWalletDetailsQuery = ({
     chain,
@@ -951,6 +1026,46 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   }, [selectedTemplate?.chain, walletId]);
 
   useEffect(() => {
+    if (!isSubwallet || !walletBalanceChain) return;
+
+    let active = true;
+
+    (async () => {
+      setLoadingTemplateBalances(true);
+      try {
+        const query = buildWalletDetailsQuery({
+          chain: walletBalanceChain,
+          liveBalances: true,
+          includeTokenHoldings: false,
+          includeSubwallets: false,
+        });
+        const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`);
+        const payload = await readApiPayload(response);
+        if (!response.ok) {
+          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
+        }
+        if (active) {
+          setWallet(payload as WalletDetails);
+          setLoadError(null);
+        }
+      } catch (error) {
+        if (active) {
+          const message = error instanceof Error ? error.message : "Failed to load wallet details";
+          setLoadError(message);
+        }
+      } finally {
+        if (active) {
+          setLoadingTemplateBalances(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [isSubwallet, walletBalanceChain, walletId]);
+
+  useEffect(() => {
     if (!selectedTemplate?.chain) {
       setSelectedChainStatus(null);
       setSelectedChainStatusError(null);
@@ -1050,7 +1165,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
   const walletBalanceStatusMessage = useMemo(() => {
     if (!wallet) return null;
-    if (!selectedTemplate) {
+    if (!hasWalletBalanceContext) {
       return locale === "en"
         ? "Select a template to load live balances for that chain."
         : locale === "zn"
@@ -1058,20 +1173,18 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           : "Hãy chọn một mẫu để tải số dư trực tiếp cho chain đó.";
     }
     if (loadingTemplateBalances) {
-      const switchingChainUi = getChainUiContext(selectedTemplate, wallet, locale);
       return locale === "en"
-        ? `Loading ${switchingChainUi.chainLabel} balances...`
+        ? `Loading ${balanceChainUi.chainLabel} balances...`
         : locale === "zn"
-          ? `正在加载 ${switchingChainUi.chainLabel} 余额...`
-          : `Đang tải số dư ${switchingChainUi.chainLabel}...`;
+          ? `正在加载 ${balanceChainUi.chainLabel} 余额...`
+          : `Đang tải số dư ${balanceChainUi.chainLabel}...`;
     }
     if (!walletMatchesSelectedChain) {
-      const switchingChainUi = getChainUiContext(selectedTemplate, wallet, locale);
       return locale === "en"
-        ? `Refreshing ${switchingChainUi.chainLabel} balances...`
+        ? `Refreshing ${balanceChainUi.chainLabel} balances...`
         : locale === "zn"
-          ? `正在刷新 ${switchingChainUi.chainLabel} 余额...`
-          : `Đang làm mới số dư ${switchingChainUi.chainLabel}...`;
+          ? `正在刷新 ${balanceChainUi.chainLabel} 余额...`
+          : `Đang làm mới số dư ${balanceChainUi.chainLabel}...`;
     }
     if (wallet.balances_live) {
       return wallet.balance_refreshed_at
@@ -1087,7 +1200,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
             : "Số dư trực tiếp đã được lấy từ RPC.";
     }
     return wallet.balance_error ?? (locale === "en" ? "Live wallet balances are unavailable." : locale === "zn" ? "实时钱包余额不可用。" : "Số dư ví trực tiếp chưa khả dụng.");
-  }, [wallet, walletMatchesSelectedChain, selectedTemplate, loadingTemplateBalances, locale]);
+  }, [wallet, walletMatchesSelectedChain, hasWalletBalanceContext, loadingTemplateBalances, locale, balanceChainUi.chainLabel]);
 
   const handleCopyAddress = async () => {
     if (!wallet?.address || !navigator.clipboard) return;
@@ -1099,10 +1212,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   };
 
   const handleRefreshWallet = async () => {
-    if (!selectedTemplate?.chain) return;
+    if (!walletBalanceChain) return;
     setRefreshingWallet(true);
     try {
-      const payload = await fetchWalletDetails(selectedTemplate?.chain);
+      const payload = await fetchWalletDetails(walletBalanceChain);
       toast({
         title: locale === "en" ? "Balances refreshed" : locale === "zn" ? "余额已刷新" : "Đã làm mới số dư",
         description: payload.balance_refreshed_at
@@ -1143,6 +1256,85 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     }
     setWallet(payload as WalletDetails);
     return payload as WalletDetails;
+  };
+
+  const handleWithdrawContract = async (contract: LinkedTreasuryContract) => {
+    if (!wallet) return;
+
+    setWithdrawingContractAddress(contract.contract_address);
+    try {
+      const response = await fetch(
+        `${TEMPLATE_API_URL}/api/wallets/${wallet.id}/contracts/${encodeURIComponent(contract.contract_address)}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            chain: contract.chain ?? walletBalanceChain ?? preferredChain ?? wallet.chain,
+          }),
+        },
+      );
+      const payload = await readApiPayload(response);
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to withdraw contract funds");
+      }
+
+      const withdrawPayload = payload as {
+        status?: string;
+        transactions?: Array<{ kind?: string }>;
+        errors?: Array<{ error?: string }>;
+      };
+      const confirmedCount = withdrawPayload.transactions?.length ?? 0;
+      const errorCount = withdrawPayload.errors?.length ?? 0;
+      toast({
+        title:
+          confirmedCount > 0
+            ? locale === "en"
+              ? "Contract withdrawal sent"
+              : locale === "zn"
+                ? "合约提取已发送"
+                : "Đã gửi lệnh rút khỏi hợp đồng"
+            : errorCount > 0
+              ? locale === "en"
+                ? "Contract withdrawal failed"
+                : locale === "zn"
+                  ? "合约提取失败"
+                  : "Rút khỏi hợp đồng thất bại"
+              : locale === "en"
+                ? "No contract funds left"
+                : locale === "zn"
+                  ? "合约中没有剩余资金"
+                  : "Không còn tài sản trong hợp đồng",
+        description:
+          confirmedCount > 0
+            ? locale === "en"
+              ? `${confirmedCount} withdrawal transaction${confirmedCount === 1 ? "" : "s"} submitted. Funds return to the subwallet owner first.`
+              : locale === "zn"
+                ? `已提交 ${confirmedCount} 笔提取交易。资金会先返回到子钱包所有者。`
+                : `Đã gửi ${confirmedCount} giao dịch rút. Tài sản sẽ quay về ví con sở hữu trước.`
+            : errorCount > 0
+              ? (withdrawPayload.errors?.[0]?.error ?? (locale === "en" ? "The contract withdrawal did not complete." : locale === "zn" ? "合约提取未完成。" : "Lệnh rút khỏi hợp đồng chưa hoàn tất."))
+              : locale === "en"
+                ? "This treasury contract does not currently hold tracked assets."
+                : locale === "zn"
+                  ? "该资金库合约当前没有持有受跟踪的资产。"
+                  : "Treasury contract này hiện không giữ tài sản đang được theo dõi.",
+        variant: errorCount > 0 && confirmedCount === 0 ? "destructive" : undefined,
+      });
+      await fetchWalletDetails(walletBalanceChain ?? (contract.chain as Template["chain"] | undefined));
+    } catch (error) {
+      toast({
+        title: locale === "en" ? "Withdraw failed" : locale === "zn" ? "提取失败" : "Rút thất bại",
+        description:
+          error instanceof Error
+            ? error.message
+            : (locale === "en" ? "Failed to withdraw contract funds" : locale === "zn" ? "提取合约资金失败" : "Không thể rút tài sản khỏi hợp đồng"),
+        variant: "destructive",
+      });
+    } finally {
+      setWithdrawingContractAddress(null);
+    }
   };
 
   const handleDeleteWallet = async () => {
@@ -1451,7 +1643,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" variant="outline" onClick={handleRefreshWallet} disabled={refreshingWallet || !hasSelectedTemplate}>
+                      <Button type="button" variant="outline" onClick={handleRefreshWallet} disabled={refreshingWallet || !walletBalanceChain}>
                         <RefreshCw className={`h-4 w-4 ${refreshingWallet ? "animate-spin" : ""}`} />
                         {locale === "en" ? "Refresh balances" : locale === "zn" ? "刷新余额" : "Làm mới số dư"}
                       </Button>
@@ -1478,9 +1670,9 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
 
                   <div
                     className={`mt-5 rounded-xl border px-4 py-3 text-sm ${
-                      hasSelectedTemplate && wallet.balances_live
+                      hasWalletBalanceContext && wallet.balances_live
                         ? "border-sky-200 bg-sky-50 text-sky-700"
-                        : !hasSelectedTemplate
+                        : !hasWalletBalanceContext
                           ? "border-slate-200 bg-slate-50 text-slate-700"
                         : "border-amber-500/30 bg-amber-500/10 text-amber-800"
                     }`}
@@ -1534,7 +1726,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <InfoCard
                       label={locale === "en" ? `${nativeSymbol} balance` : locale === "zn" ? `${nativeSymbol} 余额` : `Số dư ${nativeSymbol}`}
                       value={
-                        !hasSelectedTemplate
+                        !hasWalletBalanceContext
                           ? locale === "en"
                             ? "Select a template"
                             : locale === "zn"
@@ -1552,7 +1744,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <InfoCard
                       label={locale === "en" ? `${wrappedNativeSymbol} balance` : locale === "zn" ? `${wrappedNativeSymbol} 余额` : `Số dư ${wrappedNativeSymbol}`}
                       value={
-                        !hasSelectedTemplate
+                        !hasWalletBalanceContext
                           ? locale === "en"
                             ? "Select a template"
                             : locale === "zn"
@@ -1600,6 +1792,199 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                           </Button>
                         </div>
                       ) : null}
+                    </SectionBlock>
+
+                    <SectionBlock
+                      title={locale === "en" ? "Linked Treasury Contracts" : locale === "zn" ? "关联资金库合约" : "Hợp đồng treasury liên kết"}
+                      description={
+                        locale === "en"
+                          ? "These BatchTreasuryDistributor contracts were created by this subwallet. Manual withdraw calls the contract sweep methods and returns funds back to the subwallet owner first."
+                          : locale === "zn"
+                            ? "这些 BatchTreasuryDistributor 合约由该子钱包创建。手动提取会调用合约的 sweep 方法，并先把资金返回给子钱包所有者。"
+                            : "Các hợp đồng BatchTreasuryDistributor này được tạo bởi ví con này. Rút thủ công sẽ gọi các hàm sweep của hợp đồng và đưa tài sản về ví con sở hữu trước."
+                      }
+                    >
+                      {wallet.linked_contracts?.length ? (
+                        <div className="space-y-4">
+                          {wallet.linked_contracts.map((contract) => {
+                            const contractChainUi = getChainUiContext(
+                              undefined,
+                              {
+                                chain: (contract.chain ?? preferredChain ?? wallet.chain ?? "ethereum_mainnet") as Template["chain"],
+                                native_symbol: contract.native_symbol ?? undefined,
+                                wrapped_native_symbol: contract.wrapped_native_symbol ?? undefined,
+                              },
+                              locale,
+                            );
+                            const contractNativeSymbol = contract.native_symbol ?? contractChainUi.nativeSymbol;
+                            const contractWrappedNativeSymbol = contract.wrapped_native_symbol ?? contractChainUi.wrappedNativeSymbol;
+                            const hasNativeLeft = (toNumericValue(contract.eth_balance) ?? 0) > 0;
+                            const withdrawing = withdrawingContractAddress === contract.contract_address;
+                            return (
+                              <div key={contract.contract_address} className="rounded-2xl border border-border/70 bg-background/60 p-4">
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="text-sm font-semibold text-foreground">{contract.contract_name ?? "BatchTreasuryDistributor"}</p>
+                                      <span className="inline-flex rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 ring-1 ring-sky-200/70">
+                                        {contract.chain_label ?? contractChainUi.chainLabel}
+                                      </span>
+                                      <span className="inline-flex rounded-full bg-secondary/70 px-2.5 py-1 text-[11px] font-medium text-foreground ring-1 ring-border/60">
+                                        {formatLinkedContractStatus(contract)}
+                                      </span>
+                                      {!contract.code_present ? (
+                                        <span className="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200/70">
+                                          {locale === "en" ? "Code not found" : locale === "zn" ? "未找到链上代码" : "Không tìm thấy code"}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{contract.contract_address}</p>
+                                    <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                      {contract.recipient_address ? (
+                                        <span>
+                                          {locale === "en" ? "Recipient" : locale === "zn" ? "接收地址" : "Người nhận"} {shortAddress(contract.recipient_address)}
+                                        </span>
+                                      ) : null}
+                                      {contract.return_wallet_address ? (
+                                        <span>
+                                          {locale === "en" ? "Return" : locale === "zn" ? "回收地址" : "Ví nhận lại"} {shortAddress(contract.return_wallet_address)}
+                                        </span>
+                                      ) : null}
+                                      {contract.tx_hash ? (
+                                        <span>
+                                          {locale === "en" ? "Deploy tx" : locale === "zn" ? "部署交易" : "Tx triển khai"} {shortAddress(contract.tx_hash)}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => handleWithdrawContract(contract)}
+                                    disabled={withdrawing || !contract.can_withdraw}
+                                  >
+                                    {withdrawing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
+                                    {withdrawing
+                                      ? locale === "en"
+                                        ? "Withdrawing..."
+                                        : locale === "zn"
+                                          ? "提取中..."
+                                          : "Đang rút..."
+                                      : locale === "en"
+                                        ? "Withdraw To Subwallet"
+                                        : locale === "zn"
+                                          ? "提取到子钱包"
+                                          : "Rút về ví con"}
+                                  </Button>
+                                </div>
+
+                                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                  <InfoCard
+                                    label={locale === "en" ? `${contractNativeSymbol} in contract` : locale === "zn" ? `合约中的 ${contractNativeSymbol}` : `${contractNativeSymbol} trong hợp đồng`}
+                                    value={contract.balances_live ? formatTokenBalance(contract.eth_balance, contractNativeSymbol) : "Unavailable"}
+                                  />
+                                  <InfoCard
+                                    label={locale === "en" ? `${contractWrappedNativeSymbol} in contract` : locale === "zn" ? `合约中的 ${contractWrappedNativeSymbol}` : `${contractWrappedNativeSymbol} trong hợp đồng`}
+                                    value={contract.balances_live ? formatTokenBalance(contract.weth_balance, contractWrappedNativeSymbol) : "Unavailable"}
+                                  />
+                                  <InfoCard
+                                    label={locale === "en" ? "Owner" : locale === "zn" ? "所有者" : "Chủ sở hữu"}
+                                    value={contract.owner_address ? shortAddress(contract.owner_address) : (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")}
+                                    hint={
+                                      locale === "en"
+                                        ? "Contract sweep returns assets here first."
+                                        : locale === "zn"
+                                          ? "合约提取会先把资产返回到这里。"
+                                          : "Lệnh sweep của hợp đồng sẽ đưa tài sản về đây trước."
+                                    }
+                                  />
+                                  <InfoCard
+                                    label={locale === "en" ? "Last refresh" : locale === "zn" ? "最近刷新" : "Lần làm mới gần nhất"}
+                                    value={
+                                      contract.balance_refreshed_at
+                                        ? formatRelativeTimestamp(contract.balance_refreshed_at)
+                                        : locale === "en"
+                                          ? "Pending RPC"
+                                          : locale === "zn"
+                                            ? "等待 RPC"
+                                            : "Đang chờ RPC"
+                                    }
+                                  />
+                                </div>
+
+                                <div className="mt-4">
+                                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    {locale === "en" ? "Current Holdings" : locale === "zn" ? "当前持仓" : "Tài sản hiện có"}
+                                  </p>
+                                  {contract.balances_live ? (
+                                    hasNativeLeft || (contract.token_holdings?.length ?? 0) > 0 ? (
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        {hasNativeLeft ? (
+                                          <span className="inline-flex items-center rounded-full bg-secondary/70 px-2.5 py-1 text-[11px] font-medium text-foreground ring-1 ring-border/60">
+                                            {formatCryptoMetric(contract.eth_balance, contractNativeSymbol)}
+                                          </span>
+                                        ) : null}
+                                        {contract.token_holdings?.map((holding) => (
+                                          <span
+                                            key={`${contract.contract_address}-${holding.address}`}
+                                            className="inline-flex items-center rounded-full bg-secondary/70 px-2.5 py-1 text-[11px] font-medium text-foreground ring-1 ring-border/60"
+                                          >
+                                            {`${formatCryptoMetric(holding.balance, holding.symbol)}`}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="mt-2 text-sm text-muted-foreground">
+                                        {locale === "en"
+                                          ? "No tracked assets are left in this contract."
+                                          : locale === "zn"
+                                            ? "该合约中没有剩余的受跟踪资产。"
+                                            : "Không còn tài sản theo dõi nào trong hợp đồng này."}
+                                      </p>
+                                    )
+                                  ) : (
+                                    <p className="mt-2 text-sm text-muted-foreground">
+                                      {contract.balance_error
+                                        ?? (locale === "en"
+                                          ? "Live contract balances are unavailable."
+                                          : locale === "zn"
+                                            ? "实时合约余额不可用。"
+                                            : "Số dư hợp đồng trực tiếp chưa khả dụng.")}
+                                    </p>
+                                  )}
+                                </div>
+
+                                {contract.funded_assets?.length ? (
+                                  <div className="mt-4">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                      {locale === "en" ? "Funded Assets" : locale === "zn" ? "注资资产" : "Tài sản đã cấp vốn"}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {contract.funded_assets.map((asset, index) => (
+                                        <span
+                                          key={`${contract.contract_address}-funded-${asset.token_address ?? asset.address ?? asset.symbol ?? index}`}
+                                          className="inline-flex items-center rounded-full bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200/70"
+                                        >
+                                          {asset.token_symbol ?? asset.symbol ?? asset.kind ?? "Asset"}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="cad-panel-soft p-4 text-sm text-muted-foreground">
+                          {locale === "en"
+                            ? "No linked BatchTreasuryDistributor contracts were found for this subwallet on the configured chains."
+                            : locale === "zn"
+                              ? "在当前已配置的链上，未找到该子钱包关联的 BatchTreasuryDistributor 合约。"
+                              : "Không tìm thấy hợp đồng BatchTreasuryDistributor liên kết nào cho ví con này trên các chain đã cấu hình."}
+                        </div>
+                      )}
                     </SectionBlock>
 
                     <WalletAssetMonitoring walletId={wallet.id} chain={selectedTemplate?.chain ?? preferredChain ?? wallet.chain} />

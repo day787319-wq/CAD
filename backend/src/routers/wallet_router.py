@@ -20,6 +20,7 @@ from src.services.wallet_service import (
     quote_uniswap_swap as quote_uniswap_swap_service,
     run_wallet_run_job as run_wallet_run_job_service,
     store_wallet,
+    withdraw_subwallet_linked_treasury_contract as withdraw_subwallet_linked_treasury_contract_service,
 )
 
 router = APIRouter(prefix="/api/wallets", tags=["wallets"])
@@ -61,6 +62,10 @@ class WalletRunRequest(BaseModel):
 class WalletKeystoreExportRequest(BaseModel):
     access_passphrase: str
     export_passphrase: str
+
+
+class WalletContractWithdrawRequest(BaseModel):
+    chain: str | None = None
 
 @router.post("/main/import")
 def import_main_wallet_endpoint(request: ImportMainWalletRequest):
@@ -283,6 +288,28 @@ def get_wallet_details_endpoint(
         return wallet
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{wallet_id}/contracts/{contract_address}/withdraw")
+def withdraw_wallet_contract_endpoint(
+    wallet_id: str,
+    contract_address: str,
+    request: WalletContractWithdrawRequest,
+):
+    try:
+        return withdraw_subwallet_linked_treasury_contract_service(
+            wallet_id,
+            contract_address,
+            chain=request.chain,
+        )
+    except ValueError as ve:
+        message = str(ve)
+        status_code = 404 if message == "Wallet not found" else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except RuntimeError as re:
+        raise HTTPException(status_code=503, detail=str(re))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

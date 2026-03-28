@@ -1834,6 +1834,122 @@ def recover_batch_treasury_distributor_batch_send_after_timeout(
         time.sleep(max(int(poll_interval_seconds), 1))
 
 
+def recover_batch_treasury_distributor_owner_call_after_timeout(
+    web3_client: Web3,
+    *,
+    tx_hash: str | None,
+    nonce: int | None,
+    gas_price_wei: int | None,
+    grace_seconds: int = BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_POST_TIMEOUT_GRACE_SECONDS,
+    poll_interval_seconds: int = BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_POST_TIMEOUT_POLL_INTERVAL_SECONDS,
+) -> dict | None:
+    deadline = time.monotonic() + max(int(grace_seconds), 0)
+
+    while True:
+        receipt = get_transaction_receipt_if_available(web3_client, tx_hash)
+        if receipt:
+            if int(getattr(receipt, "status", 0) or 0) == 1:
+                return build_contract_call_result_from_receipt(
+                    receipt,
+                    tx_hash=tx_hash or "",
+                    nonce=nonce,
+                    gas_price_wei=gas_price_wei,
+                )
+            raise RuntimeError(f"Transaction failed: {tx_hash}")
+
+        if time.monotonic() >= deadline:
+            return None
+
+        time.sleep(max(int(poll_interval_seconds), 1))
+
+
+def execute_batch_treasury_distributor_owner_call_from_wallet(
+    web3_client: Web3,
+    *,
+    chain: str | None = None,
+    contract_address: str,
+    wallet_address: str,
+    private_key: str,
+    abi: list[dict],
+    function_name: str,
+    function_args: list,
+    nonce: int,
+    gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
+    gas_limit: int = BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT,
+) -> dict:
+    owner = Web3.to_checksum_address(wallet_address)
+    contract = web3_client.eth.contract(
+        address=Web3.to_checksum_address(contract_address),
+        abi=abi,
+    )
+    contract_function = getattr(contract.functions, function_name)(*function_args)
+    call_gas_price_wei = (
+        int(gas_price_wei)
+        if gas_price_wei is not None and int(gas_price_wei) > 0
+        else int(
+            resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=chain,
+                tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+            )["submitted_gas_price_wei"]
+        )
+    )
+    call_wait_timeout = int(wait_timeout or get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND))
+
+    try:
+        estimated_gas = contract_function.estimate_gas({"from": owner})
+    except Exception:
+        try:
+            contract_function.call({"from": owner})
+        except Exception as call_exc:
+            raise WalletTransactionError(
+                str(call_exc),
+                nonce=nonce,
+                gas_price_wei=call_gas_price_wei,
+                retryable=False,
+            ) from call_exc
+        estimated_gas = gas_limit
+
+    tx = contract_function.build_transaction(
+        build_transaction_envelope(
+            web3_client,
+            owner,
+            nonce,
+            gas=max(int(estimated_gas), gas_limit),
+            gas_price_wei=call_gas_price_wei,
+        )
+    )
+
+    try:
+        tx_hash = send_signed_transaction(web3_client, tx, private_key)
+    except Exception as exc:
+        raise WalletTransactionError(
+            str(exc),
+            nonce=nonce,
+            gas_price_wei=call_gas_price_wei,
+            retryable=_is_retryable_transaction_submit_error(exc),
+        ) from exc
+
+    try:
+        receipt = wait_for_transaction_success(web3_client, tx_hash, timeout=call_wait_timeout)
+    except Exception as exc:
+        raise WalletTransactionError(
+            str(exc),
+            tx_hash=tx_hash,
+            nonce=nonce,
+            gas_price_wei=call_gas_price_wei,
+            retryable=_is_retryable_transaction_wait_error(exc),
+        ) from exc
+
+    return build_contract_call_result_from_receipt(
+        receipt,
+        tx_hash=tx_hash,
+        nonce=nonce,
+        gas_price_wei=call_gas_price_wei,
+    )
+
+
 def execute_batch_treasury_distributor_batch_send_from_wallet(
     web3_client: Web3,
     *,
@@ -3704,6 +3820,8 @@ def execute_wallet_run(
     def build_deployment_record(*, item: dict):
         return {
             "contract_name": "BatchTreasuryDistributor",
+            "chain": template_chain,
+            "chain_label": chain_config["label"],
             "wallet_id": item["wallet_id"],
             "wallet_address": item["address"],
             "token_address": None,
@@ -6780,6 +6898,190 @@ def list_wallet_runs(main_wallet_id: str | None = None):
     return db.list_wallet_runs(main_wallet_id=main_wallet_id)
 
 
+def _iter_run_deployed_contracts(run: dict) -> list[dict]:
+    contracts: list[dict] = []
+
+    def append_contract(contract: dict | None):
+        if isinstance(contract, dict):
+            contracts.append(contract)
+
+    for contract in run.get("deployed_contracts") or []:
+        append_contract(contract)
+
+    for sub_wallet in run.get("sub_wallets") or []:
+        append_contract(sub_wallet.get("deployed_contract"))
+        for contract in sub_wallet.get("deployed_contracts") or []:
+            append_contract(contract)
+
+    return contracts
+
+
+def _merge_deployment_record(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if value in (None, "", [], {}):
+            continue
+        if key == "funded_assets":
+            current_assets = merged.get("funded_assets") or []
+            if len(value) >= len(current_assets):
+                merged[key] = value
+            continue
+        merged[key] = value
+    return merged
+
+
+def _resolve_deployed_contract_chain(
+    contract_address: str,
+    *,
+    preferred_chain: str | None = None,
+    fallback_chain: str | None = None,
+) -> tuple[str, bool]:
+    checksum_contract_address = Web3.to_checksum_address(contract_address)
+    candidate_chains: list[str] = []
+    seen_chains: set[str] = set()
+
+    for chain_name in [preferred_chain, fallback_chain]:
+        if not chain_name:
+            continue
+        normalized_chain = normalize_template_chain(chain_name)
+        if normalized_chain in seen_chains:
+            continue
+        seen_chains.add(normalized_chain)
+        candidate_chains.append(normalized_chain)
+
+    for chain_name in list_configured_template_chains():
+        normalized_chain = normalize_template_chain(chain_name)
+        if normalized_chain in seen_chains:
+            continue
+        seen_chains.add(normalized_chain)
+        candidate_chains.append(normalized_chain)
+
+    for candidate_chain in candidate_chains:
+        web3_client = get_web3(candidate_chain)
+        if not web3_client or not web3_client.is_connected():
+            continue
+        try:
+            if contract_code_exists(web3_client, checksum_contract_address):
+                return candidate_chain, True
+        except Exception:
+            continue
+
+    if candidate_chains:
+        return candidate_chains[0], False
+    return normalize_template_chain(None), False
+
+
+def _list_subwallet_linked_treasury_contracts(
+    wallet_record: dict,
+    *,
+    preferred_chain: str | None = None,
+    live_balances: bool = True,
+) -> list[dict]:
+    if wallet_record.get("type") != "sub":
+        return []
+
+    normalized_wallet_address = str(wallet_record.get("address") or "").strip().lower()
+    normalized_wallet_id = str(wallet_record.get("id") or "").strip().lower()
+    main_wallet_id = wallet_record.get("parent_id")
+    source_runs = list_wallet_runs(main_wallet_id=main_wallet_id) if main_wallet_id else list_wallet_runs()
+    merged_contracts: dict[str, dict] = {}
+
+    for run in source_runs:
+        run_metadata = {
+            "source_run_id": run.get("id"),
+            "source_run_status": run.get("status"),
+            "source_run_created_at": run.get("created_at"),
+        }
+        for contract in _iter_run_deployed_contracts(run):
+            contract_name = str(contract.get("contract_name") or "").strip()
+            contract_address = str(contract.get("contract_address") or "").strip()
+            contract_wallet_id = str(contract.get("wallet_id") or "").strip().lower()
+            contract_wallet_address = str(
+                contract.get("owner_address")
+                or contract.get("wallet_address")
+                or ""
+            ).strip().lower()
+            if contract_name != "BatchTreasuryDistributor" or not Web3.is_address(contract_address):
+                continue
+            if contract_wallet_id != normalized_wallet_id and contract_wallet_address != normalized_wallet_address:
+                continue
+
+            checksum_contract_address = Web3.to_checksum_address(contract_address)
+            contract_key = checksum_contract_address.lower()
+            contract_payload = {
+                **contract,
+                **run_metadata,
+                "contract_address": checksum_contract_address,
+            }
+            existing = merged_contracts.get(contract_key)
+            merged_contracts[contract_key] = (
+                _merge_deployment_record(existing, contract_payload)
+                if existing
+                else contract_payload
+            )
+
+    linked_contracts: list[dict] = []
+    for contract in merged_contracts.values():
+        resolved_chain, code_present = _resolve_deployed_contract_chain(
+            contract["contract_address"],
+            preferred_chain=preferred_chain,
+            fallback_chain=contract.get("chain") or wallet_record.get("chain"),
+        )
+        runtime = get_chain_runtime_config(resolved_chain)
+        contract_balances = get_wallet_balances(
+            contract["contract_address"],
+            chain=resolved_chain,
+            live_balances=live_balances and code_present,
+        )
+        token_holdings = (
+            get_wallet_summary_token_holdings(contract["contract_address"], chain=resolved_chain)
+            if live_balances and code_present
+            else []
+        )
+        owner_address = Web3.to_checksum_address(
+            contract.get("owner_address")
+            or contract.get("wallet_address")
+            or wallet_record["address"]
+        )
+        linked_contracts.append(
+            {
+                "contract_name": contract.get("contract_name") or "BatchTreasuryDistributor",
+                "contract_address": contract["contract_address"],
+                "chain": resolved_chain,
+                "chain_label": runtime["chain_label"],
+                "owner_address": owner_address,
+                "wallet_id": contract.get("wallet_id") or wallet_record["id"],
+                "wallet_address": Web3.to_checksum_address(wallet_record["address"]),
+                "recipient_address": contract.get("recipient_address"),
+                "return_wallet_address": contract.get("return_wallet_address"),
+                "status": contract.get("status"),
+                "funding_status": contract.get("funding_status"),
+                "execution_status": contract.get("execution_status"),
+                "tx_hash": contract.get("tx_hash"),
+                "funding_tx_hash": contract.get("funding_tx_hash"),
+                "funding_tx_hashes": contract.get("funding_tx_hashes") or [],
+                "funded_assets": contract.get("funded_assets") or [],
+                "source_run_id": contract.get("source_run_id"),
+                "source_run_status": contract.get("source_run_status"),
+                "source_run_created_at": contract.get("source_run_created_at"),
+                "artifact_path": contract.get("artifact_path"),
+                "code_present": code_present,
+                "can_withdraw": code_present and owner_address.lower() == normalized_wallet_address,
+                **contract_balances,
+                "token_holdings": token_holdings,
+            }
+        )
+
+    linked_contracts.sort(
+        key=lambda item: (
+            str(item.get("source_run_created_at") or ""),
+            str(item.get("contract_address") or ""),
+        ),
+        reverse=True,
+    )
+    return linked_contracts
+
+
 def delete_wallet_run(run_id: str):
     deleted_run = db.delete_wallet_run(run_id)
     if not deleted_run:
@@ -6889,6 +7191,11 @@ def get_wallet_details(
         else []
     )
     details['sub_wallets'] = sub_wallets
+    details['linked_contracts'] = _list_subwallet_linked_treasury_contracts(
+        wallet,
+        preferred_chain=normalized_chain,
+        live_balances=live_balances,
+    ) if wallet.get("type") == "sub" else []
     return details
 
 
@@ -6903,6 +7210,284 @@ def get_wallet_summary(wallet_id: str, chain: str | None = None):
         return None
     normalized_chain = normalize_template_chain(chain)
     return serialize_wallet_record(wallet, chain=normalized_chain, include_token_holdings=False)
+
+
+def withdraw_subwallet_linked_treasury_contract(
+    wallet_id: str,
+    contract_address: str,
+    *,
+    chain: str | None = None,
+) -> dict:
+    wallet_record = get_wallet_record(wallet_id)
+    if not wallet_record:
+        raise ValueError("Wallet not found")
+    if wallet_record.get("type") != "sub":
+        raise ValueError("Only subwallets can withdraw linked treasury contracts")
+    if not Web3.is_address(contract_address):
+        raise ValueError("Invalid contract address")
+
+    sub_wallet = get_wallet(wallet_id)
+    if not sub_wallet or not sub_wallet.get("private_key"):
+        raise ValueError("Subwallet signer is unavailable")
+
+    linked_contracts = _list_subwallet_linked_treasury_contracts(
+        wallet_record,
+        preferred_chain=chain,
+        live_balances=True,
+    )
+    checksum_contract_address = Web3.to_checksum_address(contract_address)
+    linked_contract = next(
+        (
+            item
+            for item in linked_contracts
+            if str(item.get("contract_address") or "").lower() == checksum_contract_address.lower()
+        ),
+        None,
+    )
+    if not linked_contract:
+        raise ValueError("Treasury contract not found for this subwallet")
+    if not linked_contract.get("code_present"):
+        raise ValueError("Treasury contract code is not available on a configured chain")
+
+    resolved_chain = normalize_template_chain(linked_contract.get("chain") or chain or wallet_record.get("chain"))
+    runtime = get_chain_runtime_config(resolved_chain)
+    web3_client = get_web3(resolved_chain)
+    if not web3_client:
+        raise RuntimeError(f"{runtime['chain_label']} RPC is not configured")
+    if not web3_client.is_connected():
+        raise RuntimeError(f"{runtime['chain_label']} RPC is unavailable")
+
+    from src.services.solidity_service import get_batch_treasury_distributor_interface
+
+    distributor_interface = get_batch_treasury_distributor_interface()
+    contract = web3_client.eth.contract(
+        address=checksum_contract_address,
+        abi=distributor_interface["abi"],
+    )
+    owner_address = Web3.to_checksum_address(contract.functions.owner().call())
+    wallet_address = Web3.to_checksum_address(sub_wallet["address"])
+    if owner_address.lower() != wallet_address.lower():
+        raise ValueError("This subwallet does not own the selected treasury contract")
+
+    funded_token_addresses: list[str] = []
+    seen_token_addresses: set[str] = set()
+    for asset in linked_contract.get("funded_assets") or []:
+        token_address = str(asset.get("token_address") or asset.get("address") or "").strip()
+        if not Web3.is_address(token_address):
+            continue
+        checksum_token_address = Web3.to_checksum_address(token_address)
+        if checksum_token_address.lower() in seen_token_addresses:
+            continue
+        seen_token_addresses.add(checksum_token_address.lower())
+        funded_token_addresses.append(checksum_token_address)
+    for holding in linked_contract.get("token_holdings") or []:
+        token_address = str(holding.get("address") or "").strip()
+        if not Web3.is_address(token_address):
+            continue
+        checksum_token_address = Web3.to_checksum_address(token_address)
+        if checksum_token_address.lower() in seen_token_addresses:
+            continue
+        seen_token_addresses.add(checksum_token_address.lower())
+        funded_token_addresses.append(checksum_token_address)
+
+    before_balances = get_wallet_balances(checksum_contract_address, chain=resolved_chain, live_balances=True)
+    before_token_holdings = get_wallet_summary_token_holdings(checksum_contract_address, chain=resolved_chain)
+    native_balance_before_wei = int(web3_client.eth.get_balance(checksum_contract_address))
+
+    transactions: list[dict] = []
+    errors: list[dict] = []
+    next_nonce = web3_client.eth.get_transaction_count(wallet_address, "pending")
+
+    if funded_token_addresses:
+        sweep_tokens_gas_limit = (
+            BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT
+            + (BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_PER_ENTRY_GAS_LIMIT * len(funded_token_addresses))
+        )
+        last_error: WalletTransactionError | None = None
+        sweep_result = None
+        sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+            web3_client,
+            chain=resolved_chain,
+            tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+        )
+        sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+        for attempt in range(1, BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_MAX_ATTEMPTS + 1):
+            try:
+                sweep_result = execute_batch_treasury_distributor_owner_call_from_wallet(
+                    web3_client,
+                    chain=resolved_chain,
+                    contract_address=checksum_contract_address,
+                    wallet_address=wallet_address,
+                    private_key=sub_wallet["private_key"],
+                    abi=distributor_interface["abi"],
+                    function_name="sweepTokens",
+                    function_args=[funded_token_addresses],
+                    nonce=next_nonce,
+                    gas_price_wei=sweep_gas_price_wei,
+                    wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND),
+                    gas_limit=sweep_tokens_gas_limit,
+                )
+                break
+            except WalletTransactionError as exc:
+                last_error = exc
+                if exc.retryable:
+                    sweep_result = recover_batch_treasury_distributor_owner_call_after_timeout(
+                        web3_client,
+                        tx_hash=exc.tx_hash,
+                        nonce=next_nonce,
+                        gas_price_wei=exc.gas_price_wei,
+                    )
+                    if sweep_result:
+                        break
+                    if attempt < BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_MAX_ATTEMPTS:
+                        sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                            web3_client,
+                            chain=resolved_chain,
+                            tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+                            attempt=attempt + 1,
+                            previous_gas_price_wei=exc.gas_price_wei,
+                        )
+                        sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+                        continue
+                break
+
+        if sweep_result:
+            transactions.append(
+                {
+                    "kind": "tokens",
+                    "token_addresses": funded_token_addresses,
+                    "tx_hash": sweep_result["tx_hash"],
+                    "status": sweep_result["status"],
+                }
+            )
+            next_nonce += 1
+        elif last_error:
+            errors.append(
+                {
+                    "kind": "tokens",
+                    "token_addresses": funded_token_addresses,
+                    "error": str(last_error),
+                    "tx_hash": last_error.tx_hash,
+                }
+            )
+        else:
+            errors.append(
+                {
+                    "kind": "tokens",
+                    "token_addresses": funded_token_addresses,
+                    "error": "Token sweep did not produce a confirmation",
+                }
+            )
+
+    if native_balance_before_wei > 0:
+        sweep_eth_gas_limit = max(
+            BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_BASE_GAS_LIMIT,
+            ETH_TRANSFER_GAS_LIMIT * 2,
+        )
+        last_error = None
+        sweep_result = None
+        sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+            web3_client,
+            chain=resolved_chain,
+            tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+        )
+        sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+        for attempt in range(1, BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_MAX_ATTEMPTS + 1):
+            try:
+                sweep_result = execute_batch_treasury_distributor_owner_call_from_wallet(
+                    web3_client,
+                    chain=resolved_chain,
+                    contract_address=checksum_contract_address,
+                    wallet_address=wallet_address,
+                    private_key=sub_wallet["private_key"],
+                    abi=distributor_interface["abi"],
+                    function_name="sweepETH",
+                    function_args=[],
+                    nonce=next_nonce,
+                    gas_price_wei=sweep_gas_price_wei,
+                    wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_BATCH_SEND),
+                    gas_limit=sweep_eth_gas_limit,
+                )
+                break
+            except WalletTransactionError as exc:
+                last_error = exc
+                if exc.retryable:
+                    sweep_result = recover_batch_treasury_distributor_owner_call_after_timeout(
+                        web3_client,
+                        tx_hash=exc.tx_hash,
+                        nonce=next_nonce,
+                        gas_price_wei=exc.gas_price_wei,
+                    )
+                    if sweep_result:
+                        break
+                    if attempt < BATCH_TREASURY_DISTRIBUTOR_BATCH_SEND_MAX_ATTEMPTS:
+                        sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                            web3_client,
+                            chain=resolved_chain,
+                            tx_stage=LEGACY_GAS_STAGE_BATCH_SEND,
+                            attempt=attempt + 1,
+                            previous_gas_price_wei=exc.gas_price_wei,
+                        )
+                        sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+                        continue
+                break
+
+        if sweep_result:
+            transactions.append(
+                {
+                    "kind": "native",
+                    "asset": runtime["native_symbol"],
+                    "tx_hash": sweep_result["tx_hash"],
+                    "status": sweep_result["status"],
+                }
+            )
+        elif last_error:
+            errors.append(
+                {
+                    "kind": "native",
+                    "asset": runtime["native_symbol"],
+                    "error": str(last_error),
+                    "tx_hash": last_error.tx_hash,
+                }
+            )
+        else:
+            errors.append(
+                {
+                    "kind": "native",
+                    "asset": runtime["native_symbol"],
+                    "error": "Native sweep did not produce a confirmation",
+                }
+            )
+
+    after_balances = get_wallet_balances(checksum_contract_address, chain=resolved_chain, live_balances=True)
+    after_token_holdings = get_wallet_summary_token_holdings(checksum_contract_address, chain=resolved_chain)
+
+    if transactions:
+        status = "completed" if not errors else "partial"
+    elif errors:
+        status = "failed"
+    else:
+        status = "idle"
+
+    return {
+        "wallet_id": wallet_record["id"],
+        "wallet_address": wallet_address,
+        "contract_address": checksum_contract_address,
+        "chain": resolved_chain,
+        "chain_label": runtime["chain_label"],
+        "owner_address": owner_address,
+        "status": status,
+        "transactions": transactions,
+        "errors": errors,
+        "before": {
+            **before_balances,
+            "token_holdings": before_token_holdings,
+        },
+        "after": {
+            **after_balances,
+            "token_holdings": after_token_holdings,
+        },
+    }
 
 def get_wallet(wallet_id: str):
     row_dict = get_wallet_record(wallet_id)
