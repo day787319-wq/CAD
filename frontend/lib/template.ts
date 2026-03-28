@@ -39,6 +39,8 @@ export type StablecoinAllocation = {
   route_error?: string | null;
 };
 
+export type TemplateSwapSourceMode = "native" | "wrapped_native" | "stablecoin";
+
 export type TemplateChain =
   | "ethereum_mainnet"
   | "bnb"
@@ -117,7 +119,7 @@ export const TEMPLATE_CHAIN_META: Record<
     label: "X Layer",
     nativeSymbol: "OKB",
     wrappedNativeSymbol: "WOKB",
-    quoteSupported: false,
+    quoteSupported: true,
   },
 };
 
@@ -164,6 +166,90 @@ export function getTemplateChainCaveats(chain: TemplateChain) {
   return TEMPLATE_CHAIN_CAVEATS[chain] ?? [];
 }
 
+export function resolveTemplateSwapSource(input: {
+  chain: TemplateChain;
+  swap_source_mode?: TemplateSwapSourceMode | null;
+  swap_source_token_symbol?: string | null;
+  swap_source_token_address?: string | null;
+}) {
+  const chainMeta = getTemplateChainMeta(input.chain);
+  const mode = input.swap_source_mode ?? "native";
+  if (mode === "wrapped_native") {
+    return {
+      mode,
+      fundingAssetKind: "erc20" as const,
+      fundingAssetSymbol: chainMeta.wrappedNativeSymbol,
+      sourceTokenSymbol: chainMeta.wrappedNativeSymbol,
+      sourceTokenAddress: input.swap_source_token_address ?? null,
+      usesLocalWrap: false,
+    };
+  }
+  if (mode === "stablecoin") {
+    return {
+      mode,
+      fundingAssetKind: "erc20" as const,
+      fundingAssetSymbol: input.swap_source_token_symbol ?? null,
+      sourceTokenSymbol: input.swap_source_token_symbol ?? null,
+      sourceTokenAddress: input.swap_source_token_address ?? null,
+      usesLocalWrap: false,
+    };
+  }
+  return {
+    mode: "native" as const,
+    fundingAssetKind: "native" as const,
+    fundingAssetSymbol: chainMeta.nativeSymbol,
+    sourceTokenSymbol: chainMeta.wrappedNativeSymbol,
+    sourceTokenAddress: input.swap_source_token_address ?? null,
+    usesLocalWrap: true,
+  };
+}
+
+export function getTemplateSwapSourceUi(input: {
+  chain: TemplateChain;
+  swap_source_mode?: TemplateSwapSourceMode | null;
+  swap_source_token_symbol?: string | null;
+  swap_source_token_address?: string | null;
+  runtimeSwapSource?: {
+    mode?: TemplateSwapSourceMode | null;
+    funding_asset_kind?: "native" | "erc20";
+    funding_asset_symbol?: string | null;
+    funding_asset_address?: string | null;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    uses_local_wrap?: boolean;
+  } | null;
+}) {
+  const chainMeta = getTemplateChainMeta(input.chain);
+  const fallback = resolveTemplateSwapSource(input);
+  const runtime = input.runtimeSwapSource;
+  const mode = runtime?.mode ?? fallback.mode;
+  const sourceTokenSymbol = runtime?.source_token_symbol ?? fallback.sourceTokenSymbol ?? chainMeta.wrappedNativeSymbol;
+  const sourceTokenAddress = runtime?.source_token_address ?? fallback.sourceTokenAddress ?? null;
+  const fundingAssetKind = runtime?.funding_asset_kind ?? fallback.fundingAssetKind;
+  const fundingAssetSymbol =
+    runtime?.funding_asset_symbol
+    ?? fallback.fundingAssetSymbol
+    ?? (mode === "native" ? chainMeta.nativeSymbol : sourceTokenSymbol);
+  const fundingAssetAddress = runtime?.funding_asset_address ?? sourceTokenAddress ?? null;
+  const usesLocalWrap = runtime?.uses_local_wrap ?? fallback.usesLocalWrap;
+  const isNativeMode = mode === "native";
+  const isWrappedNativeMode = mode === "wrapped_native";
+  const isStablecoinMode = mode === "stablecoin";
+
+  return {
+    mode,
+    fundingAssetKind,
+    fundingAssetSymbol,
+    fundingAssetAddress,
+    sourceTokenSymbol,
+    sourceTokenAddress,
+    usesLocalWrap,
+    isNativeMode,
+    isWrappedNativeMode,
+    isStablecoinMode,
+  };
+}
+
 export type Template = {
   id: string;
   name: string;
@@ -185,6 +271,9 @@ export type Template = {
   slippage_percent: string;
   fee_tier: number | null;
   auto_wrap_eth_to_weth: boolean;
+  swap_source_mode: TemplateSwapSourceMode;
+  swap_source_token_symbol?: string | null;
+  swap_source_token_address?: string | null;
   stablecoin_distribution_mode: "none" | "equal" | "manual_percent" | "manual_weth_amount";
   stablecoin_allocations: StablecoinAllocation[];
   notes: string | null;
@@ -214,6 +303,29 @@ export type TemplateOptions = {
   fallback_swap_backends?: string[];
   fallback_swap_backend_labels?: string[];
   stablecoins: StablecoinOption[];
+  swap_source_modes: Array<{
+    value: TemplateSwapSourceMode;
+    label: string;
+    description: string;
+  }>;
+  swap_source_token_options: StablecoinOption[];
+  swap_source_recommendation?: {
+    recommended_mode: TemplateSwapSourceMode;
+    recommended_token_symbol?: string | null;
+    recommended_token_address?: string | null;
+    title: string;
+    summary: string;
+    details?: string[];
+  } | null;
+  swap_source: {
+    mode: TemplateSwapSourceMode;
+    funding_asset_kind: "native" | "erc20";
+    funding_asset_symbol?: string | null;
+    funding_asset_address?: string | null;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    uses_local_wrap: boolean;
+  };
   distribution_modes: Array<{
     value: Template["stablecoin_distribution_mode"];
     label: string;
@@ -243,6 +355,9 @@ export type TemplateOptions = {
     slippage_percent: string;
     fee_tier: number | null;
     auto_wrap_eth_to_weth: boolean;
+    swap_source_mode: TemplateSwapSourceMode;
+    swap_source_token_symbol?: string | null;
+    swap_source_token_address?: string | null;
     stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
     stablecoin_allocations: StablecoinAllocation[];
   };
@@ -250,6 +365,7 @@ export type TemplateOptions = {
     summary: string;
     swap_budget_note: string;
     swap_settings_note?: string;
+    swap_source_note?: string;
     auto_top_up_note?: string;
     return_wallet_note?: string;
     test_auto_execute_note?: string;
@@ -279,6 +395,9 @@ export type TemplateEditorForm = {
   slippage_percent: string;
   fee_tier: number | null;
   auto_wrap_eth_to_weth: boolean;
+  swap_source_mode: TemplateSwapSourceMode;
+  swap_source_token_symbol: string;
+  swap_source_token_address: string;
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
   stablecoin_allocations: StablecoinAllocation[];
   notes: string;
@@ -300,6 +419,15 @@ export type TemplatePreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  swap_source?: {
+    mode: TemplateSwapSourceMode;
+    funding_asset_kind: "native" | "erc20";
+    funding_asset_symbol?: string | null;
+    funding_asset_address?: string | null;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    uses_local_wrap: boolean;
+  };
   testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding?: boolean;
@@ -312,6 +440,7 @@ export type TemplatePreview = {
   balances: {
     available_eth: string;
     available_weth: string;
+    available_source_token?: string;
     wrappable_eth: string;
     remaining_eth_after_funding: string;
     remaining_weth_after_funding: string;
@@ -319,6 +448,11 @@ export type TemplatePreview = {
   funding: {
     eth_sent_to_subwallets: string;
     weth_sent_to_subwallets: string;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    source_token_sent_to_subwallets?: string;
+    available_source_token?: string;
+    source_token_shortfall?: string;
     weth_from_main_wallet: string;
     weth_from_wrapped_eth: string;
     main_wallet_weth_wrapped?: string;
@@ -335,11 +469,13 @@ export type TemplatePreview = {
     projected_auto_top_up_eth?: string;
     required_eth: string;
     required_weth: string;
+    required_source_token?: string;
     total_eth_if_no_weth_available: string;
   };
   totals: {
     required_eth_total: string;
     required_weth_total: string;
+    required_source_token_total?: string;
     gas_reserve_eth_total: string;
     swap_budget_eth_total: string;
     direct_contract_native_eth_total?: string;
@@ -348,6 +484,7 @@ export type TemplatePreview = {
     total_eth_if_no_weth_available_total: string;
     required_eth_total_usd: string | null;
     required_weth_total_usd: string | null;
+    required_source_token_total_usd?: string | null;
     combined_cost_usd: string | null;
     stablecoin_output_total_usd: string | null;
   };
@@ -373,6 +510,7 @@ export type TemplateWalletSupportPreview = {
   chain_label?: string;
   native_symbol?: string;
   wrapped_native_symbol?: string;
+  swap_source?: TemplatePreview["swap_source"];
   testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding?: boolean;
@@ -385,6 +523,7 @@ export type TemplateWalletSupportPreview = {
   balances: {
     available_eth: string;
     available_weth: string;
+    available_source_token?: string;
     wrappable_eth: string;
     remaining_eth_after_funding: string;
     remaining_weth_after_funding: string;
@@ -392,6 +531,11 @@ export type TemplateWalletSupportPreview = {
   funding: {
     eth_sent_to_subwallets: string;
     weth_sent_to_subwallets: string;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    source_token_sent_to_subwallets?: string;
+    available_source_token?: string;
+    source_token_shortfall?: string;
     weth_from_main_wallet: string;
     weth_from_wrapped_eth: string;
     main_wallet_weth_wrapped?: string;
@@ -410,6 +554,7 @@ export type TemplateWalletSupportPreview = {
     estimated_gas_units?: number | null;
     main_wallet_wrap_transaction_count?: number;
     main_wallet_wrap_gas_units?: number | null;
+    source_token_funding_transaction_count?: number;
     execute_gas_units_per_wallet?: number | null;
     return_sweep_gas_units_per_wallet?: number | null;
     local_execution_gas_units_per_wallet?: number | null;
@@ -442,11 +587,13 @@ export type TemplateWalletSupportPreview = {
     local_execution_gas_fee_eth?: string;
     required_eth: string;
     required_weth: string;
+    required_source_token?: string;
     total_eth_if_no_weth_available: string;
   };
   totals: {
     required_eth_total: string;
     required_weth_total: string;
+    required_source_token_total?: string;
     gas_reserve_eth_total: string;
     swap_budget_eth_total: string;
     direct_contract_native_eth_total?: string;
@@ -466,6 +613,11 @@ export type TemplateWalletSupportPreview = {
     percent: string | null;
     per_contract_weth_amount: string | null;
     total_weth_amount: string | null;
+    per_contract_source_amount?: string | null;
+    total_source_amount?: string | null;
+    source_token_symbol?: string | null;
+    source_token_address?: string | null;
+    requires_swap?: boolean;
   }>;
   contract_sync: {
     enabled: boolean;
@@ -495,13 +647,20 @@ export type TemplateStablecoinQuote = {
   token_symbol: string;
   token_name: string;
   token_address: string;
+  source_token_symbol?: string | null;
+  source_token_address?: string | null;
+  requires_swap?: boolean;
   route_status?: string | null;
   route_error?: string | null;
   percent: string | null;
   per_contract_weth_amount: string | null;
   total_weth_amount: string | null;
+  per_contract_source_amount?: string | null;
+  total_source_amount?: string | null;
   per_contract_weth_usd: string | null;
   total_weth_usd: string | null;
+  per_contract_source_usd?: string | null;
+  total_source_usd?: string | null;
   per_contract_output: string | null;
   total_output: string | null;
   per_contract_min_output: string | null;
@@ -553,6 +712,7 @@ export type TemplateMarketCheck = {
   contract_count: number;
   slippage_percent: string;
   fee_tier: number | null;
+  swap_source?: TemplatePreview["swap_source"];
   per_contract: TemplatePreview["per_contract"];
   totals: TemplateMarketCheckTotals;
   stablecoin_distribution_mode: Template["stablecoin_distribution_mode"];
@@ -754,6 +914,9 @@ export function defaultTemplateForm(options: TemplateOptions | null): TemplateEd
     slippage_percent: options?.defaults.slippage_percent ?? "0.5",
     fee_tier: options?.defaults.fee_tier ?? null,
     auto_wrap_eth_to_weth: options?.defaults.auto_wrap_eth_to_weth ?? true,
+    swap_source_mode: options?.defaults.swap_source_mode ?? "native",
+    swap_source_token_symbol: options?.defaults.swap_source_token_symbol ?? "",
+    swap_source_token_address: options?.defaults.swap_source_token_address ?? "",
     stablecoin_distribution_mode: options?.defaults.stablecoin_distribution_mode ?? "none",
     stablecoin_allocations: options?.defaults.stablecoin_allocations.map((allocation) => ({ ...allocation })) ?? [],
     notes: "",
@@ -778,6 +941,9 @@ export function templateToForm(template: Template): TemplateEditorForm {
     slippage_percent: template.slippage_percent,
     fee_tier: template.fee_tier,
     auto_wrap_eth_to_weth: template.auto_wrap_eth_to_weth,
+    swap_source_mode: template.swap_source_mode ?? "native",
+    swap_source_token_symbol: template.swap_source_token_symbol ?? "",
+    swap_source_token_address: template.swap_source_token_address ?? "",
     stablecoin_distribution_mode: template.stablecoin_distribution_mode,
     stablecoin_allocations: template.stablecoin_allocations.map((allocation) => ({ ...allocation })),
     notes: template.notes ?? "",
@@ -798,6 +964,7 @@ export function buildTemplateWalletSupportPreview(input: {
   const chainMeta = getTemplateChainMeta(template.chain);
   const nativeSymbol = chainMeta.nativeSymbol;
   const wrappedNativeSymbol = chainMeta.wrappedNativeSymbol;
+  const swapSource = resolveTemplateSwapSource(template);
 
   const gasReserve = toFiniteNumber(template.gas_reserve_eth_per_contract) ?? 0;
   const swapBudget = toFiniteNumber(template.swap_budget_eth_per_contract) ?? 0;
@@ -811,6 +978,10 @@ export function buildTemplateWalletSupportPreview(input: {
   const autoTopUpTarget = toFiniteNumber(template.auto_top_up_target_eth) ?? 0;
   const stablecoinRoutes = getStablecoinDistributionRows(template).map((allocation) => {
     const perContractWethAmount = toFiniteNumber(allocation.weth_amount_per_contract);
+    const requiresSwap =
+      !swapSource.sourceTokenAddress ||
+      swapSource.mode === "native" ||
+      allocation.token_address.toLowerCase() !== swapSource.sourceTokenAddress.toLowerCase();
     return {
       token_symbol: allocation.token_symbol,
       token_address: allocation.token_address,
@@ -818,10 +989,15 @@ export function buildTemplateWalletSupportPreview(input: {
       per_contract_weth_amount: allocation.weth_amount_per_contract ?? null,
       total_weth_amount:
         perContractWethAmount === null ? null : toAmountString(perContractWethAmount * contractCount),
+      per_contract_source_amount: allocation.weth_amount_per_contract ?? null,
+      total_source_amount: perContractWethAmount === null ? null : toAmountString(perContractWethAmount * contractCount),
+      source_token_symbol: swapSource.sourceTokenSymbol,
+      source_token_address: swapSource.sourceTokenAddress,
+      requires_swap: requiresSwap,
     };
   });
-  const routeCount = stablecoinRoutes.filter((route) => (toFiniteNumber(route.per_contract_weth_amount) ?? 0) > 0).length;
-  const localTokenFundingTargetsPerWallet = routeCount;
+  const routeCount = stablecoinRoutes.filter((route) => (toFiniteNumber(route.per_contract_source_amount) ?? 0) > 0 && route.requires_swap).length;
+  const localTokenFundingTargetsPerWallet = stablecoinRoutes.filter((route) => (toFiniteNumber(route.per_contract_source_amount) ?? 0) > 0).length;
   const mainWalletTokenFundingTargetsPerWallet = directWeth > 0 ? 1 : 0;
   const mainWalletNativeFundingTargetsPerWallet = directContractNativeEth > 0 ? 1 : 0;
   const tokenFundingTargetsPerWallet = localTokenFundingTargetsPerWallet + mainWalletTokenFundingTargetsPerWallet;
@@ -830,10 +1006,23 @@ export function buildTemplateWalletSupportPreview(input: {
   const requiresRecipient = fundedAssetCountPerWallet > 0;
   const deploymentEnabled = requiresRecipient && Boolean(testingRecipientAddress);
   const configuredUnwrappedEthPerContract = gasReserve;
-  const requiredWethPerContract = swapBudget;
-  const returnSweepTokenTransferCountPerWallet = returnWalletConfigured ? routeCount + (swapBudget > 0 ? 1 : 0) : 0;
+  const requiredWethPerContract = swapSource.usesLocalWrap ? swapBudget : 0;
+  const requiredSourceTokenPerContract = swapSource.fundingAssetKind === "erc20" ? swapBudget : 0;
+  const returnSweepTokenTransferCountPerWallet = returnWalletConfigured
+    ? new Set(
+        [
+          ...stablecoinRoutes
+            .filter((route) => (toFiniteNumber(route.per_contract_source_amount) ?? 0) > 0)
+            .map((route) => route.token_address.toLowerCase()),
+          ...(requiredSourceTokenPerContract > 0 && swapSource.sourceTokenAddress
+            ? [swapSource.sourceTokenAddress.toLowerCase()]
+            : []),
+        ],
+      ).size
+    : 0;
   const returnSweepTransactionCountPerWallet = returnWalletConfigured ? 1 + returnSweepTokenTransferCountPerWallet : 0;
   const wrapTransactionCount = requiredWethPerContract > 0 ? contractCount : 0;
+  const sourceTokenFundingTransactionCount = requiredSourceTokenPerContract > 0 ? contractCount : 0;
   const approvalTransactionCount = routeCount > 0 ? contractCount : 0;
   const swapTransactionCount = contractCount * routeCount;
   const deploymentTransactionCount = deploymentEnabled ? contractCount : 0;
@@ -842,12 +1031,14 @@ export function buildTemplateWalletSupportPreview(input: {
 
   const availableEth = wallet.eth_balance ?? 0;
   const availableWeth = wallet.weth_balance ?? 0;
+  const availableSourceToken = swapSource.mode === "wrapped_native" ? availableWeth : null;
   const directContractNativeEthTotal = directContractNativeEth * contractCount;
   const directContractWethTotal = directWeth * contractCount;
   const fundedTreasuryEnabled = routeCount > 0 || directContractNativeEth > 0 || directWeth > 0;
   const wethFromMainWallet = directContractWethTotal;
-  const wethFromExistingMainWallet = Math.min(availableWeth, wethFromMainWallet);
-  const mainWalletWethWrapped = Math.max(wethFromMainWallet - availableWeth, 0);
+  const wrappedNativeRequiredTotal = directContractWethTotal + (swapSource.mode === "wrapped_native" ? requiredSourceTokenPerContract * contractCount : 0);
+  const wethFromExistingMainWallet = Math.min(availableWeth, wrappedNativeRequiredTotal);
+  const mainWalletWethWrapped = Math.max(wrappedNativeRequiredTotal - availableWeth, 0);
   const gasPriceGwei = wallet.funding_gas_price_gwei ?? null;
   const gasPriceEth = gasPriceGwei === null ? 0 : gasPriceGwei / 1_000_000_000;
   const deploymentGasUnitsPerWallet =
@@ -890,16 +1081,19 @@ export function buildTemplateWalletSupportPreview(input: {
   const topUpTransactionCount = projectedAutoTopUpEthPerContract > 0 ? contractCount : 0;
   const returnSweepTransactionCount = contractCount * returnSweepTransactionCountPerWallet;
   const fundingGasUnits = fundingTransactionCount * ETH_TRANSFER_GAS_UNITS;
+  const sourceTokenFundingGasUnits = sourceTokenFundingTransactionCount * TOKEN_TRANSFER_GAS_UNITS;
   const mainWalletDirectFundingGasUnits = contractCount * mainWalletDirectFundingGasUnitsPerWallet;
   const mainWalletWrapGasUnits = mainWalletWrapTransactionCount * WRAP_GAS_UNITS;
   const topUpGasUnits = topUpTransactionCount * ETH_TRANSFER_GAS_UNITS;
   const estimatedGasUnits =
     fundingGasUnits +
+    sourceTokenFundingGasUnits +
     localExecutionGasUnitsPerWallet * contractCount +
     mainWalletDirectFundingGasUnits +
     mainWalletWrapGasUnits +
     topUpGasUnits;
   const fundingNetworkFeeEth = gasPriceEth * fundingGasUnits;
+  const sourceTokenFundingNetworkFeeEth = gasPriceEth * sourceTokenFundingGasUnits;
   const mainWalletDirectFundingNetworkFeeEth = gasPriceEth * mainWalletDirectFundingGasUnits;
   const mainWalletWrapNetworkFeeEth = gasPriceEth * mainWalletWrapGasUnits;
   const topUpNetworkFeeEth = gasPriceEth * topUpGasUnits;
@@ -910,6 +1104,7 @@ export function buildTemplateWalletSupportPreview(input: {
   const totalEthDeducted = requiredEthTotal + directContractNativeEthTotal + mainWalletWethWrapped;
   const totalNetworkFeeEth =
     fundingNetworkFeeEth +
+    sourceTokenFundingNetworkFeeEth +
     topUpNetworkFeeEth +
     localExecutionGasFeeEth +
     mainWalletDirectFundingNetworkFeeEth +
@@ -918,6 +1113,7 @@ export function buildTemplateWalletSupportPreview(input: {
     totalEthDeducted +
     projectedAutoTopUpEthTotal +
     fundingNetworkFeeEth +
+    sourceTokenFundingNetworkFeeEth +
     topUpNetworkFeeEth +
     mainWalletDirectFundingNetworkFeeEth +
     mainWalletWrapNetworkFeeEth;
@@ -953,6 +1149,15 @@ export function buildTemplateWalletSupportPreview(input: {
     template_id: template.id,
     wallet_id: wallet.id,
     contract_count: contractCount,
+    swap_source: {
+      mode: swapSource.mode,
+      funding_asset_kind: swapSource.fundingAssetKind,
+      funding_asset_symbol: swapSource.fundingAssetSymbol,
+      funding_asset_address: swapSource.sourceTokenAddress ?? null,
+      source_token_symbol: swapSource.sourceTokenSymbol,
+      source_token_address: swapSource.sourceTokenAddress ?? null,
+      uses_local_wrap: swapSource.usesLocalWrap,
+    },
     testing_recipient_address: testingRecipientAddress ?? null,
     return_wallet_address: template.return_wallet_address ?? null,
     test_auto_execute_after_funding: testAutoExecuteAfterFunding,
@@ -964,6 +1169,7 @@ export function buildTemplateWalletSupportPreview(input: {
     balances: {
       available_eth: toAmountString(availableEth),
       available_weth: toAmountString(availableWeth),
+      available_source_token: availableSourceToken === null ? undefined : toAmountString(availableSourceToken),
       wrappable_eth: toAmountString(wrappableEth),
       remaining_eth_after_funding: toAmountString(remainingEthAfterFunding),
       remaining_weth_after_funding: toAmountString(remainingWethAfterFunding),
@@ -971,6 +1177,10 @@ export function buildTemplateWalletSupportPreview(input: {
     funding: {
       eth_sent_to_subwallets: toAmountString(requiredEthTotal),
       weth_sent_to_subwallets: "0",
+      source_token_symbol: swapSource.sourceTokenSymbol ?? null,
+      source_token_address: swapSource.sourceTokenAddress ?? null,
+      source_token_sent_to_subwallets: toAmountString(requiredSourceTokenPerContract * contractCount),
+      available_source_token: availableSourceToken === null ? undefined : toAmountString(availableSourceToken),
       weth_from_main_wallet: toAmountString(wethFromMainWallet),
       weth_from_wrapped_eth: toAmountString(wethFromWrappedEth),
       main_wallet_weth_wrapped: toAmountString(mainWalletWethWrapped),
@@ -981,7 +1191,7 @@ export function buildTemplateWalletSupportPreview(input: {
       funding_network_fee_eth: toAmountString(fundingNetworkFeeEth),
       top_up_network_fee_eth: toAmountString(topUpNetworkFeeEth),
       main_wallet_network_fee_eth: toAmountString(
-        fundingNetworkFeeEth + topUpNetworkFeeEth + mainWalletDirectFundingNetworkFeeEth + mainWalletWrapNetworkFeeEth
+        fundingNetworkFeeEth + sourceTokenFundingNetworkFeeEth + topUpNetworkFeeEth + mainWalletDirectFundingNetworkFeeEth + mainWalletWrapNetworkFeeEth
       ),
       local_execution_gas_fee_eth: toAmountString(localExecutionGasFeeEth),
       local_execution_gas_fee_per_wallet_eth: toAmountString(localExecutionGasFeePerWalletEth),
@@ -995,6 +1205,7 @@ export function buildTemplateWalletSupportPreview(input: {
       return_sweep_gas_units_per_wallet: returnWalletConfigured ? ETH_TRANSFER_GAS_UNITS + returnSweepTokenTransferCountPerWallet * TOKEN_TRANSFER_GAS_UNITS : 0,
       local_execution_gas_units_per_wallet: localExecutionGasUnitsPerWallet,
       funding_transaction_count: fundingTransactionCount,
+      source_token_funding_transaction_count: sourceTokenFundingTransactionCount,
       top_up_transaction_count: topUpTransactionCount,
       execute_transaction_count: executeTransactionCount,
       return_sweep_transaction_count: returnSweepTransactionCount,
@@ -1008,6 +1219,7 @@ export function buildTemplateWalletSupportPreview(input: {
       contract_sync_transaction_count: 0,
       total_transaction_count:
         fundingTransactionCount +
+        sourceTokenFundingTransactionCount +
         topUpTransactionCount +
         executeTransactionCount +
         returnSweepTransactionCount +
@@ -1035,11 +1247,13 @@ export function buildTemplateWalletSupportPreview(input: {
       local_execution_gas_fee_eth: toAmountString(localExecutionGasFeePerWalletEth),
       required_eth: toAmountString(requiredEthPerContract),
       required_weth: toAmountString(requiredWethPerContract),
+      required_source_token: toAmountString(requiredSourceTokenPerContract),
       total_eth_if_no_weth_available: toAmountString(requiredEthPerContract + directContractNativeEth + directWeth),
     },
     totals: {
       required_eth_total: toAmountString(requiredEthTotal),
       required_weth_total: toAmountString(requiredWethTotal),
+      required_source_token_total: toAmountString(requiredSourceTokenPerContract * contractCount),
       gas_reserve_eth_total: toAmountString(gasReserve * contractCount),
       swap_budget_eth_total: toAmountString(swapBudget * contractCount),
       direct_contract_native_eth_total: toAmountString(directContractNativeEthTotal),

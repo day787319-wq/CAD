@@ -39,6 +39,7 @@ import {
   formatRelativeTimestamp,
   getTemplateNoRouteAllocations,
   getTemplateChainMeta,
+  getTemplateSwapSourceUi,
   getStablecoinDistributionRows,
   normalizeTemplateChain,
   shortAddress,
@@ -500,6 +501,30 @@ function getChainUiContext(
   };
 }
 
+function getSwapSourceUiContext(
+  template: Template,
+  runtimeSwapSource?: TemplateWalletSupportPreview["swap_source"] | null,
+) {
+  const chainUi = getChainUiContext(template, null);
+  const sourceUi = getTemplateSwapSourceUi({
+    chain: template.chain,
+    swap_source_mode: template.swap_source_mode,
+    swap_source_token_symbol: template.swap_source_token_symbol,
+    swap_source_token_address: template.swap_source_token_address,
+    runtimeSwapSource,
+  });
+
+  return {
+    ...sourceUi,
+    nativeSymbol: chainUi.nativeSymbol,
+    wrappedNativeSymbol: chainUi.wrappedNativeSymbol,
+    sourceTokenSymbol: sourceUi.sourceTokenSymbol ?? chainUi.wrappedNativeSymbol,
+    fundingAssetSymbol:
+      sourceUi.fundingAssetSymbol
+      ?? (sourceUi.isNativeMode ? chainUi.nativeSymbol : sourceUi.sourceTokenSymbol ?? chainUi.wrappedNativeSymbol),
+  };
+}
+
 function InfoCard({
   label,
   value,
@@ -576,6 +601,7 @@ function NoRouteTokenBadge({
 
 const WRAP_GAS_UNITS = 120_000;
 const ETH_TRANSFER_GAS_UNITS = 21_000;
+const TOKEN_TRANSFER_GAS_UNITS = 90_000;
 const APPROVE_GAS_UNITS = 70_000;
 const SWAP_GAS_UNITS = 350_000;
 const DISTRIBUTOR_DEPLOY_GAS_UNITS = 900_000;
@@ -709,7 +735,19 @@ function buildBudgetPreviewRows(
   locale: SupportedLocale,
 ) {
   const { chainLabel, nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, wallet, locale);
+  const swapSourceUi = getSwapSourceUiContext(template, preview.swap_source);
   const configuredTotals = buildConfiguredTemplateTotals(template, preview.contract_count);
+  const configuredAssets = [
+    formatCryptoMetric(configuredTotals.totalEth, nativeSymbol),
+    formatCryptoMetric(configuredTotals.totalSource, configuredTotals.sourceSymbol),
+  ];
+  if (
+    configuredTotals.totalDirectWrapped > 0
+    && configuredTotals.wrappedNativeSymbol !== configuredTotals.sourceSymbol
+  ) {
+    configuredAssets.push(formatCryptoMetric(configuredTotals.totalDirectWrapped, configuredTotals.wrappedNativeSymbol));
+  }
+
   return [
     {
       label: localeText(locale, { en: "Chain", zn: "链", vn: "Chuỗi" }),
@@ -718,7 +756,21 @@ function buildBudgetPreviewRows(
     { label: localeText(locale, { en: "Sub-wallets", zn: "子钱包", vn: "Ví con" }), value: `${preview.contract_count}` },
     {
       label: localeText(locale, { en: "Configured total", zn: "模板总额", vn: "Tổng cấu hình" }),
-      value: `${formatCryptoMetric(configuredTotals.totalEth, nativeSymbol)} + ${formatCryptoMetric(configuredTotals.totalWeth, wrappedNativeSymbol)}`,
+      value: configuredAssets.join(" + "),
+    },
+    {
+      label: localeText(locale, { en: "Swap source", zn: "兑换来源", vn: "Nguồn swap" }),
+      value: swapSourceUi.isNativeMode
+        ? localeText(locale, {
+            en: `${nativeSymbol} funded, ${swapSourceUi.sourceTokenSymbol} wrapped locally`,
+            zn: `${nativeSymbol} 注资，${swapSourceUi.sourceTokenSymbol} 在本地包装`,
+            vn: `Cấp vốn bằng ${nativeSymbol}, wrap cục bộ sang ${swapSourceUi.sourceTokenSymbol}`,
+          })
+        : localeText(locale, {
+            en: `${swapSourceUi.sourceTokenSymbol} funded directly`,
+            zn: `${swapSourceUi.sourceTokenSymbol} 直接注资`,
+            vn: `${swapSourceUi.sourceTokenSymbol} được cấp trực tiếp`,
+          }),
     },
     {
       label: localeText(locale, { en: "Main wallet balance", zn: "主钱包余额", vn: "Số dư ví chính" }),
@@ -742,13 +794,20 @@ function buildBudgetPreviewRows(
 }
 
 function buildSwapPreviewRows(preview: TemplateWalletSupportPreview, template: Template, locale: SupportedLocale) {
-  const { nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, null, locale);
+  const { nativeSymbol } = getChainUiContext(template, null, locale);
+  const swapSourceUi = getSwapSourceUiContext(template, preview.swap_source);
   const gasPerRoute = estimateGasFeeDisplay(SWAP_GAS_UNITS, preview.execution.estimated_gas_price_gwei, locale, nativeSymbol);
 
   return preview.stablecoin_routes.map((route) => ({
     token: route.token_symbol,
-    budgetPerWallet: formatCryptoMetric(route.per_contract_weth_amount, wrappedNativeSymbol),
-    estimatedOutput: route.percent
+    budgetPerWallet: formatCryptoMetric(route.per_contract_source_amount ?? route.per_contract_weth_amount, route.source_token_symbol ?? swapSourceUi.sourceTokenSymbol),
+    estimatedOutput: route.requires_swap === false
+      ? localeText(locale, {
+          en: "Direct funding leg",
+          zn: "直接注资条目",
+          vn: "Mục cấp vốn trực tiếp",
+        })
+      : route.percent
       ? locale === "en"
         ? `${formatCryptoMetric(route.percent)}% allocation`
         : locale === "zn"
@@ -759,7 +818,9 @@ function buildSwapPreviewRows(preview: TemplateWalletSupportPreview, template: T
           zn: "模板路由",
           vn: "Tuyến theo mẫu",
         }),
-    gasPerRoute,
+    gasPerRoute: route.requires_swap === false
+      ? localeText(locale, { en: "No swap", zn: "无需兑换", vn: "Không cần swap" })
+      : gasPerRoute,
   }));
 }
 
@@ -769,6 +830,7 @@ function buildGasEstimateRows(
   locale: SupportedLocale,
 ) {
   const { nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, null, locale);
+  const swapSourceUi = getSwapSourceUiContext(template, preview.swap_source);
   const distributorAutomation = getDistributorAutomationSummary(template, locale);
   const gasPrice = preview.execution.estimated_gas_price_gwei;
   const totalGasUnits = preview.execution.estimated_gas_units ?? 0;
@@ -781,11 +843,19 @@ function buildGasEstimateRows(
       hint: preview.execution.funding_transaction_count > 0 ? `${nativeSymbol} transfers from the main wallet into each sub-wallet` : `No ${nativeSymbol} funding transfers in this plan`,
     },
     {
+      label: localeText(locale, { en: "source funding gas", zn: "来源资产 gas", vn: "gas cấp vốn nguồn" }),
+      value: estimateGasFeeDisplay((preview.execution.source_token_funding_transaction_count ?? 0) * TOKEN_TRANSFER_GAS_UNITS, gasPrice, locale, nativeSymbol),
+      hint:
+        (preview.execution.source_token_funding_transaction_count ?? 0) > 0
+          ? `${swapSourceUi.sourceTokenSymbol} transfers from the main wallet into each sub-wallet`
+          : `No direct ${swapSourceUi.sourceTokenSymbol} source funding transfers are projected`,
+    },
+    {
       label: localeText(locale, { en: "main wrap gas", zn: "主钱包包装 gas", vn: "gas wrap ví chính" }),
       value: estimateGasFeeDisplay(preview.execution.main_wallet_wrap_gas_units ?? 0, gasPrice, locale, nativeSymbol),
       hint:
         (preview.execution.main_wallet_wrap_transaction_count ?? 0) > 0
-          ? `Wrap ${wrappedNativeSymbol} on the main wallet before direct treasury funding`
+          ? `Wrap ${wrappedNativeSymbol} on the main wallet before ${swapSourceUi.isWrappedNativeMode ? "wrapped source funding and " : ""}direct treasury funding`
           : `No main-wallet ${wrappedNativeSymbol} wrap is required`,
     },
     {
@@ -820,12 +890,12 @@ function buildGasEstimateRows(
     {
       label: localeText(locale, { en: "approve gas", zn: "授权 gas", vn: "gas phê duyệt" }),
       value: estimateGasFeeDisplay(preview.execution.approval_transaction_count * APPROVE_GAS_UNITS, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.approval_transaction_count > 0 ? `Approve ${wrappedNativeSymbol} to the router before swaps` : "No router approvals are required",
+      hint: preview.execution.approval_transaction_count > 0 ? `Approve ${swapSourceUi.sourceTokenSymbol} to the router before swaps` : "No router approvals are required",
     },
     {
       label: localeText(locale, { en: "swap gas", zn: "兑换 gas", vn: "gas swap" }),
       value: estimateGasFeeDisplay(preview.execution.swap_transaction_count * SWAP_GAS_UNITS, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.swap_transaction_count > 0 ? `Swap ${wrappedNativeSymbol} into the configured token routes` : "No token swap routes are configured",
+      hint: preview.execution.swap_transaction_count > 0 ? `Swap ${swapSourceUi.sourceTokenSymbol} into the configured token routes` : "No token swap routes are configured",
     },
     {
       label: localeText(locale, { en: "deploy gas", zn: "部署 gas", vn: "gas triển khai" }),
@@ -835,7 +905,7 @@ function buildGasEstimateRows(
     {
       label: localeText(locale, { en: "treasury funding gas", zn: "资金库注资 gas", vn: "gas cấp vốn treasury" }),
       value: estimateGasFeeDisplay((preview.execution.contract_funding_gas_units_per_wallet ?? 0) * preview.contract_count, gasPrice, locale, nativeSymbol),
-      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer swapped tokens from sub-wallets and direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet into each deployed treasury contract.` : "No post-deploy treasury funding transfers are required",
+      hint: preview.execution.contract_funding_transaction_count > 0 ? `Transfer route outputs from sub-wallets and direct ${nativeSymbol}/${wrappedNativeSymbol} from the main wallet into each deployed treasury contract.` : "No post-deploy treasury funding transfers are required",
     },
     {
       label: localeText(locale, { en: "total gas", zn: "总 gas", vn: "tổng gas" }),
@@ -852,6 +922,7 @@ function buildAutomationSteps(
   locale: SupportedLocale,
 ): Array<{ title: string; description: string; tone: AutomationStepTone }> {
   const { nativeSymbol, wrappedNativeSymbol } = getChainUiContext(template, null, locale);
+  const swapSourceUi = getSwapSourceUiContext(template, preview.swap_source);
   const distributorAutomation = getDistributorAutomationSummary(template, locale);
   const testAutoBatchSendEnabled = getTestAutoBatchSendEnabled(preview);
   const autoAddedGasBuffer = toNumericValue(preview.per_contract.auto_added_gas_buffer_eth);
@@ -893,20 +964,35 @@ function buildAutomationSteps(
     },
     {
       title: localeText(locale, { en: "Fund wallets", zn: "注资钱包", vn: "Cấp vốn ví" }),
-      description: `Send ${formatCryptoMetric(preview.funding.eth_sent_to_subwallets, nativeSymbol)} from the main wallet to fund each sub-wallet.`,
+      description:
+        (toNumericValue(preview.funding.source_token_sent_to_subwallets) ?? 0) > 0
+          ? `Send ${formatCryptoMetric(preview.funding.eth_sent_to_subwallets, nativeSymbol)} and ${formatCryptoMetric(preview.funding.source_token_sent_to_subwallets, swapSourceUi.sourceTokenSymbol)} from the main wallet to fund each sub-wallet.`
+          : `Send ${formatCryptoMetric(preview.funding.eth_sent_to_subwallets, nativeSymbol)} from the main wallet to fund each sub-wallet.`,
       tone: "planned",
     },
     {
-      title: localeText(locale, { en: `Wrap to ${wrappedNativeSymbol}`, zn: `转换为 ${wrappedNativeSymbol}`, vn: `Wrap sang ${wrappedNativeSymbol}` }),
+      title: swapSourceUi.isNativeMode
+        ? localeText(locale, { en: `Wrap to ${wrappedNativeSymbol}`, zn: `转换为 ${wrappedNativeSymbol}`, vn: `Wrap sang ${wrappedNativeSymbol}` })
+        : localeText(locale, {
+            en: `Fund ${swapSourceUi.sourceTokenSymbol}`,
+            zn: `注资 ${swapSourceUi.sourceTokenSymbol}`,
+            vn: `Cấp ${swapSourceUi.sourceTokenSymbol}`,
+          }),
       description:
-        preview.execution.wrap_transaction_count > 0 && mainWalletWethWrapped > 0
+        swapSourceUi.isNativeMode && preview.execution.wrap_transaction_count > 0 && mainWalletWethWrapped > 0
           ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} for swaps and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas. The main wallet also wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct treasury funding.`
-          : preview.execution.wrap_transaction_count > 0
+          : swapSourceUi.isNativeMode && preview.execution.wrap_transaction_count > 0
             ? `Each sub-wallet wraps ${formatCryptoMetric(preview.per_contract.required_weth, wrappedNativeSymbol)} and keeps ${formatCryptoMetric(minimumUnwrappedEth, nativeSymbol)} in ${nativeSymbol} for gas.`
+            : swapSourceUi.isWrappedNativeMode && (toNumericValue(preview.funding.source_token_sent_to_subwallets) ?? 0) > 0
+              ? `The main wallet funds ${formatCryptoMetric(preview.funding.source_token_sent_to_subwallets, swapSourceUi.sourceTokenSymbol)} directly into the new sub-wallets for swap execution.`
+            : swapSourceUi.isStablecoinMode && (toNumericValue(preview.funding.source_token_sent_to_subwallets) ?? 0) > 0
+              ? `The main wallet must already hold ${swapSourceUi.sourceTokenSymbol} and will fund ${formatCryptoMetric(preview.funding.source_token_sent_to_subwallets, swapSourceUi.sourceTokenSymbol)} directly into the new sub-wallets.`
             : mainWalletWethWrapped > 0
               ? `The main wallet wraps ${formatCryptoMetric(preview.funding.main_wallet_weth_wrapped, wrappedNativeSymbol)} for direct treasury funding.`
-              : `No ${wrappedNativeSymbol} wrap is needed.`,
-      tone: preview.execution.wrap_transaction_count > 0 || mainWalletWethWrapped > 0 ? "planned" : "optional",
+              : swapSourceUi.isNativeMode
+                ? `No ${wrappedNativeSymbol} wrap is needed.`
+                : `No direct ${swapSourceUi.sourceTokenSymbol} source funding is needed.`,
+      tone: preview.execution.wrap_transaction_count > 0 || mainWalletWethWrapped > 0 || (toNumericValue(preview.funding.source_token_sent_to_subwallets) ?? 0) > 0 ? "planned" : "optional",
     },
     {
       title: localeText(locale, { en: "Top-up", zn: "自动补充", vn: "Nạp thêm" }),
@@ -934,7 +1020,7 @@ function buildAutomationSteps(
     {
       title: localeText(locale, { en: "Swap tokens", zn: "兑换代币", vn: "Swap token" }),
       description: preview.execution.swap_transaction_count > 0
-        ? `Approve ${wrappedNativeSymbol} and run ${preview.execution.swap_transaction_count} token swap${preview.execution.swap_transaction_count === 1 ? "" : "s"} across the selected routes.`
+        ? `Approve ${swapSourceUi.sourceTokenSymbol} and run ${preview.execution.swap_transaction_count} token swap${preview.execution.swap_transaction_count === 1 ? "" : "s"} across the selected routes.`
         : "No token swaps are included in this template.",
       tone: preview.execution.swap_transaction_count > 0 ? "planned" : "optional",
     },
@@ -1126,18 +1212,21 @@ function buildTestingExecuteSummary(template: Template, locale: SupportedLocale)
 
 function buildConfiguredTemplateTotals(template: Template, contractCount: number) {
   const normalizedCount = Number.isFinite(contractCount) && contractCount > 0 ? Math.floor(contractCount) : 1;
+  const swapSourceUi = getSwapSourceUiContext(template);
   const nativePerContract =
     (toNumericValue(template.gas_reserve_eth_per_contract) ?? 0) +
     (toNumericValue(template.direct_contract_native_eth_per_contract) ?? 0);
-  const wethPerContract =
-    (toNumericValue(template.swap_budget_eth_per_contract) ?? 0) +
-    (toNumericValue(template.direct_contract_weth_per_contract) ?? 0);
+  const sourcePerContract = toNumericValue(template.swap_budget_eth_per_contract) ?? 0;
+  const directWrappedPerContract = toNumericValue(template.direct_contract_weth_per_contract) ?? 0;
 
   return {
     contractCount: normalizedCount,
     totalEth: nativePerContract * normalizedCount,
-    totalWeth: wethPerContract * normalizedCount,
-    nativeOnlyEquivalent: (nativePerContract + wethPerContract) * normalizedCount,
+    totalSource: sourcePerContract * normalizedCount,
+    totalDirectWrapped: directWrappedPerContract * normalizedCount,
+    sourceSymbol: swapSourceUi.sourceTokenSymbol,
+    wrappedNativeSymbol: swapSourceUi.wrappedNativeSymbol,
+    nativeOnlyEquivalent: (nativePerContract + sourcePerContract + directWrappedPerContract) * normalizedCount,
   };
 }
 
@@ -1192,7 +1281,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     if (wallet?.type !== "sub") return undefined;
     return normalizeTemplateChain(
       wallet.return_sweep_chain ?? wallet.linked_contracts?.[0]?.chain ?? wallet.chain ?? preferredChain,
-    );
+    ) ?? undefined;
   }, [preferredChain, wallet?.chain, wallet?.linked_contracts, wallet?.return_sweep_chain, wallet?.type]);
   const walletBalanceChain = useMemo<Template["chain"] | undefined>(() => {
     if (selectedTemplate?.chain) return selectedTemplate.chain;
@@ -2155,6 +2244,8 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const reviewStablecoinRoutes = activeRunPreview?.stablecoin_routes ?? [];
   const previewStatusNote = preview && selectedTemplate ? getPreviewStatusNote(preview, selectedTemplate, locale) : null;
   const selectedChainUi = getChainUiContext(selectedTemplate, wallet, locale);
+  const selectedSwapSourceUi = selectedTemplate ? getSwapSourceUiContext(selectedTemplate, preview?.swap_source) : null;
+  const activeSwapSourceUi = selectedTemplate ? getSwapSourceUiContext(selectedTemplate, activeRunPreview?.swap_source) : null;
   const nativeSymbol = selectedChainUi.nativeSymbol;
   const wrappedNativeSymbol = selectedChainUi.wrappedNativeSymbol;
   const automationStability = getAutomationStabilitySummary(selectedChainStatus);
@@ -3025,10 +3116,24 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </div>
                                     <div>
                                       <p className="text-lg font-semibold text-slate-950">
-                                        {locale === "en" ? `Swaps per wallet (${nativeSymbol} -> local ${wrappedNativeSymbol} -> Token)` : locale === "zn" ? `每钱包兑换（${nativeSymbol} -> 本地 ${wrappedNativeSymbol} -> 代币）` : `Swap theo mỗi ví (${nativeSymbol} -> ${wrappedNativeSymbol} cục bộ -> Token)`}
+                                        {locale === "en"
+                                          ? selectedSwapSourceUi?.isNativeMode
+                                            ? `Swaps per wallet (${nativeSymbol} -> local ${wrappedNativeSymbol} -> Token)`
+                                            : `Routes per wallet (${selectedSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol} -> Token)`
+                                          : locale === "zn"
+                                            ? selectedSwapSourceUi?.isNativeMode
+                                              ? `每钱包兑换（${nativeSymbol} -> 本地 ${wrappedNativeSymbol} -> 代币）`
+                                              : `每钱包路由（${selectedSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol} -> 代币）`
+                                            : selectedSwapSourceUi?.isNativeMode
+                                              ? `Swap theo mỗi ví (${nativeSymbol} -> ${wrappedNativeSymbol} cục bộ -> Token)`
+                                              : `Tuyến theo mỗi ví (${selectedSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol} -> Token)`}
                                       </p>
                                       <p className="text-sm text-slate-500">
-                                        {locale === "en" ? "Route sizing per wallet using the template allocation." : locale === "zn" ? "按模板分配展示每个钱包的路由规模。" : "Quy mô tuyến cho mỗi ví theo phân bổ của mẫu."}
+                                        {locale === "en"
+                                          ? "Route sizing per wallet using the template allocation and selected swap source."
+                                          : locale === "zn"
+                                            ? "按模板分配和所选兑换来源展示每个钱包的路由规模。"
+                                            : "Quy mô tuyến cho mỗi ví theo phân bổ của mẫu và nguồn swap đã chọn."}
                                       </p>
                                     </div>
                                   </div>
@@ -3058,10 +3163,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                             <tr>
                                               <td colSpan={4} className="px-4 py-6 text-center text-sm text-slate-500">
                                                 {locale === "en"
-                                                  ? `No token swap routes are configured. The run will keep the funding flow ${nativeSymbol}-first and only deploy treasury contracts if direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding is configured.`
+                                                  ? `No token swap routes are configured. The run will keep the funding flow ${selectedSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol}-first and only deploy treasury contracts if direct contract ${nativeSymbol}/${wrappedNativeSymbol} funding is configured.`
                                                   : locale === "zn"
-                                                    ? `当前没有配置代币兑换路由。此运行将保持 ${nativeSymbol} 优先注资流程，只有在配置了直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资时才会部署资金库合约。`
-                                                    : `Chưa có tuyến swap token nào được cấu hình. Lượt chạy sẽ giữ luồng cấp vốn ưu tiên ${nativeSymbol} và chỉ triển khai treasury nếu có cấp vốn ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng.`}
+                                                    ? `当前没有配置代币兑换路由。此运行将保持 ${selectedSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol} 优先注资流程，只有在配置了直接合约 ${nativeSymbol}/${wrappedNativeSymbol} 注资时才会部署资金库合约。`
+                                                    : `Chưa có tuyến swap token nào được cấu hình. Lượt chạy sẽ giữ luồng cấp vốn ưu tiên ${selectedSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol} và chỉ triển khai treasury nếu có cấp vốn ${nativeSymbol}/${wrappedNativeSymbol} trực tiếp cho hợp đồng.`}
                                               </td>
                                             </tr>
                                           )}
@@ -3519,10 +3624,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                             <p className="text-sm font-semibold text-slate-900">{route.token_symbol}</p>
                             <p className="mt-1 text-xs text-slate-500">
                               {locale === "en"
-                                ? `${formatCryptoMetric(route.per_contract_weth_amount, wrappedNativeSymbol)} per wallet`
+                                ? `${formatCryptoMetric(route.per_contract_source_amount ?? route.per_contract_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} per wallet`
                                 : locale === "zn"
-                                  ? `每钱包 ${formatCryptoMetric(route.per_contract_weth_amount, wrappedNativeSymbol)}`
-                                  : `${formatCryptoMetric(route.per_contract_weth_amount, wrappedNativeSymbol)} mỗi ví`}
+                                  ? `每钱包 ${formatCryptoMetric(route.per_contract_source_amount ?? route.per_contract_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)}`
+                                  : `${formatCryptoMetric(route.per_contract_source_amount ?? route.per_contract_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} mỗi ví`}
                               {route.percent
                                 ? locale === "en"
                                   ? ` • ${formatCryptoMetric(route.percent)}% allocation`
@@ -3533,16 +3638,22 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                             </p>
                             <p className="mt-2 text-sm text-slate-700">
                               {locale === "en"
-                                ? `${formatCryptoMetric(route.total_weth_amount, wrappedNativeSymbol)} total route size`
+                                ? route.requires_swap === false
+                                  ? `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} direct funding total`
+                                  : `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} total route size`
                                 : locale === "zn"
-                                  ? `${formatCryptoMetric(route.total_weth_amount, wrappedNativeSymbol)} 路由总量`
-                                  : `${formatCryptoMetric(route.total_weth_amount, wrappedNativeSymbol)} tổng quy mô tuyến`}
+                                  ? route.requires_swap === false
+                                    ? `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} 直接注资总量`
+                                    : `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} 路由总量`
+                                  : route.requires_swap === false
+                                    ? `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} tổng cấp vốn trực tiếp`
+                                    : `${formatCryptoMetric(route.total_source_amount ?? route.total_weth_amount, route.source_token_symbol ?? activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)} tổng quy mô tuyến`}
                             </p>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <p className="mt-4 text-sm text-slate-500">{locale === "en" ? `No token swap routes are set. This run only sends ${nativeSymbol} unless direct contract funding is enabled.` : locale === "zn" ? `未设置代币兑换路由。除非启用直接合约注资，否则此运行只会发送 ${nativeSymbol}。` : `Chưa có tuyến swap token nào được đặt. Lượt chạy này chỉ gửi ${nativeSymbol} trừ khi bật cấp vốn hợp đồng trực tiếp.`}</p>
+                      <p className="mt-4 text-sm text-slate-500">{locale === "en" ? `No token swap routes are set. This run only sends ${activeSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol} unless direct contract funding is enabled.` : locale === "zn" ? `未设置代币兑换路由。除非启用直接合约注资，否则此运行只会发送 ${activeSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol}。` : `Chưa có tuyến swap token nào được đặt. Lượt chạy này chỉ gửi ${activeSwapSourceUi?.fundingAssetSymbol ?? nativeSymbol} trừ khi bật cấp vốn hợp đồng trực tiếp.`}</p>
                     )}
                   </div>
                 </div>
@@ -3569,8 +3680,24 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                         <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.total_eth_deducted, nativeSymbol)}</p>
                       </div>
                       <div className="cad-panel-muted px-4 py-3">
-                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `Local ${wrappedNativeSymbol} wrap` : locale === "zn" ? `本地 ${wrappedNativeSymbol} 包装` : `Wrap ${wrappedNativeSymbol} cục bộ`}</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{formatCryptoMetric(activeRunPreview.funding.weth_from_wrapped_eth, wrappedNativeSymbol)}</p>
+                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          {activeSwapSourceUi?.isNativeMode
+                            ? locale === "en"
+                              ? `Local ${wrappedNativeSymbol} wrap`
+                              : locale === "zn"
+                                ? `本地 ${wrappedNativeSymbol} 包装`
+                                : `Wrap ${wrappedNativeSymbol} cục bộ`
+                            : locale === "en"
+                              ? `${activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol} to subwallets`
+                              : locale === "zn"
+                                ? `注入子钱包的 ${activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol}`
+                                : `${activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol} vào ví con`}
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">
+                          {activeSwapSourceUi?.isNativeMode
+                            ? formatCryptoMetric(activeRunPreview.funding.weth_from_wrapped_eth, wrappedNativeSymbol)
+                            : formatCryptoMetric(activeRunPreview.funding.source_token_sent_to_subwallets ?? "0", activeSwapSourceUi?.sourceTokenSymbol ?? wrappedNativeSymbol)}
+                        </p>
                       </div>
                       <div className="cad-panel-muted px-4 py-3">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{locale === "en" ? `${wrappedNativeSymbol} from main wallet` : locale === "zn" ? `来自主钱包的 ${wrappedNativeSymbol}` : `${wrappedNativeSymbol} từ ví chính`}</p>

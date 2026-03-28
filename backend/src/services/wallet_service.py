@@ -3053,12 +3053,13 @@ def transfer_token_from_wallet(
     )
 
 
-def swap_weth_to_token_from_wallet(
+def swap_token_to_token_from_wallet(
     web3_client: Web3,
     *,
     chain: str | None = None,
     wallet_address: str,
     private_key: str,
+    token_in: dict,
     token_out: dict,
     amount_in: Decimal,
     fee_tier: int | None,
@@ -3071,10 +3072,11 @@ def swap_weth_to_token_from_wallet(
 ) -> dict:
     runtime = get_chain_runtime_config(chain)
     owner = Web3.to_checksum_address(wallet_address)
+    token_in_checksum = Web3.to_checksum_address(token_in["address"])
     token_out_checksum = Web3.to_checksum_address(token_out["address"])
     token_contract = web3_client.eth.contract(address=token_out_checksum, abi=ERC20_ABI)
     quote = prepared_quote or quote_uniswap_swap(
-        runtime["wrapped_native_symbol"],
+        token_in["address"],
         token_out["address"],
         format_decimal(amount_in),
         fee_tier=fee_tier,
@@ -3083,7 +3085,7 @@ def swap_weth_to_token_from_wallet(
     )
     swap_runtime = get_swap_runtime_config(runtime["chain"], backend=quote.get("backend"))
     router_contract = web3_client.eth.contract(address=swap_runtime["router_address"], abi=swap_runtime["router_abi"])
-    amount_in_units = decimal_to_wei(amount_in)
+    amount_in_units = decimal_to_token_units(amount_in, int(token_in["decimals"]))
     min_amount_out_units = decimal_to_token_units(Decimal(str(quote["min_amount_out"])), int(token_out["decimals"]))
     balance_before = token_contract.functions.balanceOf(owner).call()
     swap_gas_price_wei = (
@@ -3103,6 +3105,9 @@ def swap_weth_to_token_from_wallet(
         "fee_tier": int(quote["fee_tier"]) if quote.get("fee_tier") is not None else None,
         "amount_in": format_decimal(amount_in),
         "min_amount_out": quote["min_amount_out"],
+        "token_in_symbol": token_in["symbol"],
+        "token_in_address": token_in["address"],
+        "token_in_decimals": int(token_in["decimals"]),
         "route_type": quote.get("route_type"),
         "path_symbols": quote.get("path_symbols"),
         "path_addresses": quote.get("path_addresses"),
@@ -3113,7 +3118,7 @@ def swap_weth_to_token_from_wallet(
     }
     deadline = int(datetime.utcnow().timestamp()) + 900
     if swap_runtime["protocol"] == SWAP_BACKEND_UNISWAP_V3:
-        path_addresses = quote.get("path_addresses") or [runtime["wrapped_native_address"], token_out_checksum]
+        path_addresses = quote.get("path_addresses") or [token_in_checksum, token_out_checksum]
         path_fee_tiers = quote.get("path_fee_tiers") or ([int(quote["fee_tier"])] if quote.get("fee_tier") is not None else [])
         params = (
             _encode_uniswap_v3_path(path_addresses, path_fee_tiers),
@@ -3140,7 +3145,7 @@ def swap_weth_to_token_from_wallet(
             Web3.to_checksum_address(address)
             for address in (
                 quote.get("path_addresses")
-                or [runtime["wrapped_native_address"], token_out_checksum]
+                or [token_in_checksum, token_out_checksum]
             )
         ]
         try:
@@ -3212,6 +3217,45 @@ def swap_weth_to_token_from_wallet(
         gas_price_wei=swap_gas_price_wei,
         gas_used=int(getattr(receipt, "gasUsed", 0) or 0),
         block_number=int(getattr(receipt, "blockNumber", 0) or 0),
+    )
+
+
+def swap_weth_to_token_from_wallet(
+    web3_client: Web3,
+    *,
+    chain: str | None = None,
+    wallet_address: str,
+    private_key: str,
+    token_out: dict,
+    amount_in: Decimal,
+    fee_tier: int | None,
+    slippage_percent: str | float | Decimal | None,
+    prepared_quote: dict | None = None,
+    nonce: int,
+    gas_price_wei: int | None = None,
+    wait_timeout: int | None = None,
+    gas_limit: int = UNISWAP_V3_SWAP_GAS_LIMIT,
+) -> dict:
+    runtime = get_chain_runtime_config(chain)
+    return swap_token_to_token_from_wallet(
+        web3_client,
+        chain=chain,
+        wallet_address=wallet_address,
+        private_key=private_key,
+        token_in={
+            "symbol": runtime["wrapped_native_symbol"],
+            "address": runtime["wrapped_native_address"],
+            "decimals": 18,
+        },
+        token_out=token_out,
+        amount_in=amount_in,
+        fee_tier=fee_tier,
+        slippage_percent=slippage_percent,
+        prepared_quote=prepared_quote,
+        nonce=nonce,
+        gas_price_wei=gas_price_wei,
+        wait_timeout=wait_timeout,
+        gas_limit=gas_limit,
     )
 
 def get_supported_tokens():
@@ -3912,7 +3956,14 @@ def execute_wallet_run(
     if count < 1 or count > 100:
         raise ValueError("Count must be between 1 and 100")
 
-    from src.services.template_service import build_template_stablecoin_routes, get_template, preview_template
+    from src.services.template_service import (
+        SWAP_SOURCE_MODE_STABLECOIN,
+        SWAP_SOURCE_MODE_WRAPPED_NATIVE,
+        build_template_stablecoin_routes,
+        get_template,
+        preview_template,
+        resolve_template_swap_source,
+    )
     from src.services.contract_service import build_contract_execution_snapshot
     from src.services.solidity_service import (
         get_batch_treasury_distributor_interface,
@@ -3932,6 +3983,16 @@ def execute_wallet_run(
     native_symbol = chain_config["native_symbol"]
     wrapped_native_symbol = chain_config["wrapped_native_symbol"]
     wrapped_native_address = Web3.to_checksum_address(chain_config["wrapped_native_address"])
+    swap_source = resolve_template_swap_source(template)
+    swap_source_mode = swap_source["mode"]
+    swap_source_token_symbol = swap_source.get("source_token_symbol") or wrapped_native_symbol
+    swap_source_token_address = (
+        Web3.to_checksum_address(swap_source["source_token_address"])
+        if swap_source.get("source_token_address")
+        else wrapped_native_address
+    )
+    swap_source_token_decimals = int(swap_source.get("source_token_decimals") or 18)
+    source_funding_is_erc20 = swap_source["funding_asset_kind"] == "erc20"
 
     preview = preview_template(main_id, template_id, count)
     if not preview.get("can_proceed"):
@@ -3941,6 +4002,10 @@ def execute_wallet_run(
 
     per_wallet_eth = parse_decimal_amount(preview["per_contract"]["required_eth"], "required_eth")
     per_wallet_wrap_weth = parse_decimal_amount(preview["per_contract"]["required_weth"], "required_weth")
+    per_wallet_source_token = parse_decimal_amount(
+        preview["per_contract"].get("required_source_token", "0"),
+        "required_source_token",
+    )
     main_wallet_weth_wrapped = parse_decimal_amount(
         preview["funding"].get("main_wallet_weth_wrapped", "0"),
         "main_wallet_weth_wrapped",
@@ -4006,7 +4071,10 @@ def execute_wallet_run(
     stablecoin_routes = [
         route
         for route in build_template_stablecoin_routes(template, contract_count=1)
-        if parse_decimal_amount(route.get("per_contract_weth_amount") or "0", "per_contract_weth_amount") > 0
+        if parse_decimal_amount(
+            route.get("per_contract_source_amount") or route.get("per_contract_weth_amount") or "0",
+            "per_contract_source_amount",
+        ) > 0
     ]
     recipient_address = template.get("testing_recipient_address") or template.get("recipient_address")
     has_route_distributors = bool(stablecoin_routes)
@@ -4130,7 +4198,7 @@ def execute_wallet_run(
             ).values()
         )
 
-    needs_onchain_funding = per_wallet_eth > 0
+    needs_onchain_funding = per_wallet_eth > 0 or per_wallet_source_token > 0
     run_id = run_id or f"run_{int(datetime.utcnow().timestamp())}_{uuid4().hex[:8]}"
     created_at = created_at or utcnow_iso()
     run_logs: list[dict] = []
@@ -4534,6 +4602,9 @@ def execute_wallet_run(
             "direct_contract_native_eth_per_wallet": format_decimal(direct_contract_native_eth_per_wallet),
             "per_wallet_eth": format_decimal(per_wallet_eth),
             "per_wallet_local_wrap_weth": format_decimal(per_wallet_wrap_weth),
+            "per_wallet_source_token": format_decimal(per_wallet_source_token),
+            "swap_source_mode": swap_source_mode,
+            "swap_source_token_symbol": swap_source_token_symbol,
             "main_wallet_weth_wrapped": format_decimal(main_wallet_weth_wrapped),
             "swap_budget_weth_per_wallet": format_decimal(swap_budget_per_wallet),
             "direct_contract_weth_per_wallet": format_decimal(distributor_amount),
@@ -4564,6 +4635,23 @@ def execute_wallet_run(
                 f"Not enough {native_symbol} to fund the new wallets, reserve the projected auto top-ups, "
                 f"and pay network fees. Need {format_decimal(shortfall)} more {native_symbol}."
             )
+        if source_funding_is_erc20 and swap_source_mode == SWAP_SOURCE_MODE_STABLECOIN and per_wallet_source_token > 0:
+            required_source_token_units = decimal_to_token_units(
+                per_wallet_source_token * Decimal(count),
+                swap_source_token_decimals,
+            )
+            available_source_token_units = get_token_balance_units(
+                swap_source_token_address,
+                main_wallet["address"],
+                web3_client=web3_client,
+            )
+            if available_source_token_units < required_source_token_units:
+                shortfall_units = required_source_token_units - available_source_token_units
+                shortfall_amount = token_units_to_decimal(shortfall_units, swap_source_token_decimals)
+                raise ValueError(
+                    f"Not enough {swap_source_token_symbol} to fund the new wallets. "
+                    f"Need {format_decimal(shortfall_amount)} more {swap_source_token_symbol}."
+                )
 
         record_run_log(
             stage="funding",
@@ -4577,6 +4665,9 @@ def execute_wallet_run(
             details={
                 "required_total_eth": format_decimal(total_eth_required_with_fees),
                 "initial_funding_eth": format_decimal(total_eth_deducted),
+                "source_token_per_wallet": format_decimal(per_wallet_source_token),
+                "source_token_total": format_decimal(per_wallet_source_token * Decimal(count)),
+                "source_token_symbol": swap_source_token_symbol,
                 "projected_auto_top_up_eth": format_decimal(projected_auto_top_up_eth_total),
                 "local_wrap_weth_total": format_decimal(per_wallet_wrap_weth * Decimal(count)),
                 "main_wallet_weth_wrapped": format_decimal(main_wallet_weth_wrapped),
@@ -4604,6 +4695,8 @@ def execute_wallet_run(
             "expected_funding": {
                 "eth": format_decimal(per_wallet_eth),
                 "weth": "0",
+                "source_token": format_decimal(per_wallet_source_token),
+                "source_token_symbol": swap_source_token_symbol if source_funding_is_erc20 else None,
             },
             "expected_local_wrap_weth": format_decimal(per_wallet_wrap_weth),
             "funding_transactions": {},
@@ -4725,6 +4818,12 @@ def execute_wallet_run(
         else:
             status = "submitted" if funding_submitted_transaction_count > 0 else "created"
 
+    main_wallet_wrap_purpose = (
+        f"{wrapped_native_symbol} source funding and direct distributor funding"
+        if swap_source_mode == SWAP_SOURCE_MODE_WRAPPED_NATIVE and per_wallet_source_token > 0
+        else f"direct {wrapped_native_symbol} distributor funding"
+    )
+
     if not error_message and should_execute_deployment_flow and main_wallet_weth_wrapped > 0:
         if sender is None or sender_private_key is None:
             sender = Web3.to_checksum_address(main_wallet["address"])
@@ -4756,7 +4855,7 @@ def execute_wallet_run(
                         stage="wrapping",
                         event="main_wallet_eth_wrap_started",
                         status="started",
-                        message=f"Starting main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                        message=f"Starting main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose}.",
                         details={
                             "amount": format_decimal(main_wallet_weth_wrapped),
                             "attempt": wrap_attempt,
@@ -4770,7 +4869,7 @@ def execute_wallet_run(
                         event="main_wallet_eth_wrap_retry_started",
                         status="started",
                         message=(
-                            f"Retrying main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding "
+                            f"Retrying main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose} "
                             f"(attempt {wrap_attempt}/{WETH_WRAP_MAX_ATTEMPTS})."
                         ),
                         tx_hash=last_wrap_error.tx_hash if last_wrap_error else None,
@@ -4799,7 +4898,7 @@ def execute_wallet_run(
                         stage="wrapping",
                         event="main_wallet_eth_wrap_submitted",
                         status="submitted",
-                        message=f"Submitted main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                        message=f"Submitted main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose}.",
                         tx_hash=wrap_receipt["tx_hash"],
                         movement={
                             "action": "wrap",
@@ -4818,7 +4917,7 @@ def execute_wallet_run(
                             stage="wrapping",
                             event="main_wallet_eth_wrap_submitted",
                             status="submitted",
-                            message=f"Submitted main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                            message=f"Submitted main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose}.",
                             tx_hash=exc.tx_hash,
                             movement={
                                 "action": "wrap",
@@ -4846,7 +4945,7 @@ def execute_wallet_run(
                                 event="main_wallet_eth_wrap_recovered_after_timeout",
                                 status="confirmed",
                                 message=(
-                                    f"Main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding "
+                                    f"Main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose} "
                                     "was recovered after the receipt timeout."
                                 ),
                                 tx_hash=exc.tx_hash,
@@ -4896,7 +4995,7 @@ def execute_wallet_run(
                 stage="wrapping",
                 event="main_wallet_eth_wrap_confirmed",
                 status="confirmed",
-                message=f"Confirmed main-wallet {native_symbol} wrap for direct {wrapped_native_symbol} distributor funding.",
+                message=f"Confirmed main-wallet {native_symbol} wrap for {main_wallet_wrap_purpose}.",
                 tx_hash=wrap_receipt["tx_hash"],
                 movement={
                     "action": "wrap",
@@ -4961,7 +5060,7 @@ def execute_wallet_run(
                 },
             )
 
-        planned_route_count = len(stablecoin_routes)
+        planned_route_count = sum(1 for route in stablecoin_routes if bool(route.get("requires_swap", True)))
         planned_route_deployment_stage_gas_units = build_planned_remaining_deployment_stage_gas_units(
             remaining_local_funding_target_count=planned_route_count,
         )
@@ -5001,6 +5100,134 @@ def execute_wallet_run(
                             "amount": eth_transfer.get("amount"),
                             "from_address": main_wallet["address"],
                             "to_address": item["address"],
+                        },
+                    )
+
+                if source_funding_is_erc20 and per_wallet_source_token > 0:
+                    if sender is None or sender_private_key is None:
+                        raise RuntimeError("Main wallet signer is unavailable for source-token funding")
+                    if main_wallet_nonce is None:
+                        main_wallet_nonce = web3_client.eth.get_transaction_count(sender, "pending")
+
+                    source_amount_units = decimal_to_token_units(per_wallet_source_token, swap_source_token_decimals)
+                    source_funding_receipt = None
+                    source_funding_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                        web3_client,
+                        chain=template_chain,
+                        tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET,
+                    )
+                    source_funding_gas_price_wei = int(source_funding_gas_pricing["submitted_gas_price_wei"])
+                    recipient_balance_before = get_token_balance_units(
+                        swap_source_token_address,
+                        item["address"],
+                        web3_client=web3_client,
+                    )
+                    max_source_funding_attempts = TOKEN_TRANSFER_MAX_ATTEMPTS
+                    last_source_funding_error: WalletTransactionError | None = None
+                    source_funding_attempt_used = 0
+
+                    for source_funding_attempt in range(1, max_source_funding_attempts + 1):
+                        source_funding_attempt_used = source_funding_attempt
+                        if source_funding_attempt > 1:
+                            record_run_log(
+                                stage="funding",
+                                event="source_token_transfer_retry_started",
+                                status="started",
+                                message=(
+                                    f"Retrying {swap_source_token_symbol} funding for subwallet {item['address']} "
+                                    f"(attempt {source_funding_attempt}/{max_source_funding_attempts})."
+                                ),
+                                tx_hash=last_source_funding_error.tx_hash if last_source_funding_error else None,
+                                wallet_id=item["wallet_id"],
+                                wallet_address=item["address"],
+                                details={
+                                    "source_token_symbol": swap_source_token_symbol,
+                                    "amount": format_decimal(per_wallet_source_token),
+                                    "attempt": source_funding_attempt,
+                                    "max_attempts": max_source_funding_attempts,
+                                    "previous_error": str(last_source_funding_error) if last_source_funding_error else None,
+                                    **build_legacy_gas_log_details(source_funding_gas_pricing),
+                                },
+                            )
+                        try:
+                            source_funding_receipt = transfer_token_from_wallet(
+                                web3_client,
+                                token_address=swap_source_token_address,
+                                chain=template_chain,
+                                wallet_address=main_wallet["address"],
+                                private_key=main_wallet["private_key"],
+                                recipient_address=item["address"],
+                                amount_units=source_amount_units,
+                                nonce=main_wallet_nonce,
+                                gas_price_wei=source_funding_gas_price_wei,
+                                tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET,
+                            )
+                            break
+                        except WalletTransactionError as exc:
+                            last_source_funding_error = exc
+                            if exc.retryable:
+                                source_funding_receipt = recover_token_transfer_after_timeout(
+                                    web3_client,
+                                    token_address=swap_source_token_address,
+                                    recipient_address=item["address"],
+                                    amount_units=source_amount_units,
+                                    token_decimals=swap_source_token_decimals,
+                                    recipient_balance_before=int(
+                                        exc.details.get("recipient_balance_before") or recipient_balance_before
+                                    ),
+                                    tx_hash=exc.tx_hash,
+                                    nonce=main_wallet_nonce,
+                                    gas_price_wei=exc.gas_price_wei,
+                                )
+                                if source_funding_receipt:
+                                    break
+                                if source_funding_attempt < max_source_funding_attempts:
+                                    source_funding_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                        web3_client,
+                                        chain=template_chain,
+                                        tx_stage=LEGACY_GAS_STAGE_FUND_SUBWALLET,
+                                        attempt=source_funding_attempt + 1,
+                                        previous_gas_price_wei=exc.gas_price_wei,
+                                    )
+                                    source_funding_gas_price_wei = int(source_funding_gas_pricing["submitted_gas_price_wei"])
+                                    continue
+                            raise
+
+                    if not source_funding_receipt:
+                        raise last_source_funding_error or RuntimeError(
+                            f"{swap_source_token_symbol} funding did not produce a confirmation"
+                        )
+
+                    item["funding_transactions"]["source_token"] = {
+                        "tx_hash": source_funding_receipt["tx_hash"],
+                        "status": source_funding_receipt["status"],
+                        "amount": source_funding_receipt["amount"],
+                        "symbol": swap_source_token_symbol,
+                        "address": swap_source_token_address,
+                        "attempts": source_funding_attempt_used,
+                        "confirmation_source": source_funding_receipt.get("confirmation_source"),
+                    }
+                    main_wallet_nonce += 1
+                    item["status"] = "funded"
+                    record_run_log(
+                        stage="funding",
+                        event="source_token_transfer_confirmed",
+                        status="confirmed",
+                        message=f"Confirmed {swap_source_token_symbol} funding for subwallet {item['address']}.",
+                        tx_hash=source_funding_receipt["tx_hash"],
+                        wallet_id=item["wallet_id"],
+                        wallet_address=item["address"],
+                        movement={
+                            "action": "transfer",
+                            "asset": swap_source_token_symbol,
+                            "amount": source_funding_receipt["amount"],
+                            "from_address": main_wallet["address"],
+                            "to_address": item["address"],
+                        },
+                        details={
+                            "source_token_symbol": swap_source_token_symbol,
+                            "confirmation_source": source_funding_receipt.get("confirmation_source") or "receipt",
+                            **build_legacy_gas_log_details(source_funding_gas_pricing),
                         },
                     )
 
@@ -5251,21 +5478,96 @@ def execute_wallet_run(
                 if approval_ready and not abort_wallet_execution:
                     for route_index, route in enumerate(stablecoin_routes):
                         amount_in = parse_decimal_amount(
-                            route.get("per_contract_weth_amount") or "0",
-                            "per_contract_weth_amount",
+                            route.get("per_contract_source_amount") or route.get("per_contract_weth_amount") or "0",
+                            "per_contract_source_amount",
                         )
                         if amount_in <= 0:
                             continue
 
                         token_out = resolve_token(route["token_address"], template_chain)
-                        remaining_route_count = planned_route_count - route_index
+                        remaining_route_count = sum(
+                            1
+                            for remaining_route in stablecoin_routes[route_index:]
+                            if bool(remaining_route.get("requires_swap", True))
+                            and parse_decimal_amount(
+                                remaining_route.get("per_contract_source_amount")
+                                or remaining_route.get("per_contract_weth_amount")
+                                or "0",
+                                "per_contract_source_amount",
+                            ) > 0
+                        )
+
+                        if token_out["address"].lower() == swap_source_token_address.lower():
+                            same_token_amount_units = decimal_to_token_units(amount_in, swap_source_token_decimals)
+                            synthetic_swap_receipt = build_swap_result(
+                                tx_hash=None,
+                                amount_in=format_decimal(amount_in),
+                                backend=None,
+                                fee_tier=None,
+                                min_amount_out=format_decimal(amount_in),
+                                amount_out_units=same_token_amount_units,
+                                token_decimals=swap_source_token_decimals,
+                                route_type="same_token",
+                                path_symbols=[swap_source_token_symbol],
+                                path_addresses=[swap_source_token_address],
+                                path_fee_tiers=[],
+                                source="same-token",
+                                confirmation_source="balance_check",
+                            )
+                            item["swap_transactions"].append(
+                                {
+                                    "backend": synthetic_swap_receipt.get("backend"),
+                                    "route_type": synthetic_swap_receipt.get("route_type"),
+                                    "path_symbols": synthetic_swap_receipt.get("path_symbols"),
+                                    "path_addresses": synthetic_swap_receipt.get("path_addresses"),
+                                    "path_fee_tiers": synthetic_swap_receipt.get("path_fee_tiers"),
+                                    "token_symbol": token_out["symbol"],
+                                    "token_address": token_out["address"],
+                                    "amount_in": format_decimal(amount_in),
+                                    "amount_out": synthetic_swap_receipt["amount_out"],
+                                    "min_amount_out": synthetic_swap_receipt["min_amount_out"],
+                                    "fee_tier": None,
+                                    "tx_hash": None,
+                                    "status": synthetic_swap_receipt["status"],
+                                    "source": synthetic_swap_receipt["source"],
+                                    "attempts": 0,
+                                    "confirmation_source": synthetic_swap_receipt.get("confirmation_source"),
+                                }
+                            )
+                            record_run_log(
+                                stage="swap",
+                                event="stablecoin_swap_same_token",
+                                status="confirmed",
+                                message=(
+                                    f"No swap was needed for {token_out['symbol']} on subwallet {item['address']} "
+                                    f"because the chosen source token already matches that target."
+                                ),
+                                wallet_id=item["wallet_id"],
+                                wallet_address=item["address"],
+                                details={
+                                    "token_in": swap_source_token_symbol,
+                                    "token_out": token_out["symbol"],
+                                    "amount_in_source_token": format_decimal(amount_in),
+                                },
+                            )
+                            successful_swap_outputs.append(
+                                {
+                                    "source": "same_token_source",
+                                    "source_tx_hash": item.get("funding_transactions", {}).get("source_token", {}).get("tx_hash"),
+                                    "amount_in": format_decimal(amount_in),
+                                    "token": token_out,
+                                    "amount": amount_in,
+                                    "amount_units": same_token_amount_units,
+                                }
+                            )
+                            continue
 
                         prepared_quote = None
                         quote_backend = None
                         if not abort_wallet_execution:
                             try:
                                 prepared_quote = quote_uniswap_swap(
-                                    wrapped_native_symbol,
+                                    swap_source_token_address,
                                     token_out["address"],
                                     format_decimal(amount_in),
                                     fee_tier=template.get("fee_tier"),
@@ -5302,9 +5604,9 @@ def execute_wallet_run(
                                     wallet_id=item["wallet_id"],
                                     wallet_address=item["address"],
                                     details={
-                                        "token_in": wrapped_native_symbol,
+                                        "token_in": swap_source_token_symbol,
                                         "token_out": token_out["symbol"],
-                                        "amount_in_wrapped_native": format_decimal(amount_in),
+                                        "amount_in_source_token": format_decimal(amount_in),
                                     },
                                 )
                                 continue
@@ -5365,7 +5667,7 @@ def execute_wallet_run(
                             last_approval_error: WalletTransactionError | None = None
                             max_approval_attempts = TOKEN_APPROVAL_MAX_ATTEMPTS
                             approval_attempt_used = 0
-                            approval_amount_units = decimal_to_wei(swap_budget_per_wallet)
+                            approval_amount_units = decimal_to_token_units(swap_budget_per_wallet, swap_source_token_decimals)
 
                             try:
                                 for approval_attempt in range(1, max_approval_attempts + 1):
@@ -5376,7 +5678,7 @@ def execute_wallet_run(
                                             event="weth_router_approval_retry_started",
                                             status="started",
                                             message=(
-                                                f"Retrying {wrapped_native_symbol} router approval for subwallet {item['address']} "
+                                                f"Retrying {swap_source_token_symbol} router approval for subwallet {item['address']} "
                                                 f"on {quote_backend} (attempt {approval_attempt}/{max_approval_attempts})."
                                             ),
                                             tx_hash=last_approval_error.tx_hash if last_approval_error else None,
@@ -5385,7 +5687,7 @@ def execute_wallet_run(
                                             details={
                                                 "backend": quote_backend,
                                                 "spender": spender_address,
-                                                "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                "amount_source_token": format_decimal(swap_budget_per_wallet),
                                                 "attempt": approval_attempt,
                                                 "max_attempts": max_approval_attempts,
                                                 "previous_error": str(last_approval_error) if last_approval_error else None,
@@ -5396,7 +5698,7 @@ def execute_wallet_run(
                                     try:
                                         approval_receipt = approve_token_from_wallet(
                                             web3_client,
-                                            token_address=wrapped_native_address,
+                                            token_address=swap_source_token_address,
                                             wallet_address=sub_wallet["address"],
                                             private_key=sub_wallet["private_key"],
                                             spender_address=spender_address,
@@ -5412,7 +5714,7 @@ def execute_wallet_run(
                                         if exc.retryable:
                                             approval_receipt = recover_approval_after_timeout(
                                                 web3_client,
-                                                token_address=wrapped_native_address,
+                                                token_address=swap_source_token_address,
                                                 owner_address=sub_wallet["address"],
                                                 spender_address=spender_address,
                                                 amount_units=approval_amount_units,
@@ -5426,7 +5728,7 @@ def execute_wallet_run(
                                                     event="weth_router_approval_recovered_after_timeout",
                                                     status="confirmed",
                                                     message=(
-                                                        f"{wrapped_native_symbol} router approval for subwallet {item['address']} "
+                                                        f"{swap_source_token_symbol} router approval for subwallet {item['address']} "
                                                         f"on {quote_backend} was recovered after the receipt timeout."
                                                     ),
                                                     tx_hash=exc.tx_hash,
@@ -5435,7 +5737,7 @@ def execute_wallet_run(
                                                     details={
                                                         "backend": quote_backend,
                                                         "spender": spender_address,
-                                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                        "amount_source_token": format_decimal(swap_budget_per_wallet),
                                                         "attempt": approval_attempt,
                                                         "max_attempts": max_approval_attempts,
                                                         "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
@@ -5467,7 +5769,7 @@ def execute_wallet_run(
                                                     details={
                                                         "backend": quote_backend,
                                                         "spender": spender_address,
-                                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                                        "amount_source_token": format_decimal(swap_budget_per_wallet),
                                                         "attempt": approval_attempt,
                                                         "max_attempts": max_approval_attempts,
                                                         "replacement_nonce": subwallet_nonce,
@@ -5479,14 +5781,14 @@ def execute_wallet_run(
 
                                 if not approval_receipt:
                                     raise last_approval_error or RuntimeError(
-                                        f"{wrapped_native_symbol} router approval did not produce a confirmation"
+                                        f"{swap_source_token_symbol} router approval did not produce a confirmation"
                                     )
 
                                 item["approval_transactions"].append(
                                     {
                                         "backend": quote_backend,
-                                        "token_symbol": wrapped_native_symbol,
-                                        "token_address": wrapped_native_address,
+                                        "token_symbol": swap_source_token_symbol,
+                                        "token_address": swap_source_token_address,
                                         "spender_address": spender_address,
                                         "amount": format_decimal(swap_budget_per_wallet),
                                         "attempts": approval_attempt_used,
@@ -5500,7 +5802,7 @@ def execute_wallet_run(
                                     event="weth_router_approval_confirmed",
                                     status="confirmed",
                                     message=(
-                                        f"Approved {wrapped_native_symbol} router allowance for subwallet {item['address']} "
+                                        f"Approved {swap_source_token_symbol} router allowance for subwallet {item['address']} "
                                         f"on {quote_backend}."
                                     ),
                                     tx_hash=approval_receipt["tx_hash"],
@@ -5509,7 +5811,7 @@ def execute_wallet_run(
                                     details={
                                         "backend": quote_backend,
                                         "spender": spender_address,
-                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                        "amount_source_token": format_decimal(swap_budget_per_wallet),
                                         "attempt": approval_attempt_used,
                                         "max_attempts": max_approval_attempts,
                                         "confirmation_source": approval_receipt.get("confirmation_source") or "receipt",
@@ -5525,8 +5827,8 @@ def execute_wallet_run(
                                 item["approval_transactions"].append(
                                     {
                                         "backend": quote_backend,
-                                        "token_symbol": wrapped_native_symbol,
-                                        "token_address": wrapped_native_address,
+                                        "token_symbol": swap_source_token_symbol,
+                                        "token_address": swap_source_token_address,
                                         "spender_address": spender_address,
                                         "amount": format_decimal(swap_budget_per_wallet),
                                         "tx_hash": failed_tx_hash,
@@ -5538,14 +5840,14 @@ def execute_wallet_run(
                                     stage="approval",
                                     event="weth_router_approval_failed",
                                     status="failed",
-                                    message=f"{wrapped_native_symbol} router approval failed for subwallet {item['address']}: {exc}",
+                                    message=f"{swap_source_token_symbol} router approval failed for subwallet {item['address']}: {exc}",
                                     wallet_id=item["wallet_id"],
                                     wallet_address=item["address"],
                                     tx_hash=failed_tx_hash,
                                     details={
                                         "backend": quote_backend,
                                         "spender": spender_address,
-                                        "amount_wrapped_native": format_decimal(swap_budget_per_wallet),
+                                        "amount_source_token": format_decimal(swap_budget_per_wallet),
                                         **build_legacy_gas_log_details(approval_gas_pricing),
                                     },
                                 )
@@ -5573,16 +5875,16 @@ def execute_wallet_run(
                                         event="stablecoin_swap_retry_started",
                                         status="started",
                                         message=(
-                                            f"Retrying {wrapped_native_symbol} to {token_out['symbol']} swap for subwallet {item['address']} "
+                                            f"Retrying {swap_source_token_symbol} to {token_out['symbol']} swap for subwallet {item['address']} "
                                             f"(attempt {swap_attempt}/{max_swap_attempts})."
                                         ),
                                         tx_hash=last_swap_error.tx_hash if last_swap_error else None,
                                         wallet_id=item["wallet_id"],
                                         wallet_address=item["address"],
                                         details={
-                                            "token_in": wrapped_native_symbol,
+                                            "token_in": swap_source_token_symbol,
                                             "token_out": token_out["symbol"],
-                                            "amount_in_wrapped_native": format_decimal(amount_in),
+                                            "amount_in_source_token": format_decimal(amount_in),
                                             "attempt": swap_attempt,
                                             "max_attempts": max_swap_attempts,
                                             "previous_error": str(last_swap_error) if last_swap_error else None,
@@ -5591,11 +5893,16 @@ def execute_wallet_run(
                                     )
 
                                 try:
-                                    swap_receipt = swap_weth_to_token_from_wallet(
+                                    swap_receipt = swap_token_to_token_from_wallet(
                                         web3_client,
                                         chain=template_chain,
                                         wallet_address=sub_wallet["address"],
                                         private_key=sub_wallet["private_key"],
+                                        token_in={
+                                            "symbol": swap_source_token_symbol,
+                                            "address": swap_source_token_address,
+                                            "decimals": swap_source_token_decimals,
+                                        },
                                         token_out=token_out,
                                         amount_in=amount_in,
                                         fee_tier=template.get("fee_tier"),
@@ -5624,16 +5931,16 @@ def execute_wallet_run(
                                                 event="stablecoin_swap_recovered_after_timeout",
                                                 status="confirmed",
                                                 message=(
-                                                    f"{wrapped_native_symbol} to {token_out['symbol']} swap for subwallet {item['address']} "
+                                                    f"{swap_source_token_symbol} to {token_out['symbol']} swap for subwallet {item['address']} "
                                                     f"was recovered after the receipt timeout."
                                                 ),
                                                 tx_hash=exc.tx_hash,
                                                 wallet_id=item["wallet_id"],
                                                 wallet_address=item["address"],
                                                 details={
-                                                    "token_in": wrapped_native_symbol,
+                                                    "token_in": swap_source_token_symbol,
                                                     "token_out": token_out["symbol"],
-                                                    "amount_in_wrapped_native": format_decimal(amount_in),
+                                                    "amount_in_source_token": format_decimal(amount_in),
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
                                                     "confirmation_source": swap_receipt.get("confirmation_source") or "receipt",
@@ -5663,9 +5970,9 @@ def execute_wallet_run(
                                                 wallet_id=item["wallet_id"],
                                                 wallet_address=item["address"],
                                                 details={
-                                                    "token_in": wrapped_native_symbol,
+                                                    "token_in": swap_source_token_symbol,
                                                     "token_out": token_out["symbol"],
-                                                    "amount_in_wrapped_native": format_decimal(amount_in),
+                                                    "amount_in_source_token": format_decimal(amount_in),
                                                     "attempt": swap_attempt,
                                                     "max_attempts": max_swap_attempts,
                                                     "replacement_nonce": subwallet_nonce,
@@ -5676,7 +5983,7 @@ def execute_wallet_run(
                                     raise
 
                             if not swap_receipt:
-                                raise last_swap_error or RuntimeError(f"{wrapped_native_symbol} to {token_out['symbol']} swap did not produce a confirmation")
+                                raise last_swap_error or RuntimeError(f"{swap_source_token_symbol} to {token_out['symbol']} swap did not produce a confirmation")
 
                             subwallet_nonce += 1
                             amount_out = parse_decimal_amount(swap_receipt["amount_out"] or "0", "amount_out")
@@ -5707,7 +6014,7 @@ def execute_wallet_run(
                                 stage="swap",
                                 event="stablecoin_swap_confirmed",
                                 status="confirmed",
-                                message=f"Swapped {wrapped_native_symbol} into {token_out['symbol']} for subwallet {item['address']}.",
+                                message=f"Swapped {swap_source_token_symbol} into {token_out['symbol']} for subwallet {item['address']}.",
                                 tx_hash=swap_receipt["tx_hash"],
                                 wallet_id=item["wallet_id"],
                                 wallet_address=item["address"],
@@ -5723,9 +6030,9 @@ def execute_wallet_run(
                                     "route_type": swap_receipt.get("route_type"),
                                     "path_symbols": swap_receipt.get("path_symbols"),
                                     "path_fee_tiers": swap_receipt.get("path_fee_tiers"),
-                                    "token_in": wrapped_native_symbol,
+                                    "token_in": swap_source_token_symbol,
                                     "token_out": token_out["symbol"],
-                                    "amount_in_wrapped_native": format_decimal(amount_in),
+                                    "amount_in_source_token": format_decimal(amount_in),
                                     "amount_out": swap_receipt["amount_out"],
                                     "min_amount_out": swap_receipt["min_amount_out"],
                                     "fee_tier": swap_receipt["fee_tier"],
@@ -5787,9 +6094,9 @@ def execute_wallet_run(
                                 wallet_address=item["address"],
                                 tx_hash=failed_tx_hash,
                                 details={
-                                    "token_in": wrapped_native_symbol,
+                                    "token_in": swap_source_token_symbol,
                                     "token_out": token_out["symbol"],
-                                    "amount_in_wrapped_native": format_decimal(amount_in),
+                                    "amount_in_source_token": format_decimal(amount_in),
                                 },
                             )
 

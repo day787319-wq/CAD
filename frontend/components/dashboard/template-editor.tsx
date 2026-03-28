@@ -26,6 +26,7 @@ import {
   formatSwapBackendLabel,
   formatUsd,
   getStablecoinDistributionRows,
+  getTemplateSwapSourceUi,
   shortAddress,
   templateToForm,
 } from "@/lib/template";
@@ -135,6 +136,17 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     };
   const nativeSymbol = currentOptions?.native_symbol ?? currentChain.native_symbol;
   const wrappedNativeSymbol = currentOptions?.wrapped_native_symbol ?? currentChain.wrapped_native_symbol;
+  const swapSource = getTemplateSwapSourceUi({
+    chain: form.chain,
+    swap_source_mode: form.swap_source_mode,
+    swap_source_token_symbol: form.swap_source_token_symbol,
+    swap_source_token_address: form.swap_source_token_address,
+    runtimeSwapSource: currentOptions?.swap_source ?? null,
+  });
+  const swapSourceMode = form.swap_source_mode;
+  const swapSourceTokenOptions = currentOptions?.swap_source_token_options ?? [];
+  const swapSourceRecommendation = currentOptions?.swap_source_recommendation ?? null;
+  const swapBudgetAssetSymbol = swapSource.sourceTokenSymbol ?? wrappedNativeSymbol;
   const primaryBackendLabel =
     currentOptions?.primary_swap_backend_label ??
     currentChain.primary_swap_backend_label ??
@@ -150,11 +162,6 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   );
   const hasStablecoinSwap = form.stablecoin_distribution_mode !== "none";
   const topUpEnabled = form.auto_top_up_enabled;
-  const needsWeth =
-    (form.stablecoin_distribution_mode === "manual_weth_amount"
-      ? form.stablecoin_allocations.some((allocation) => (toFiniteNumber(allocation.weth_amount_per_contract) ?? 0) > 0)
-      : Number(form.swap_budget_eth_per_contract || "0") > 0) ||
-    Number(form.direct_contract_weth_per_contract || "0") > 0;
   const topUpThresholdValue = toFiniteNumber(form.auto_top_up_threshold_eth) ?? 0;
   const topUpTargetValue = toFiniteNumber(form.auto_top_up_target_eth) ?? 0;
   const topUpHasSingleValue = topUpEnabled && topUpThresholdValue === topUpTargetValue;
@@ -167,8 +174,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const directContractNativeValue = toFiniteNumber(form.direct_contract_native_eth_per_contract) ?? 0;
   const directContractWrappedValue = toFiniteNumber(form.direct_contract_weth_per_contract) ?? 0;
 
-  const loadChainOptions = async (chain: TemplateChain) => {
-    const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?chain=${encodeURIComponent(chain)}`, {
+  const loadChainOptions = async (
+    chain: TemplateChain,
+    sourceOverrides?: {
+      swap_source_mode?: string;
+      swap_source_token_symbol?: string;
+      swap_source_token_address?: string;
+    },
+  ) => {
+    const params = new URLSearchParams({ chain });
+    if (sourceOverrides?.swap_source_mode) params.set("swap_source_mode", sourceOverrides.swap_source_mode);
+    if (sourceOverrides?.swap_source_token_symbol) params.set("swap_source_token_symbol", sourceOverrides.swap_source_token_symbol);
+    if (sourceOverrides?.swap_source_token_address) params.set("swap_source_token_address", sourceOverrides.swap_source_token_address);
+    const response = await fetch(`${TEMPLATE_API_URL}/api/templates/options?${params.toString()}`, {
       cache: "no-store",
     });
     const payload = await readApiPayload(response);
@@ -192,7 +210,11 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
     void (async () => {
       try {
-        const nextOptions = await loadChainOptions(nextForm.chain);
+        const nextOptions = await loadChainOptions(nextForm.chain, {
+          swap_source_mode: nextForm.swap_source_mode,
+          swap_source_token_symbol: nextForm.swap_source_token_symbol,
+          swap_source_token_address: nextForm.swap_source_token_address,
+        });
         if (!active) return;
         setEditorOptions(nextOptions);
       } catch (error) {
@@ -266,13 +288,36 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     () => getStablecoinDistributionRows({ ...form, swap_budget_eth_per_contract: effectiveSwapBudgetString }),
     [effectiveSwapBudgetString, form],
   );
+  const sourceTokenSpotUsd = useMemo(() => {
+    if (!marketSnapshot) return null;
+    const sourceAddress = swapSource.sourceTokenAddress?.toLowerCase();
+    if (!sourceAddress) {
+      return swapSource.mode === "native" || swapSource.mode === "wrapped_native" ? marketSnapshot.weth_usd : null;
+    }
+    if (sourceAddress === currentOptions?.swap_source?.source_token_address?.toLowerCase() && currentOptions?.swap_source?.mode !== "stablecoin") {
+      return marketSnapshot.weth_usd;
+    }
+    if (sourceAddress === form.swap_source_token_address.toLowerCase() && swapSource.mode !== "stablecoin") {
+      return marketSnapshot.weth_usd;
+    }
+    return marketSnapshot.token_prices?.[sourceAddress] ?? (
+      swapSource.mode === "native" || swapSource.mode === "wrapped_native" ? marketSnapshot.weth_usd : null
+    );
+  }, [
+    currentOptions?.swap_source?.mode,
+    currentOptions?.swap_source?.source_token_address,
+    form.swap_source_token_address,
+    marketSnapshot,
+    swapSource.mode,
+    swapSource.sourceTokenAddress,
+  ]);
   const ethUsdLabel = useMemo(
     () => getUsdValue(form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd),
     [form.gas_reserve_eth_per_contract, marketSnapshot?.eth_usd],
   );
   const swapBudgetUsdLabel = useMemo(
-    () => getUsdValue(effectiveSwapBudgetString, marketSnapshot?.weth_usd),
-    [effectiveSwapBudgetString, marketSnapshot?.weth_usd],
+    () => getUsdValue(effectiveSwapBudgetString, sourceTokenSpotUsd),
+    [effectiveSwapBudgetString, sourceTokenSpotUsd],
   );
   const swapBudgetValue = toFiniteNumber(effectiveSwapBudgetString) ?? 0;
   const fundedTreasuryEnabled =
@@ -290,8 +335,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     return 0;
   }, [form.stablecoin_allocations, form.stablecoin_distribution_mode, manualExactSwapBudgetValue, swapBudgetValue]);
   const manualDistributionAssignedUsdLabel = useMemo(
-    () => getUsdValue(manualDistributionAssignedValue, marketSnapshot?.weth_usd),
-    [manualDistributionAssignedValue, marketSnapshot?.weth_usd],
+    () => getUsdValue(manualDistributionAssignedValue, sourceTokenSpotUsd),
+    [manualDistributionAssignedValue, sourceTokenSpotUsd],
   );
   const manualDistributionDeltaValue = swapBudgetValue - manualDistributionAssignedValue;
   const manualDistributionRemainingValue = Math.max(manualDistributionDeltaValue, 0);
@@ -300,12 +345,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
   const manualDistributionOverBudget = manualDistributionOverValue > 0.0000005;
   const manualDistributionHasRemaining = !manualDistributionOverBudget && manualDistributionRemainingValue > 0.0000005;
   const manualDistributionRemainingUsdLabel = useMemo(
-    () => getUsdValue(manualDistributionRemainingValue, marketSnapshot?.weth_usd),
-    [manualDistributionRemainingValue, marketSnapshot?.weth_usd],
+    () => getUsdValue(manualDistributionRemainingValue, sourceTokenSpotUsd),
+    [manualDistributionRemainingValue, sourceTokenSpotUsd],
   );
   const manualDistributionOverUsdLabel = useMemo(
-    () => getUsdValue(manualDistributionOverValue, marketSnapshot?.weth_usd),
-    [manualDistributionOverValue, marketSnapshot?.weth_usd],
+    () => getUsdValue(manualDistributionOverValue, sourceTokenSpotUsd),
+    [manualDistributionOverValue, sourceTokenSpotUsd],
   );
   const directContractNativeEthUsdLabel = useMemo(
     () => getUsdValue(form.direct_contract_native_eth_per_contract, marketSnapshot?.eth_usd),
@@ -361,13 +406,20 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
     if (template || nextChain === form.chain) return;
 
     try {
-      const nextOptions = await loadChainOptions(nextChain);
+      const nextOptions = await loadChainOptions(nextChain, {
+        swap_source_mode: form.swap_source_mode,
+        swap_source_token_symbol: form.swap_source_token_symbol,
+        swap_source_token_address: form.swap_source_token_address,
+      });
       setSaveError(null);
       setForm((current) => ({
         ...current,
         chain: nextChain,
         fee_tier: nextOptions.defaults.fee_tier ?? null,
         auto_wrap_eth_to_weth: nextOptions.defaults.auto_wrap_eth_to_weth ?? true,
+        swap_source_mode: nextOptions.defaults.swap_source_mode ?? "native",
+        swap_source_token_symbol: nextOptions.defaults.swap_source_token_symbol ?? "",
+        swap_source_token_address: nextOptions.defaults.swap_source_token_address ?? "",
         stablecoin_distribution_mode: nextOptions.defaults.stablecoin_distribution_mode ?? "none",
         stablecoin_allocations: [],
       }));
@@ -382,6 +434,70 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
 
   const getTokenRouteMessage = (token: Pick<StablecoinOption, "route_status" | "route_error">) =>
     token.route_status ?? token.route_error ?? null;
+
+  const clearAllocationRouteMetadata = () => {
+    setTokenRouteStatusByAddress({});
+    setForm((current) => ({
+      ...current,
+      stablecoin_allocations: current.stablecoin_allocations.map((allocation) => ({
+        ...allocation,
+        route_status: null,
+        route_error: null,
+      })),
+    }));
+  };
+
+  const handleSwapSourceModeChange = async (nextMode: TemplateEditorForm["swap_source_mode"]) => {
+    const preservedSourceToken =
+      nextMode === "stablecoin"
+        ? {
+            swap_source_mode: nextMode,
+            swap_source_token_symbol: form.swap_source_token_symbol,
+            swap_source_token_address: form.swap_source_token_address,
+          }
+        : {
+            swap_source_mode: nextMode,
+            swap_source_token_symbol: "",
+            swap_source_token_address: "",
+          };
+    setForm((current) => ({
+      ...current,
+      swap_source_mode: nextMode,
+      swap_source_token_symbol: preservedSourceToken.swap_source_token_symbol,
+      swap_source_token_address: preservedSourceToken.swap_source_token_address,
+      auto_wrap_eth_to_weth: nextMode === "native",
+    }));
+    clearAllocationRouteMetadata();
+    try {
+      const nextOptions = await loadChainOptions(form.chain, preservedSourceToken);
+      setEditorOptions(nextOptions);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to load swap source options");
+    }
+  };
+
+  const handleSwapSourceTokenChange = async (tokenAddress: string) => {
+    const selectedToken =
+      swapSourceTokenOptions.find((option) => option.address.toLowerCase() === tokenAddress.toLowerCase()) ?? null;
+    setForm((current) => ({
+      ...current,
+      swap_source_mode: "stablecoin",
+      swap_source_token_symbol: selectedToken?.symbol ?? "",
+      swap_source_token_address: selectedToken?.address ?? tokenAddress,
+      auto_wrap_eth_to_weth: false,
+    }));
+    clearAllocationRouteMetadata();
+    try {
+      const nextOptions = await loadChainOptions(form.chain, {
+        swap_source_mode: "stablecoin",
+        swap_source_token_symbol: selectedToken?.symbol ?? "",
+        swap_source_token_address: selectedToken?.address ?? tokenAddress,
+      });
+      setEditorOptions(nextOptions);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to load source token options");
+    }
+  };
 
   const removeStablecoin = (tokenAddress: string) => {
     const normalized = tokenAddress.toLowerCase();
@@ -460,6 +576,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
       chain: form.chain,
       address,
     });
+    params.set("swap_source_mode", form.swap_source_mode);
+    if (form.swap_source_token_symbol) params.set("swap_source_token_symbol", form.swap_source_token_symbol);
+    if (form.swap_source_token_address) params.set("swap_source_token_address", form.swap_source_token_address);
     if (options?.persist) params.set("persist", "true");
     if (options?.custom) params.set("custom", "true");
     const response = await fetch(
@@ -660,6 +779,9 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
         slippage_percent: form.slippage_percent,
         fee_tier: form.fee_tier,
         auto_wrap_eth_to_weth: form.auto_wrap_eth_to_weth,
+        swap_source_mode: form.swap_source_mode,
+        swap_source_token_symbol: form.swap_source_token_symbol || null,
+        swap_source_token_address: form.swap_source_token_address || null,
         stablecoin_distribution_mode: form.stablecoin_distribution_mode,
         stablecoin_allocations: form.stablecoin_allocations,
         notes: form.notes,
@@ -736,14 +858,14 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Live USD labels" : locale === "zn" ? "实时 USD 标签" : "Nhãn USD trực tiếp"}</p>
             <p className="mt-1 text-xs text-muted-foreground">
               {locale === "en"
-                ? `${nativeSymbol}, ${wrappedNativeSymbol}, and selected token spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.`
+                ? `${nativeSymbol}, ${swapBudgetAssetSymbol}, and selected token spot prices refresh every 60 seconds while this editor is open. These are reference labels only and do not change execution logic.`
                 : locale === "zn"
-                  ? `当此编辑器打开时，${nativeSymbol}、${wrappedNativeSymbol} 和所选代币现货价格每 60 秒刷新一次。这些仅作参考，不会改变执行逻辑。`
-                  : `Giá spot của ${nativeSymbol}, ${wrappedNativeSymbol} và token đã chọn sẽ làm mới mỗi 60 giây khi trình chỉnh sửa đang mở. Đây chỉ là nhãn tham chiếu và không thay đổi logic thực thi.`}
+                  ? `当此编辑器打开时，${nativeSymbol}、${swapBudgetAssetSymbol} 和所选代币现货价格每 60 秒刷新一次。这些仅作参考，不会改变执行逻辑。`
+                  : `Giá spot của ${nativeSymbol}, ${swapBudgetAssetSymbol} và token đã chọn sẽ làm mới mỗi 60 giây khi trình chỉnh sửa đang mở. Đây chỉ là nhãn tham chiếu và không thay đổi logic thực thi.`}
             </p>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>{nativeSymbol} {formatUsd(marketSnapshot?.eth_usd)}</span>
-              <span>{wrappedNativeSymbol} {formatUsd(marketSnapshot?.weth_usd)}</span>
+              <span>{swapBudgetAssetSymbol} {formatUsd(sourceTokenSpotUsd)}</span>
               <span>{locale === "en" ? "Updated" : locale === "zn" ? "更新时间" : "Cập nhật"} {formatRelativeTimestamp(marketSnapshot?.fetched_at)}</span>
             </div>
             {marketError ? <p className="mt-2 text-xs text-amber-800">{locale === "en" ? "Market data warning" : locale === "zn" ? "市场数据警告" : "Cảnh báo dữ liệu thị trường"}: {marketError}</p> : null}
@@ -828,26 +950,104 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                   </p>
                   <p>
                     {locale === "en"
-                      ? `Wrapped-native token for swap budget and wrapped funding: ${wrappedNativeSymbol}`
+                      ? `Swap source for token routes: ${swapBudgetAssetSymbol}`
                       : locale === "zn"
-                        ? `用于兑换预算和包装代币注资的包装原生代币：${wrappedNativeSymbol}`
-                        : `Wrapped-native dùng cho ngân sách swap và cấp vốn wrapped: ${wrappedNativeSymbol}`}
+                        ? `用于代币路由的兑换来源资产：${swapBudgetAssetSymbol}`
+                        : `Tài sản nguồn cho các tuyến swap: ${swapBudgetAssetSymbol}`}
                   </p>
                   <p>
                     {locale === "en"
-                      ? `Sub-wallet gas stays in ${nativeSymbol}. Local wrapping only creates ${wrappedNativeSymbol} when the plan needs it.`
+                      ? swapSourceMode === "native"
+                        ? `Sub-wallet gas stays in ${nativeSymbol}. Local wrapping only creates ${wrappedNativeSymbol} when the plan needs it.`
+                        : `Sub-wallet gas still stays in ${nativeSymbol}. Swap funding is provided directly as ${swapBudgetAssetSymbol}.`
                       : locale === "zn"
-                        ? `子钱包 gas 保持为 ${nativeSymbol}。只有在流程需要时才会在本地包装成 ${wrappedNativeSymbol}。`
-                        : `Gas của ví con giữ ở dạng ${nativeSymbol}. Chỉ wrap cục bộ sang ${wrappedNativeSymbol} khi kế hoạch thực sự cần.`}
+                        ? swapSourceMode === "native"
+                          ? `子钱包 gas 保持为 ${nativeSymbol}。只有在流程需要时才会在本地包装成 ${wrappedNativeSymbol}。`
+                          : `子钱包 gas 仍保持为 ${nativeSymbol}。兑换来源资产会直接以 ${swapBudgetAssetSymbol} 注资。`
+                        : swapSourceMode === "native"
+                          ? `Gas của ví con giữ ở dạng ${nativeSymbol}. Chỉ wrap cục bộ sang ${wrappedNativeSymbol} khi kế hoạch thực sự cần.`
+                          : `Gas của ví con vẫn giữ ở dạng ${nativeSymbol}. Tài sản nguồn cho swap sẽ được cấp trực tiếp dưới dạng ${swapBudgetAssetSymbol}.`}
                   </p>
                   <p>
                     {locale === "en"
-                      ? `Primary swap backend: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Fallback order: ${fallbackBackendLabels.join(" -> ")}` : ""}. Swap budget and route protection apply to ${wrappedNativeSymbol}, not ${nativeSymbol}.`
+                      ? `Primary swap backend: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Fallback order: ${fallbackBackendLabels.join(" -> ")}` : ""}. Route checks and swap sizing apply to ${swapBudgetAssetSymbol}.`
                       : locale === "zn"
-                        ? `主兑换后端：${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · 回退顺序：${fallbackBackendLabels.join(" -> ")}` : ""}。兑换预算和路由保护针对的是 ${wrappedNativeSymbol}，而不是 ${nativeSymbol}。`
-                        : `Backend swap chính: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Thứ tự dự phòng: ${fallbackBackendLabels.join(" -> ")}` : ""}. Ngân sách swap và bảo vệ tuyến áp dụng cho ${wrappedNativeSymbol}, không phải ${nativeSymbol}.`}
+                        ? `主兑换后端：${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · 回退顺序：${fallbackBackendLabels.join(" -> ")}` : ""}。路由检查和兑换预算针对的是 ${swapBudgetAssetSymbol}。`
+                        : `Backend swap chính: ${primaryBackendLabel}${fallbackBackendLabels.length > 0 ? ` · Thứ tự dự phòng: ${fallbackBackendLabels.join(" -> ")}` : ""}. Kiểm tra tuyến và ngân sách swap áp dụng cho ${swapBudgetAssetSymbol}.`}
                   </p>
                 </div>
+              </div>
+
+              <div className="cad-panel-soft space-y-3 px-4 py-3 sm:col-span-2">
+                <p className="text-sm font-medium text-foreground">
+                  {locale === "en" ? "Swap Source" : locale === "zn" ? "兑换来源资产" : "Nguồn tài sản swap"}
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">
+                      {locale === "en" ? "Funding mode" : locale === "zn" ? "资金模式" : "Chế độ cấp vốn"}
+                    </label>
+                    <Select value={form.swap_source_mode} onValueChange={(value) => void handleSwapSourceModeChange(value as TemplateEditorForm["swap_source_mode"])}>
+                      <SelectTrigger className="w-full border-border bg-card">
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {currentOptions?.swap_source_modes.find((mode) => mode.value === form.swap_source_mode)?.label ?? form.swap_source_mode}
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {currentOptions?.swap_source_modes.map((mode) => (
+                          <SelectItem key={mode.value} value={mode.value}>
+                            <span className="flex flex-col">
+                              <span className="text-sm font-medium text-foreground">{mode.label}</span>
+                              <span className="text-xs text-muted-foreground">{mode.description}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {form.swap_source_mode === "stablecoin" ? (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">
+                        {locale === "en" ? "Stablecoin source token" : locale === "zn" ? "稳定币来源代币" : "Stablecoin nguồn"}
+                      </label>
+                      <Select value={form.swap_source_token_address} onValueChange={(value) => void handleSwapSourceTokenChange(value)}>
+                        <SelectTrigger className="w-full border-border bg-card">
+                          <span className="truncate text-sm font-medium text-foreground">
+                            {swapSourceTokenOptions.find((token) => token.address.toLowerCase() === form.swap_source_token_address.toLowerCase())?.symbol ??
+                              (locale === "en" ? "Select a stablecoin source" : locale === "zn" ? "选择稳定币来源" : "Chọn stablecoin nguồn")}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {swapSourceTokenOptions.map((token) => (
+                            <SelectItem key={token.address} value={token.address}>
+                              <span className="flex items-center justify-between gap-3">
+                                <span className="text-sm font-medium text-foreground">{token.symbol}</span>
+                                <span className="text-xs text-muted-foreground">{shortAddress(token.address)}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {currentOptions?.hints.swap_source_note ?? currentOptions?.hints.swap_budget_note}
+                </p>
+                {swapSourceRecommendation ? (
+                  <div className="rounded-2xl bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                    <p className="font-semibold">{swapSourceRecommendation.title}</p>
+                    <p className="mt-1 text-xs text-sky-900">{swapSourceRecommendation.summary}</p>
+                    {swapSourceRecommendation.details?.length ? (
+                      <div className="mt-2 space-y-1 text-xs text-sky-900">
+                        {swapSourceRecommendation.details.map((detail) => (
+                          <p key={detail}>• {detail}</p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-2 sm:col-span-2">
@@ -989,7 +1189,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             <label className="cad-panel-muted flex items-start gap-3 px-4 py-3">
               <input
                 type="checkbox"
-                checked
+                checked={swapSourceMode === "native"}
                 disabled
                 readOnly
                 className="mt-1 h-4 w-4 rounded border-border"
@@ -997,17 +1197,25 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               <span>
                 <span className="block text-sm font-medium text-foreground">
                   {locale === "en"
-                    ? `Local sub-wallet wrapping is used when swap routes need ${wrappedNativeSymbol}`
+                    ? swapSourceMode === "native"
+                      ? `Local sub-wallet wrapping is used when swap routes need ${wrappedNativeSymbol}`
+                      : swapSourceMode === "wrapped_native"
+                        ? `${wrappedNativeSymbol} is funded directly into each sub-wallet`
+                        : `${swapBudgetAssetSymbol} is funded directly into each sub-wallet`
                     : locale === "zn"
-                      ? `当兑换路由需要 ${wrappedNativeSymbol} 时，会在子钱包内本地包装`
-                      : `Wrap cục bộ trong ví con được dùng khi tuyến swap cần ${wrappedNativeSymbol}`}
+                      ? swapSourceMode === "native"
+                        ? `当兑换路由需要 ${wrappedNativeSymbol} 时，会在子钱包内本地包装`
+                        : swapSourceMode === "wrapped_native"
+                          ? `${wrappedNativeSymbol} 会直接注入每个子钱包`
+                          : `${swapBudgetAssetSymbol} 会直接注入每个子钱包`
+                      : swapSourceMode === "native"
+                        ? `Wrap cục bộ trong ví con được dùng khi tuyến swap cần ${wrappedNativeSymbol}`
+                        : swapSourceMode === "wrapped_native"
+                          ? `${wrappedNativeSymbol} được cấp trực tiếp vào từng ví con`
+                          : `${swapBudgetAssetSymbol} được cấp trực tiếp vào từng ví con`}
                 </span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  {locale === "en"
-                    ? `The current execution engine still funds ${nativeSymbol} first, keeps gas unwrapped, and wraps swap-route ${wrappedNativeSymbol} inside each sub-wallet. Direct distributor ${wrappedNativeSymbol} funding is sourced from the main wallet after deployment.`
-                    : locale === "zn"
-                      ? `当前执行引擎仍会先注入 ${nativeSymbol}、保留 gas 为未包装状态，并在每个子钱包内包装兑换路由所需的 ${wrappedNativeSymbol}。直接分发合约 ${wrappedNativeSymbol} 会在部署后由主钱包注入。`
-                      : `Luồng thực thi hiện tại vẫn cấp ${nativeSymbol} trước, giữ gas ở dạng chưa wrap và chỉ wrap ${wrappedNativeSymbol} cho tuyến swap trong từng ví con. Phần ${wrappedNativeSymbol} cấp trực tiếp cho hợp đồng phân phối sẽ được lấy từ ví chính sau khi triển khai.`}
+                  {currentOptions?.hints.swap_budget_note}
                 </span>
               </span>
             </label>
@@ -1139,7 +1347,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-end">
                       <div className="space-y-2">
                         <label htmlFor="swap-budget" className="text-sm font-medium text-foreground">
-                          {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
+                          {locale === "en" ? `Swap token budget (${swapBudgetAssetSymbol})` : locale === "zn" ? `兑换代币预算 (${swapBudgetAssetSymbol})` : `Ngân sách swap token (${swapBudgetAssetSymbol})`}
                         </label>
                         <Input
                           id="swap-budget"
@@ -1152,8 +1360,8 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
                       </div>
                       <div className="cad-panel-muted px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${wrappedNativeSymbol} spend`}</p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${swapBudgetAssetSymbol} spend`}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {swapBudgetAssetSymbol}</p>
                         <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
                       </div>
                     </div>
@@ -1163,16 +1371,16 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-end">
                       <div className="space-y-2">
                         <p className="text-sm font-medium text-foreground">
-                          {locale === "en" ? `Swap token budget (${wrappedNativeSymbol})` : locale === "zn" ? `兑换代币预算 (${wrappedNativeSymbol})` : `Ngân sách swap token (${wrappedNativeSymbol})`}
+                          {locale === "en" ? `Swap token budget (${swapBudgetAssetSymbol})` : locale === "zn" ? `兑换代币预算 (${swapBudgetAssetSymbol})` : `Ngân sách swap token (${swapBudgetAssetSymbol})`}
                         </p>
                         <div className="cad-panel-muted px-4 py-3">
-                          <p className="text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                          <p className="text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {swapBudgetAssetSymbol}</p>
                           <p className="mt-1 text-xs text-muted-foreground">{currentOptions?.hints.swap_budget_note}</p>
                         </div>
                       </div>
                       <div className="cad-panel-muted px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${wrappedNativeSymbol} spend`}</p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{`Live ${swapBudgetAssetSymbol} spend`}</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {swapBudgetAssetSymbol}</p>
                         <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
                       </div>
                     </div>
@@ -1198,10 +1406,16 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {locale === "en"
-                    ? `${wrappedNativeSymbol} is the wrapped input asset for this chain. It is used internally for swaps and is not selectable as a basket token.`
+                    ? swapSourceMode === "stablecoin"
+                      ? `${swapBudgetAssetSymbol} is the current swap source. If you also select ${swapBudgetAssetSymbol} as a basket token, that allocation can be funded directly without a swap route.`
+                      : `${wrappedNativeSymbol} is the wrapped input asset for this chain. It is used internally for swaps and is not selectable as a basket token.`
                     : locale === "zn"
-                      ? `${wrappedNativeSymbol} 是此链上的包装输入资产。它会在兑换中内部使用，不能作为篮子代币选择。`
-                      : `${wrappedNativeSymbol} là tài sản bọc dùng làm đầu vào trên chain này. Nó được dùng nội bộ cho swap và không thể chọn làm token trong rổ.`}
+                      ? swapSourceMode === "stablecoin"
+                        ? `${swapBudgetAssetSymbol} 是当前的兑换来源资产。如果你也把 ${swapBudgetAssetSymbol} 选作篮子代币，该分配可以直接注资而无需兑换路由。`
+                        : `${wrappedNativeSymbol} 是此链上的包装输入资产。它会在兑换中内部使用，不能作为篮子代币选择。`
+                      : swapSourceMode === "stablecoin"
+                        ? `${swapBudgetAssetSymbol} là tài sản nguồn hiện tại cho swap. Nếu bạn cũng chọn ${swapBudgetAssetSymbol} làm token trong rổ, phần đó có thể được cấp trực tiếp mà không cần tuyến swap.`
+                        : `${wrappedNativeSymbol} là tài sản bọc dùng làm đầu vào trên chain này. Nó được dùng nội bộ cho swap và không thể chọn làm token trong rổ.`}
                 </p>
 
                 <Collapsible open={tokenPickerOpen} onOpenChange={setTokenPickerOpen} className="space-y-3">
@@ -1343,7 +1557,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <p className="mt-1 text-xs text-muted-foreground">
                           {form.stablecoin_distribution_mode === "manual_percent"
                             ? "Percentages must total exactly 100."
-                            : `Exact ${wrappedNativeSymbol} amounts define the per-contract swap total automatically.`}
+                            : `Exact ${swapBudgetAssetSymbol} amounts define the per-contract swap total automatically.`}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1359,12 +1573,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         <div className="mb-4 grid gap-2 sm:grid-cols-3">
                           <div className="cad-panel-muted px-4 py-3">
                             <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap budget</p>
-                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {swapBudgetAssetSymbol}</p>
                             <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
                           </div>
                           <div className="cad-panel-muted px-4 py-3">
                             <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Assigned</p>
-                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(manualDistributionAssignedValue)} {wrappedNativeSymbol}</p>
+                            <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(manualDistributionAssignedValue)} {swapBudgetAssetSymbol}</p>
                             <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(manualDistributionAssignedUsdLabel)}</p>
                           </div>
                           <div className="cad-panel-muted px-4 py-3">
@@ -1372,7 +1586,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                               {manualDistributionOverValue > 0 ? "Over budget" : "Remaining"}
                             </p>
                             <p className="mt-1 text-sm font-semibold text-foreground">
-                              {formatAmount(manualDistributionOverValue > 0 ? manualDistributionOverValue : manualDistributionRemainingValue)} {wrappedNativeSymbol}
+                              {formatAmount(manualDistributionOverValue > 0 ? manualDistributionOverValue : manualDistributionRemainingValue)} {swapBudgetAssetSymbol}
                             </p>
                             <p className="mt-1 text-[11px] font-medium text-sky-700">
                               {formatUsd(manualDistributionOverValue > 0 ? manualDistributionOverUsdLabel : manualDistributionRemainingUsdLabel)}
@@ -1393,16 +1607,16 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                         >
                           <p className="font-semibold">
                             {!manualDistributionHasBudget
-                              ? `Swap budget is 0 ${wrappedNativeSymbol}.`
+                              ? `Swap budget is 0 ${swapBudgetAssetSymbol}.`
                               : manualDistributionOverBudget
-                              ? `Over budget by ${formatAmount(manualDistributionOverValue)} ${wrappedNativeSymbol}.`
+                              ? `Over budget by ${formatAmount(manualDistributionOverValue)} ${swapBudgetAssetSymbol}.`
                               : manualDistributionHasRemaining
-                                ? `${formatAmount(manualDistributionRemainingValue)} ${wrappedNativeSymbol} is still unassigned.`
-                                : `Swap budget matched. ${wrappedNativeSymbol} allocation is ready.`}
+                                ? `${formatAmount(manualDistributionRemainingValue)} ${swapBudgetAssetSymbol} is still unassigned.`
+                                : `Swap budget matched. ${swapBudgetAssetSymbol} allocation is ready.`}
                           </p>
                           <p className="mt-1 text-xs">
                             {!manualDistributionHasBudget
-                              ? `Set the swap budget above 0 ${wrappedNativeSymbol} before the token allocation can be ready.`
+                              ? `Set the swap budget above 0 ${swapBudgetAssetSymbol} before the token allocation can be ready.`
                               : manualDistributionOverBudget
                               ? "Lower one or more token amounts before saving."
                               : manualDistributionHasRemaining
@@ -1444,7 +1658,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                 placeholder={
                                   form.stablecoin_distribution_mode === "manual_percent"
                                     ? "Percent share"
-                                    : `${wrappedNativeSymbol} per contract`
+                                    : `${swapBudgetAssetSymbol} per contract`
                                 }
                                 value={
                                   form.stablecoin_distribution_mode === "manual_percent"
@@ -1468,19 +1682,19 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                                     label="Live budget slice"
                                     value={getUsdValue(
                                       ((toFiniteNumber(form.swap_budget_eth_per_contract) ?? 0) * (toFiniteNumber(allocation.percent) ?? 0)) / 100,
-                                      marketSnapshot?.weth_usd,
+                                      sourceTokenSpotUsd,
                                     )}
                                   />
                                   {!manualDistributionHasBudget && (toFiniteNumber(allocation.percent) ?? 0) > 0 ? (
                                     <p className="text-[11px] text-amber-700">
-                                      {`Budget is 0. Set swap budget > 0 ${wrappedNativeSymbol}.`}
+                                      {`Budget is 0. Set swap budget > 0 ${swapBudgetAssetSymbol}.`}
                                     </p>
                                   ) : null}
                                 </>
                               ) : (
                                 <LiveValueHint
                                   label="Live budget slice"
-                                  value={getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd)}
+                                  value={getUsdValue(allocation.weth_amount_per_contract, sourceTokenSpotUsd)}
                                 />
                               )}
                             </div>
@@ -1522,12 +1736,12 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                             ) : null}
                           </div>
                           <div>
-                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{wrappedNativeSymbol} per contract</p>
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{swapBudgetAssetSymbol} per contract</p>
                             <p className="mt-1 text-sm font-semibold text-foreground">
-                              {formatAmount(allocation.weth_amount_per_contract)} {wrappedNativeSymbol}
+                              {formatAmount(allocation.weth_amount_per_contract)} {swapBudgetAssetSymbol}
                             </p>
                             <p className="mt-1 text-[11px] font-medium text-sky-700">
-                              {formatUsd(getUsdValue(allocation.weth_amount_per_contract, marketSnapshot?.weth_usd))}
+                              {formatUsd(getUsdValue(allocation.weth_amount_per_contract, sourceTokenSpotUsd))}
                             </p>
                           </div>
                           <div>
@@ -1659,7 +1873,7 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
               </div>
               <div className="cad-panel-muted px-4 py-3">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Swap</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {wrappedNativeSymbol}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatAmount(swapBudgetValue)} {swapBudgetAssetSymbol}</p>
                 <p className="mt-1 text-[11px] font-medium text-sky-700">{formatUsd(swapBudgetUsdLabel)}</p>
               </div>
               <div className="cad-panel-muted px-4 py-3">
@@ -1696,9 +1910,15 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">
-              {needsWeth
-                ? `${wrappedNativeSymbol} will be wrapped inside each sub-wallet.`
-                : `No ${wrappedNativeSymbol} is required.`}
+              {swapBudgetValue > 0
+                ? swapSourceMode === "native"
+                  ? `${wrappedNativeSymbol} will be wrapped inside each sub-wallet as needed for token swaps.`
+                  : swapSourceMode === "wrapped_native"
+                    ? `${wrappedNativeSymbol} must be funded directly into each sub-wallet for token swaps.`
+                    : `${swapBudgetAssetSymbol} must already be on the main wallet and will be funded directly into each sub-wallet for token swaps.`
+                : directContractWrappedValue > 0
+                  ? `${wrappedNativeSymbol} is only required for direct contract funding in this template.`
+                  : `No swap-source funding is required.`}
             </div>
 
             <div className="cad-panel-soft px-4 py-3 text-sm text-muted-foreground">

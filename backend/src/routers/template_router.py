@@ -51,6 +51,9 @@ class TemplateUpsertRequest(BaseModel):
     slippage_percent: str = "0.5"
     fee_tier: int | None = None
     auto_wrap_eth_to_weth: bool = True
+    swap_source_mode: str = "native"
+    swap_source_token_symbol: str | None = None
+    swap_source_token_address: str | None = None
     stablecoin_distribution_mode: str = "none"
     stablecoin_allocations: list[StablecoinAllocationRequest] = []
     notes: str | None = None
@@ -63,9 +66,19 @@ class TemplatePreviewRequest(BaseModel):
 
 
 @router.get("/options")
-def get_template_options_endpoint(chain: str | None = None):
+def get_template_options_endpoint(
+    chain: str | None = None,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     try:
-        return get_template_options_service(chain)
+        return get_template_options_service(
+            chain,
+            swap_source_mode=swap_source_mode,
+            swap_source_token_symbol=swap_source_token_symbol,
+            swap_source_token_address=swap_source_token_address,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -82,11 +95,22 @@ def get_template_editor_market_snapshot_endpoint(chain: str | None = None):
 def resolve_template_token_endpoint(
     address: str,
     chain: str | None = None,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
     persist: bool = False,
     custom: bool = False,
 ):
     try:
-        return recheck_template_token_service(address, chain, persist=persist, is_custom=custom)
+        return recheck_template_token_service(
+            address,
+            chain,
+            swap_source_mode=swap_source_mode,
+            swap_source_token_symbol=swap_source_token_symbol,
+            swap_source_token_address=swap_source_token_address,
+            persist=persist,
+            is_custom=custom,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -104,9 +128,19 @@ def delete_template_token_endpoint(address: str, chain: str | None = None):
 
 
 @router.get("/token/routes")
-def get_template_token_route_statuses_endpoint(chain: str | None = None):
+def get_template_token_route_statuses_endpoint(
+    chain: str | None = None,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     try:
-        return get_template_chain_token_route_statuses_service(chain)
+        return get_template_chain_token_route_statuses_service(
+            chain,
+            swap_source_mode=swap_source_mode,
+            swap_source_token_symbol=swap_source_token_symbol,
+            swap_source_token_address=swap_source_token_address,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

@@ -56,9 +56,11 @@ from src.services.wallet_service import (
     estimate_legacy_aggressive_stage_fee_eth,
     resolve_legacy_aggressive_gas_pricing,
     format_decimal as format_wallet_decimal,
+    get_token_balance_units,
     get_web3,
     quote_uniswap_swap,
     resolve_token,
+    token_units_to_decimal,
     wei_to_decimal,
 )
 
@@ -74,6 +76,207 @@ CURATED_USD_STABLECOIN_BY_SYMBOL = TEMPLATE_CHAIN_TOKEN_BY_SYMBOL[TEMPLATE_CHAIN
 DISTRIBUTION_MODE_VALUES = {"none", "equal", "manual_percent", "manual_weth_amount"}
 ROUTE_STATUS_NO_ROUTE_FOUND = "No route found"
 ROUTE_CHECK_PROBE_WETH_AMOUNT = Decimal("0.001")
+SWAP_SOURCE_MODE_NATIVE = "native"
+SWAP_SOURCE_MODE_WRAPPED_NATIVE = "wrapped_native"
+SWAP_SOURCE_MODE_STABLECOIN = "stablecoin"
+SWAP_SOURCE_MODE_VALUES = {
+    SWAP_SOURCE_MODE_NATIVE,
+    SWAP_SOURCE_MODE_WRAPPED_NATIVE,
+    SWAP_SOURCE_MODE_STABLECOIN,
+}
+STABLECOIN_SOURCE_SYMBOLS = {
+    "USDC",
+    "USDC.E",
+    "USDT",
+    "USDT0",
+    "USDG",
+    "DAI",
+    "USDE",
+    "PYUSD",
+    "BSC-USD",
+}
+
+
+def _normalize_swap_source_mode(value, *, default: str = SWAP_SOURCE_MODE_NATIVE) -> str:
+    normalized = str(value or default).strip().lower().replace("-", "_")
+    if normalized in SWAP_SOURCE_MODE_VALUES:
+        return normalized
+    raise ValueError("Unsupported swap_source_mode")
+
+
+def _get_chain_swap_source_token_options(chain: str | None = None) -> list[dict]:
+    normalized_chain = normalize_template_chain(chain)
+    return [
+        token
+        for token in get_template_chain_tokens(normalized_chain)
+        if str(token.get("symbol") or "").strip().upper() in STABLECOIN_SOURCE_SYMBOLS
+    ]
+
+
+def _get_chain_swap_source_recommendation(chain: str | None = None) -> dict | None:
+    normalized_chain = normalize_template_chain(chain)
+    source_token_options = _get_chain_swap_source_token_options(normalized_chain)
+    default_token = source_token_options[0] if source_token_options else None
+    if normalized_chain == TEMPLATE_CHAIN_XLAYER:
+        return {
+            "recommended_mode": SWAP_SOURCE_MODE_STABLECOIN,
+            "recommended_token_symbol": default_token.get("symbol") if default_token else None,
+            "recommended_token_address": default_token.get("address") if default_token else None,
+            "title": "Prefer a stablecoin source on X Layer",
+            "summary": (
+                "The configured X Layer backend is not reliably quoting WOKB entry routes right now. "
+                "Using a stablecoin source is safer there."
+            ),
+            "details": [
+                "WOKB -> token routes are not consistently available on the configured backend.",
+                "A stablecoin source avoids depending on a WOKB entry pool.",
+                "If the chosen source stablecoin is also one of the selected output tokens, that leg can complete without an on-chain swap.",
+            ],
+        }
+    return {
+        "recommended_mode": SWAP_SOURCE_MODE_NATIVE,
+        "recommended_token_symbol": None,
+        "recommended_token_address": None,
+        "title": f"Default to {get_template_chain_config(normalized_chain)['native_symbol']} funding",
+        "summary": (
+            f"Most {get_template_chain_config(normalized_chain)['label']} templates work best by funding "
+            f"{get_template_chain_config(normalized_chain)['native_symbol']} and wrapping only what the swaps need inside each subwallet."
+        ),
+        "details": [
+            "This keeps gas reserve and swap funding in one asset on the main wallet.",
+            "Wrapped-native and stablecoin source modes are better when you already hold those assets and want to avoid local wrapping.",
+        ],
+    }
+
+
+def resolve_template_swap_source(
+    template: dict | None = None,
+    *,
+    chain: str | None = None,
+    swap_source_mode: str | None = None,
+    swap_source_token_address: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    require_source_token: bool = False,
+    allow_recommended_fallback: bool = False,
+) -> dict:
+    normalized_chain = normalize_template_chain(chain or (template or {}).get("chain"))
+    chain_config = get_template_chain_config(normalized_chain)
+    mode = _normalize_swap_source_mode(
+        swap_source_mode if swap_source_mode is not None else (template or {}).get("swap_source_mode"),
+        default=SWAP_SOURCE_MODE_NATIVE,
+    )
+
+    if mode == SWAP_SOURCE_MODE_NATIVE:
+        source_token = get_template_chain_token(
+            normalized_chain,
+            symbol=chain_config["wrapped_native_symbol"],
+            include_wrapped_native=True,
+        )
+        return {
+            "mode": mode,
+            "funding_asset_kind": "native",
+            "funding_asset_symbol": chain_config["native_symbol"],
+            "funding_asset_address": None,
+            "funding_asset_decimals": 18,
+            "source_token_symbol": source_token["symbol"],
+            "source_token_name": source_token["name"],
+            "source_token_address": source_token["address"],
+            "source_token_decimals": int(source_token["decimals"]),
+            "uses_local_wrap": True,
+            "selection_required": False,
+            "cache_key": SWAP_SOURCE_MODE_NATIVE,
+        }
+
+    if mode == SWAP_SOURCE_MODE_WRAPPED_NATIVE:
+        source_token = get_template_chain_token(
+            normalized_chain,
+            symbol=chain_config["wrapped_native_symbol"],
+            include_wrapped_native=True,
+        )
+        return {
+            "mode": mode,
+            "funding_asset_kind": "erc20",
+            "funding_asset_symbol": source_token["symbol"],
+            "funding_asset_address": source_token["address"],
+            "funding_asset_decimals": int(source_token["decimals"]),
+            "source_token_symbol": source_token["symbol"],
+            "source_token_name": source_token["name"],
+            "source_token_address": source_token["address"],
+            "source_token_decimals": int(source_token["decimals"]),
+            "uses_local_wrap": False,
+            "selection_required": False,
+            "cache_key": SWAP_SOURCE_MODE_WRAPPED_NATIVE,
+        }
+
+    source_token_options = _get_chain_swap_source_token_options(normalized_chain)
+    source_token = None
+    if swap_source_token_address or swap_source_token_symbol or template:
+        try:
+            source_token = get_template_chain_token(
+                normalized_chain,
+                address=swap_source_token_address or (template or {}).get("swap_source_token_address"),
+                symbol=swap_source_token_symbol or (template or {}).get("swap_source_token_symbol"),
+            )
+        except ValueError:
+            source_token = None
+    if source_token is None and allow_recommended_fallback and source_token_options:
+        recommendation = _get_chain_swap_source_recommendation(normalized_chain) or {}
+        recommended_symbol = recommendation.get("recommended_token_symbol")
+        if recommended_symbol:
+            try:
+                source_token = get_template_chain_token(normalized_chain, symbol=recommended_symbol)
+            except ValueError:
+                source_token = source_token_options[0]
+        else:
+            source_token = source_token_options[0]
+    if source_token is None and require_source_token:
+        raise ValueError("Select a stablecoin source token for this template")
+    if source_token is not None and str(source_token.get("symbol") or "").strip().upper() not in STABLECOIN_SOURCE_SYMBOLS:
+        raise ValueError("Select a supported stablecoin source token")
+
+    return {
+        "mode": mode,
+        "funding_asset_kind": "erc20",
+        "funding_asset_symbol": source_token.get("symbol") if source_token else None,
+        "funding_asset_address": source_token.get("address") if source_token else None,
+        "funding_asset_decimals": int(source_token["decimals"]) if source_token else None,
+        "source_token_symbol": source_token.get("symbol") if source_token else None,
+        "source_token_name": source_token.get("name") if source_token else None,
+        "source_token_address": source_token.get("address") if source_token else None,
+        "source_token_decimals": int(source_token["decimals"]) if source_token else None,
+        "uses_local_wrap": False,
+        "selection_required": source_token is None,
+        "cache_key": (
+            f"{SWAP_SOURCE_MODE_STABLECOIN}:{str(source_token.get('address') or '').lower()}"
+            if source_token
+            else SWAP_SOURCE_MODE_STABLECOIN
+        ),
+    }
+
+
+def _get_saved_template_token_route_metadata(saved_token: dict | None, swap_source: dict) -> dict:
+    if not saved_token:
+        return {
+            "tested": None,
+            "route_status": None,
+            "route_error": None,
+        }
+
+    route_checks = saved_token.get("route_checks")
+    if isinstance(route_checks, dict):
+        route_check = route_checks.get(swap_source["cache_key"])
+        if isinstance(route_check, dict):
+            return {
+                "tested": route_check.get("tested"),
+                "route_status": route_check.get("route_status"),
+                "route_error": route_check.get("route_error"),
+            }
+
+    return {
+        "tested": saved_token.get("tested"),
+        "route_status": saved_token.get("route_status"),
+        "route_error": saved_token.get("route_error"),
+    }
 
 
 def _format_decimal(value: Decimal | None):
@@ -453,7 +656,14 @@ def _normalize_stablecoin(
         raise
 
 
-def resolve_template_token(address: str, chain: str | None = None):
+def resolve_template_token(
+    address: str,
+    chain: str | None = None,
+    *,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     normalized_chain = normalize_template_chain(chain)
     normalized_address = (address or "").strip()
     if not Web3.is_address(normalized_address):
@@ -467,12 +677,20 @@ def resolve_template_token(address: str, chain: str | None = None):
         )
 
     token = resolve_token(normalized_address, normalized_chain)
+    swap_source = resolve_template_swap_source(
+        chain=normalized_chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+        allow_recommended_fallback=True,
+    )
     if is_wrapped_native_template_token(normalized_chain, address=token["address"], symbol=token["symbol"]):
         raise ValueError(
             f"{chain_config['wrapped_native_symbol']} is reserved for wrapping on {chain_config['label']}. "
             "It cannot be added as a swap target."
         )
     saved_token = db.get_template_token(normalized_chain, token["address"])
+    saved_route_metadata = _get_saved_template_token_route_metadata(saved_token, swap_source)
     return {
         "symbol": token["symbol"],
         "name": token["name"],
@@ -483,13 +701,17 @@ def resolve_template_token(address: str, chain: str | None = None):
         **_probe_template_token_route(
             normalized_chain,
             token["address"],
+            swap_source=swap_source,
             token_symbol=token["symbol"],
             slippage_percent="0.5",
         ),
+        "saved_tested": saved_route_metadata["tested"],
+        "saved_route_status": saved_route_metadata["route_status"],
+        "saved_route_error": saved_route_metadata["route_error"],
     }
 
 
-def _merge_template_token_option(token: dict, saved_token: dict | None = None):
+def _merge_template_token_option(token: dict, saved_token: dict | None = None, *, swap_source: dict | None = None):
     merged = {
         "symbol": token["symbol"],
         "name": token["name"],
@@ -502,6 +724,10 @@ def _merge_template_token_option(token: dict, saved_token: dict | None = None):
         "is_custom": False,
     }
     if saved_token:
+        saved_route_metadata = _get_saved_template_token_route_metadata(
+            saved_token,
+            swap_source or {"cache_key": SWAP_SOURCE_MODE_NATIVE},
+        )
         merged.update(
             {
                 "symbol": saved_token.get("symbol") or merged["symbol"],
@@ -511,17 +737,30 @@ def _merge_template_token_option(token: dict, saved_token: dict | None = None):
                 if saved_token.get("decimals") is not None
                 else merged["decimals"],
                 "official_source": saved_token.get("official_source"),
-                "tested": saved_token.get("tested"),
-                "route_status": saved_token.get("route_status"),
-                "route_error": saved_token.get("route_error"),
+                "tested": saved_route_metadata["tested"],
+                "route_status": saved_route_metadata["route_status"],
+                "route_error": saved_route_metadata["route_error"],
                 "is_custom": bool(saved_token.get("is_custom", False)),
             }
         )
     return merged
 
 
-def get_template_chain_token_options(chain: str | None = None):
+def get_template_chain_token_options(
+    chain: str | None = None,
+    *,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     normalized_chain = normalize_template_chain(chain)
+    swap_source = resolve_template_swap_source(
+        chain=normalized_chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+        allow_recommended_fallback=True,
+    )
     saved_tokens = {
         (record.get("address") or "").lower(): record
         for record in db.list_template_tokens(normalized_chain)
@@ -533,11 +772,18 @@ def get_template_chain_token_options(chain: str | None = None):
     for token in get_template_chain_tokens(normalized_chain):
         normalized_address = token["address"].lower()
         seen_addresses.add(normalized_address)
-        merged_tokens.append(_merge_template_token_option(token, saved_tokens.get(normalized_address)))
+        merged_tokens.append(
+            _merge_template_token_option(
+                token,
+                saved_tokens.get(normalized_address),
+                swap_source=swap_source,
+            )
+        )
 
     for normalized_address, saved_token in saved_tokens.items():
         if normalized_address in seen_addresses or not saved_token.get("is_custom"):
             continue
+        saved_route_metadata = _get_saved_template_token_route_metadata(saved_token, swap_source)
         merged_tokens.append(
             {
                 "symbol": saved_token.get("symbol"),
@@ -545,9 +791,9 @@ def get_template_chain_token_options(chain: str | None = None):
                 "address": saved_token.get("address"),
                 "decimals": saved_token.get("decimals"),
                 "official_source": saved_token.get("official_source"),
-                "tested": saved_token.get("tested"),
-                "route_status": saved_token.get("route_status"),
-                "route_error": saved_token.get("route_error"),
+                "tested": saved_route_metadata.get("tested"),
+                "route_status": saved_route_metadata.get("route_status"),
+                "route_error": saved_route_metadata.get("route_error"),
                 "is_custom": True,
             }
         )
@@ -559,13 +805,35 @@ def recheck_template_token(
     address: str,
     chain: str | None = None,
     *,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
     persist: bool = False,
     is_custom: bool = False,
 ):
-    checked_token = resolve_template_token(address, chain)
+    checked_token = resolve_template_token(
+        address,
+        chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+    )
     normalized_chain = normalize_template_chain(chain)
+    swap_source = resolve_template_swap_source(
+        chain=normalized_chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+        allow_recommended_fallback=True,
+    )
     if persist:
         existing = db.get_template_token(normalized_chain, checked_token["address"]) or {}
+        route_checks = existing.get("route_checks") if isinstance(existing.get("route_checks"), dict) else {}
+        route_checks[swap_source["cache_key"]] = {
+            "tested": checked_token.get("tested"),
+            "route_status": checked_token.get("route_status"),
+            "route_error": checked_token.get("route_error"),
+        }
         db.upsert_template_token(
             {
                 "chain": normalized_chain,
@@ -577,6 +845,7 @@ def recheck_template_token(
                 "tested": checked_token.get("tested"),
                 "route_status": checked_token.get("route_status"),
                 "route_error": checked_token.get("route_error"),
+                "route_checks": route_checks,
                 "is_custom": bool(is_custom or existing.get("is_custom", False)),
             }
         )
@@ -596,10 +865,23 @@ def delete_template_token(address: str, chain: str | None = None):
     return {"deleted": True, "token": deleted}
 
 
-def get_template_chain_token_route_statuses(chain: str | None = None):
+def get_template_chain_token_route_statuses(
+    chain: str | None = None,
+    *,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     normalized_chain = normalize_template_chain(chain)
     tokens = get_template_chain_tokens(normalized_chain)
     chain_config = get_template_chain_config(normalized_chain)
+    swap_source = resolve_template_swap_source(
+        chain=normalized_chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+        allow_recommended_fallback=True,
+    )
 
     if not chain_config["quote_supported"]:
         return {
@@ -629,6 +911,7 @@ def get_template_chain_token_route_statuses(chain: str | None = None):
             **_probe_template_token_route(
                 normalized_chain,
                 token["address"],
+                swap_source=swap_source,
                 token_symbol=token["symbol"],
                 slippage_percent="0.5",
             ),
@@ -760,6 +1043,14 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
     )
     if swap_budget > 0 and not get_template_chain_swap_backends(chain):
         raise ValueError(f"Token swap execution is not configured for {chain_config['label']} yet")
+    swap_source = resolve_template_swap_source(
+        chain=chain,
+        swap_source_mode=payload.get("swap_source_mode"),
+        swap_source_token_symbol=payload.get("swap_source_token_symbol"),
+        swap_source_token_address=payload.get("swap_source_token_address"),
+        require_source_token=swap_budget > 0 and distribution_mode != "none",
+        allow_recommended_fallback=False,
+    )
     testing_recipient_address = _parse_optional_address(
         payload.get("testing_recipient_address") or payload.get("recipient_address"),
         "testing_recipient_address",
@@ -820,8 +1111,10 @@ def _build_template_payload(template_id: str, payload: dict, created_at: str | N
         "auto_top_up_enabled": auto_top_up["enabled"],
         "auto_top_up_threshold_eth": _format_decimal(auto_top_up["threshold"]),
         "auto_top_up_target_eth": _format_decimal(auto_top_up["target"]),
-        # Swap routes still wrap inside the sub-wallet. Direct distributor WETH can be sourced from the main wallet.
-        "auto_wrap_eth_to_weth": True,
+        "auto_wrap_eth_to_weth": swap_source["uses_local_wrap"],
+        "swap_source_mode": swap_source["mode"],
+        "swap_source_token_symbol": swap_source.get("source_token_symbol"),
+        "swap_source_token_address": swap_source.get("source_token_address"),
         "stablecoin_distribution_mode": distribution_mode,
         "stablecoin_allocations": allocations,
         "notes": (payload.get("notes") or "").strip() or None,
@@ -867,6 +1160,9 @@ def _serialize_template_for_storage(template: dict):
         "auto_top_up_threshold_eth": template["auto_top_up_threshold_eth"],
         "auto_top_up_target_eth": template["auto_top_up_target_eth"],
         "auto_wrap_eth_to_weth": template["auto_wrap_eth_to_weth"],
+        "swap_source_mode": template.get("swap_source_mode") or SWAP_SOURCE_MODE_NATIVE,
+        "swap_source_token_symbol": template.get("swap_source_token_symbol"),
+        "swap_source_token_address": template.get("swap_source_token_address"),
         "stablecoin_distribution_mode": template["stablecoin_distribution_mode"],
         "stablecoin_allocations": stablecoin_allocations_json,
     }
@@ -911,7 +1207,10 @@ def _deserialize_template_record(record: dict | None):
         ),
         "slippage_percent": record.get("slippage_percent") or "0.5",
         "fee_tier": record.get("fee_tier"),
-        "auto_wrap_eth_to_weth": True,
+        "auto_wrap_eth_to_weth": bool(record.get("auto_wrap_eth_to_weth", True)),
+        "swap_source_mode": record.get("swap_source_mode") or SWAP_SOURCE_MODE_NATIVE,
+        "swap_source_token_symbol": record.get("swap_source_token_symbol"),
+        "swap_source_token_address": record.get("swap_source_token_address"),
         "stablecoin_distribution_mode": record.get("stablecoin_distribution_mode") or "none",
         "stablecoin_allocations": allocations,
         "notes": record.get("notes"),
@@ -969,6 +1268,7 @@ def _probe_template_allocation_route(template: dict, allocation: dict) -> dict:
     return _probe_template_token_route(
         chain,
         allocation.get("token_address"),
+        swap_source=resolve_template_swap_source(template),
         token_symbol=allocation.get("token_symbol"),
         fee_tier=template.get("fee_tier"),
         slippage_percent=template.get("slippage_percent"),
@@ -992,6 +1292,7 @@ def _probe_template_token_route(
     chain: str,
     token_address: str | None,
     *,
+    swap_source: dict | None = None,
     token_symbol: str | None = None,
     fee_tier: int | None = None,
     slippage_percent: str | float | Decimal | None = None,
@@ -1010,11 +1311,12 @@ def _probe_template_token_route(
         token_address,
         token_symbol,
     )
+    resolved_swap_source = swap_source or resolve_template_swap_source(chain=chain)
     probe_amount = max(minimum_amount or Decimal("0"), ROUTE_CHECK_PROBE_WETH_AMOUNT)
 
     try:
         quote_uniswap_swap(
-            chain_config["wrapped_native_symbol"],
+            resolved_swap_source["source_token_address"] or resolved_swap_source["source_token_symbol"],
             token["address"],
             _format_decimal(probe_amount),
             fee_tier=fee_tier,
@@ -1047,6 +1349,7 @@ def _build_allocation_preview(
     include_live_market: bool = False,
 ):
     chain_config = get_template_chain_config(template.get("chain"))
+    swap_source = resolve_template_swap_source(template)
     token = _normalize_stablecoin(
         template.get("chain") or DEFAULT_TEMPLATE_CHAIN,
         allocation.get("token_address"),
@@ -1067,10 +1370,18 @@ def _build_allocation_preview(
     )
     route_status = route_metadata["route_status"]
     route_error = route_metadata["route_error"]
+    source_token_symbol = swap_source["source_token_symbol"] or chain_config["wrapped_native_symbol"]
+    source_token_address = swap_source.get("source_token_address") or chain_config["wrapped_native_address"]
+    source_token_price_usd = (
+        market_snapshot.get("weth_usd")
+        if source_token_address and source_token_address.lower() == chain_config["wrapped_native_address"].lower()
+        else (market_snapshot.get("token_prices", {}).get(source_token_address.lower()) if include_live_market and source_token_address else None)
+    )
+    requires_swap = str(source_token_address or "").lower() != str(token["address"]).lower()
 
     quote = {
         "available": False,
-        "token_in": chain_config["wrapped_native_symbol"],
+        "token_in": source_token_symbol,
         "token_out": token["symbol"],
         "error": None,
         "source": "template-allocation",
@@ -1084,7 +1395,7 @@ def _build_allocation_preview(
     if include_live_market and per_contract_weth > 0 and chain_config["quote_supported"]:
         try:
             raw_quote = quote_uniswap_swap(
-                chain_config["wrapped_native_symbol"],
+                source_token_address or source_token_symbol,
                 token["address"],
                 _format_decimal(per_contract_weth),
                 fee_tier=template.get("fee_tier"),
@@ -1105,7 +1416,7 @@ def _build_allocation_preview(
             normalized_error = _normalize_route_error_message(str(exc))
             quote = {
                 "available": False,
-                "token_in": chain_config["wrapped_native_symbol"],
+                "token_in": source_token_symbol,
                 "token_out": token["symbol"],
                 "error": normalized_error,
                 "source": "template-allocation",
@@ -1116,7 +1427,7 @@ def _build_allocation_preview(
     elif include_live_market and per_contract_weth > 0:
         quote = {
             "available": False,
-            "token_in": chain_config["wrapped_native_symbol"],
+            "token_in": source_token_symbol,
             "token_out": token["symbol"],
             "error": f"Live swap quotes are not configured for {chain_config['label']} yet.",
             "source": "template-allocation",
@@ -1135,13 +1446,20 @@ def _build_allocation_preview(
         "token_symbol": token["symbol"],
         "token_name": token["name"],
         "token_address": token["address"],
+        "source_token_symbol": source_token_symbol,
+        "source_token_address": source_token_address,
+        "requires_swap": requires_swap,
         "route_status": route_status,
         "route_error": route_error,
         "percent": _format_decimal(percent),
         "per_contract_weth_amount": _format_decimal(per_contract_weth),
         "total_weth_amount": _format_decimal(total_weth),
-        "per_contract_weth_usd": _usd_value(per_contract_weth, market_snapshot.get("weth_usd")) if include_live_market else None,
-        "total_weth_usd": _usd_value(total_weth, market_snapshot.get("weth_usd")) if include_live_market else None,
+        "per_contract_source_amount": _format_decimal(per_contract_weth),
+        "total_source_amount": _format_decimal(total_weth),
+        "per_contract_weth_usd": _usd_value(per_contract_weth, source_token_price_usd) if include_live_market else None,
+        "total_weth_usd": _usd_value(total_weth, source_token_price_usd) if include_live_market else None,
+        "per_contract_source_usd": _usd_value(per_contract_weth, source_token_price_usd) if include_live_market else None,
+        "total_source_usd": _usd_value(total_weth, source_token_price_usd) if include_live_market else None,
         "quote": quote,
         "per_contract_output": _format_decimal(per_contract_output),
         "total_output": _format_decimal(total_output),
@@ -1173,6 +1491,7 @@ def _get_estimated_gas_price_wei(chain: str | None = None) -> Decimal:
 
 
 def _build_template_execution_estimate(template: dict, contract_count: int, *, gas_price_wei: Decimal | None = None):
+    swap_source = resolve_template_swap_source(template)
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
     direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
     direct_weth = Decimal(str(template["direct_contract_weth_per_contract"]))
@@ -1182,11 +1501,11 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     stablecoin_routes = [
         route
         for route in build_template_stablecoin_routes(template, contract_count=1)
-        if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
+        if Decimal(str(route.get("per_contract_source_amount") or route.get("per_contract_weth_amount") or "0")) > 0
     ]
-    route_count = len(stablecoin_routes)
+    route_count = sum(1 for route in stablecoin_routes if bool(route.get("requires_swap", True)))
     router_approval_count_per_wallet = len(get_template_chain_swap_backends(template.get("chain"))) if route_count > 0 else 0
-    local_erc20_funding_targets_per_wallet = route_count
+    local_erc20_funding_targets_per_wallet = len(stablecoin_routes)
     main_wallet_erc20_funding_targets_per_wallet = 1 if direct_weth > 0 else 0
     main_wallet_native_eth_funding_targets_per_wallet = 1 if direct_contract_native_eth > 0 else 0
     erc20_funding_targets_per_wallet = (
@@ -1194,18 +1513,23 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
     )
     native_eth_funding_targets_per_wallet = main_wallet_native_eth_funding_targets_per_wallet
     funded_asset_count_per_wallet = erc20_funding_targets_per_wallet + native_eth_funding_targets_per_wallet
-    required_weth_per_contract = swap_budget
+    required_weth_per_contract = swap_budget if swap_source["uses_local_wrap"] else Decimal("0")
+    required_source_token_per_contract = swap_budget if swap_source["funding_asset_kind"] == "erc20" else Decimal("0")
     wrap_transaction_count = contract_count if required_weth_per_contract > 0 else 0
+    source_token_funding_transaction_count = contract_count if required_source_token_per_contract > 0 else 0
     approval_transaction_count = contract_count * router_approval_count_per_wallet
     swap_transaction_count = contract_count * route_count
     deployment_transaction_count = contract_count if recipient_address and funded_asset_count_per_wallet > 0 else 0
     contract_funding_transaction_count = contract_count * funded_asset_count_per_wallet if recipient_address else 0
     execute_transaction_count = contract_count if recipient_address and test_auto_execute_after_funding and funded_asset_count_per_wallet > 0 else 0
-    return_sweep_token_transfer_count_per_wallet = (
-        route_count + (1 if swap_budget > 0 else 0)
-        if return_wallet_address
-        else 0
-    )
+    return_sweep_candidate_addresses = {
+        str(route.get("token_address") or "").lower()
+        for route in stablecoin_routes
+        if route.get("token_address")
+    }
+    if swap_budget > 0 and swap_source.get("source_token_address"):
+        return_sweep_candidate_addresses.add(str(swap_source["source_token_address"]).lower())
+    return_sweep_token_transfer_count_per_wallet = len(return_sweep_candidate_addresses) if return_wallet_address else 0
     return_sweep_transaction_count_per_wallet = (
         1 + return_sweep_token_transfer_count_per_wallet
         if return_wallet_address
@@ -1334,8 +1658,15 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
         "erc20_funding_targets_per_wallet": erc20_funding_targets_per_wallet,
         "native_eth_funding_targets_per_wallet": native_eth_funding_targets_per_wallet,
         "required_weth_per_contract": required_weth_per_contract,
+        "required_source_token_per_contract": required_source_token_per_contract,
+        "swap_source_mode": swap_source["mode"],
+        "swap_source_token_symbol": swap_source.get("source_token_symbol"),
+        "swap_source_token_address": swap_source.get("source_token_address"),
+        "swap_source_funding_asset_symbol": swap_source.get("funding_asset_symbol"),
+        "swap_source_funding_asset_kind": swap_source.get("funding_asset_kind"),
         "router_approval_count_per_wallet": router_approval_count_per_wallet,
         "wrap_transaction_count": wrap_transaction_count,
+        "source_token_funding_transaction_count": source_token_funding_transaction_count,
         "approval_transaction_count": approval_transaction_count,
         "swap_transaction_count": swap_transaction_count,
         "deployment_transaction_count": deployment_transaction_count,
@@ -1375,10 +1706,11 @@ def _build_template_execution_estimate(template: dict, contract_count: int, *, g
 def _build_route_preflight_status(template: dict):
     chain = template.get("chain") or DEFAULT_TEMPLATE_CHAIN
     chain_config = get_template_chain_config(chain)
+    swap_source = resolve_template_swap_source(template)
     funded_routes = [
         route
         for route in build_template_stablecoin_routes(template, contract_count=1)
-        if Decimal(str(route.get("per_contract_weth_amount") or "0")) > 0
+        if Decimal(str(route.get("per_contract_source_amount") or route.get("per_contract_weth_amount") or "0")) > 0
     ]
     if not funded_routes:
         return {"available": True, "errors": []}
@@ -1387,9 +1719,9 @@ def _build_route_preflight_status(template: dict):
     for route in funded_routes:
         try:
             quote_uniswap_swap(
-                chain_config["wrapped_native_symbol"],
+                swap_source.get("source_token_address") or swap_source.get("source_token_symbol") or chain_config["wrapped_native_symbol"],
                 route["token_address"],
-                route["per_contract_weth_amount"],
+                route.get("per_contract_source_amount") or route.get("per_contract_weth_amount"),
                 fee_tier=template.get("fee_tier"),
                 slippage_percent=template.get("slippage_percent"),
                 chain=chain,
@@ -1456,6 +1788,7 @@ def _build_auto_top_up_projection(
 
 def _build_template_cost_snapshot(template: dict, contract_count: int, *, include_live_market: bool = False):
     chain_config = get_template_chain_config(template.get("chain"))
+    swap_source = resolve_template_swap_source(template)
     gas_reserve = Decimal(str(template["gas_reserve_eth_per_contract"]))
     swap_budget = Decimal(str(template["swap_budget_eth_per_contract"]))
     direct_contract_native_eth = Decimal(str(template.get("direct_contract_native_eth_per_contract") or "0"))
@@ -1468,7 +1801,8 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         gas_price_wei=gas_price_wei,
     )
 
-    local_wrap_eth_per_contract = swap_budget
+    local_wrap_eth_per_contract = swap_budget if swap_source["uses_local_wrap"] else Decimal("0")
+    required_source_token_per_contract = Decimal(str(execution_estimate.get("required_source_token_per_contract") or "0"))
     configured_unwrapped_eth_per_contract = gas_reserve
     minimum_unwrapped_eth_per_contract = max(
         configured_unwrapped_eth_per_contract,
@@ -1480,6 +1814,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     )
     required_eth_per_contract = minimum_unwrapped_eth_per_contract + local_wrap_eth_per_contract
     required_weth_per_contract = execution_estimate["required_weth_per_contract"]
+    required_source_token_total = required_source_token_per_contract * contract_count_decimal
     required_eth_total = required_eth_per_contract * contract_count_decimal
     required_weth_total = required_weth_per_contract * contract_count_decimal
     direct_contract_native_eth_total = direct_contract_native_eth * contract_count_decimal
@@ -1493,14 +1828,23 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         execution_estimate=execution_estimate,
     )
     funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
+    source_token_funding_transaction_count = int(execution_estimate.get("source_token_funding_transaction_count") or 0)
     funding_stage_gas_price_wei = Decimal(str(execution_estimate.get("fund_subwallet_gas_price_wei") or "0"))
     top_up_stage_gas_price_wei = Decimal(str(execution_estimate.get("top_up_gas_price_wei") or "0"))
     wrap_stage_gas_price_wei = Decimal(str(execution_estimate.get("wrap_gas_price_wei") or "0"))
     fund_treasury_stage_gas_price_wei = Decimal(str(execution_estimate.get("fund_treasury_gas_price_wei") or "0"))
     funding_network_fee_eth = wei_to_decimal(int(funding_stage_gas_price_wei) * ETH_TRANSFER_GAS_LIMIT * funding_transaction_count)
+    source_token_funding_network_fee_eth = wei_to_decimal(
+        int(funding_stage_gas_price_wei) * ERC20_TRANSFER_GAS_LIMIT * source_token_funding_transaction_count
+    )
     projected_auto_top_up_eth_total = Decimal(str(auto_top_up.get("projected_total_eth") or "0"))
     top_up_network_fee_eth = Decimal(str(auto_top_up.get("projected_network_fee_eth") or "0"))
-    main_wallet_weth_wrap_count = 1 if direct_contract_weth_total > 0 else 0
+    wrapped_native_required_from_main_wallet = direct_contract_weth_total + (
+        required_source_token_total
+        if swap_source["mode"] == SWAP_SOURCE_MODE_WRAPPED_NATIVE
+        else Decimal("0")
+    )
+    main_wallet_weth_wrap_count = 1 if wrapped_native_required_from_main_wallet > 0 else 0
     main_wallet_weth_wrap_network_fee_eth = wei_to_decimal(
         int(wrap_stage_gas_price_wei) * WETH_DEPOSIT_GAS_LIMIT * main_wallet_weth_wrap_count
     )
@@ -1513,6 +1857,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     total_network_fee_eth = (
         Decimal(str(execution_estimate["local_execution_gas_fee_eth_total"]))
         + funding_network_fee_eth
+        + source_token_funding_network_fee_eth
         + top_up_network_fee_eth
         + main_wallet_direct_funding_network_fee_eth
         + main_wallet_weth_wrap_network_fee_eth
@@ -1521,9 +1866,9 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     total_eth_required_with_fees = (
         required_eth_total
         + direct_contract_native_eth_total
-        + direct_contract_weth_total
         + projected_auto_top_up_eth_total
         + funding_network_fee_eth
+        + source_token_funding_network_fee_eth
         + top_up_network_fee_eth
         + main_wallet_direct_funding_network_fee_eth
         + main_wallet_weth_wrap_network_fee_eth
@@ -1531,6 +1876,8 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     )
 
     stablecoin_addresses = [allocation["token_address"] for allocation in template["stablecoin_allocations"]]
+    if swap_source.get("source_token_address"):
+        stablecoin_addresses.append(swap_source["source_token_address"])
     market_snapshot = (
         get_market_snapshot(
             stablecoin_addresses,
@@ -1565,7 +1912,22 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     )
 
     required_eth_total_usd = _usd_value(required_eth_total, market_snapshot.get("eth_usd")) if include_live_market else None
+    source_token_price_usd = (
+        market_snapshot.get("weth_usd")
+        if swap_source.get("source_token_address")
+        and str(swap_source["source_token_address"]).lower() == chain_config["wrapped_native_address"].lower()
+        else (
+            market_snapshot.get("token_prices", {}).get(str(swap_source.get("source_token_address") or "").lower())
+            if include_live_market and swap_source.get("source_token_address")
+            else None
+        )
+    )
     required_weth_total_usd = _usd_value(required_weth_total, market_snapshot.get("weth_usd")) if include_live_market else None
+    required_source_token_total_usd = (
+        _usd_value(required_source_token_total, source_token_price_usd)
+        if include_live_market and required_source_token_total > 0
+        else None
+    )
     projected_auto_top_up_eth_total_usd = (
         _usd_value(projected_auto_top_up_eth_total, market_snapshot.get("eth_usd"))
         if include_live_market
@@ -1591,10 +1953,20 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
         "testing_recipient_address": _get_testing_recipient_address(template),
         "test_auto_execute_after_funding": _get_test_auto_batch_send_enabled(template),
         "test_auto_batch_send_after_funding": _get_test_auto_batch_send_enabled(template),
+        "swap_source": {
+            "mode": swap_source["mode"],
+            "funding_asset_kind": swap_source["funding_asset_kind"],
+            "funding_asset_symbol": swap_source.get("funding_asset_symbol"),
+            "funding_asset_address": swap_source.get("funding_asset_address"),
+            "source_token_symbol": swap_source.get("source_token_symbol"),
+            "source_token_address": swap_source.get("source_token_address"),
+            "uses_local_wrap": swap_source["uses_local_wrap"],
+        },
         "auto_top_up": auto_top_up,
         "per_contract": {
             "gas_reserve_eth": _format_decimal(gas_reserve),
             "swap_budget_eth": _format_decimal(swap_budget),
+            "swap_budget_source_symbol": swap_source.get("source_token_symbol"),
             "direct_contract_native_eth": _format_decimal(direct_contract_native_eth),
             "direct_contract_weth": _format_decimal(direct_weth),
             "return_wallet_address": template.get("return_wallet_address"),
@@ -1607,13 +1979,15 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "local_execution_gas_fee_eth": _format_decimal(Decimal(str(execution_estimate["local_execution_gas_fee_eth_per_wallet"]))),
             "required_eth": _format_decimal(required_eth_per_contract),
             "required_weth": _format_decimal(required_weth_per_contract),
+            "required_source_token": _format_decimal(required_source_token_per_contract),
             "total_eth_if_no_weth_available": _format_decimal(
-                required_eth_per_contract + direct_contract_native_eth + direct_weth
+                required_eth_per_contract + direct_contract_native_eth
             ),
         },
         "totals": {
             "required_eth_total": _format_decimal(required_eth_total),
             "required_weth_total": _format_decimal(required_weth_total),
+            "required_source_token_total": _format_decimal(required_source_token_total),
             "gas_reserve_eth_total": _format_decimal(gas_reserve * contract_count_decimal),
             "swap_budget_eth_total": _format_decimal(swap_budget * contract_count_decimal),
             "direct_contract_native_eth_total": _format_decimal(direct_contract_native_eth_total),
@@ -1633,6 +2007,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "total_eth_required_with_fees_usd": total_eth_required_with_fees_usd,
             "required_eth_total_usd": required_eth_total_usd,
             "required_weth_total_usd": required_weth_total_usd,
+            "required_source_token_total_usd": required_source_token_total_usd,
             "combined_cost_usd": combined_cost_usd,
             "stablecoin_output_total_usd": _format_decimal(total_output_usd) if total_output_usd is not None else None,
         },
@@ -1651,6 +2026,7 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
             "batch_send_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["batch_send_gas_price_wei"]))),
             "return_sweep_gas_price_wei": _format_decimal(Decimal(str(execution_estimate["return_sweep_gas_price_wei"]))),
             "wrap_transaction_count": execution_estimate["wrap_transaction_count"],
+            "source_token_funding_transaction_count": source_token_funding_transaction_count,
             "approval_transaction_count": execution_estimate["approval_transaction_count"],
             "swap_transaction_count": execution_estimate["swap_transaction_count"],
             "deployment_transaction_count": execution_estimate["deployment_transaction_count"],
@@ -1673,10 +2049,25 @@ def _build_template_cost_snapshot(template: dict, contract_count: int, *, includ
     }
 
 
-def get_template_options(chain: str | None = None):
+def get_template_options(
+    chain: str | None = None,
+    *,
+    swap_source_mode: str | None = None,
+    swap_source_token_symbol: str | None = None,
+    swap_source_token_address: str | None = None,
+):
     ensure_builtin_templates_seeded()
     normalized_chain = normalize_template_chain(chain)
     chain_config = get_template_chain_config(normalized_chain)
+    swap_source = resolve_template_swap_source(
+        chain=normalized_chain,
+        swap_source_mode=swap_source_mode,
+        swap_source_token_symbol=swap_source_token_symbol,
+        swap_source_token_address=swap_source_token_address,
+        allow_recommended_fallback=True,
+    )
+    swap_source_recommendation = _get_chain_swap_source_recommendation(normalized_chain)
+    swap_source_token_options = _get_chain_swap_source_token_options(normalized_chain)
     swap_backends = get_template_chain_swap_backends(normalized_chain)
     primary_backend = swap_backends[0] if swap_backends else None
     primary_backend_label = get_swap_backend_label(primary_backend)
@@ -1737,7 +2128,52 @@ def get_template_options(chain: str | None = None):
         "primary_swap_backend_label": primary_backend_label,
         "fallback_swap_backends": swap_backends[1:],
         "fallback_swap_backend_labels": fallback_backend_labels,
-        "stablecoins": get_template_chain_token_options(normalized_chain),
+        "stablecoins": get_template_chain_token_options(
+            normalized_chain,
+            swap_source_mode=swap_source_mode,
+            swap_source_token_symbol=swap_source_token_symbol,
+            swap_source_token_address=swap_source_token_address,
+        ),
+        "swap_source_modes": [
+            {
+                "value": SWAP_SOURCE_MODE_NATIVE,
+                "label": f"Fund {chain_config['native_symbol']} and wrap locally",
+                "description": (
+                    f"Send {chain_config['native_symbol']} into each subwallet. The subwallet wraps only the amount needed for swaps."
+                ),
+            },
+            {
+                "value": SWAP_SOURCE_MODE_WRAPPED_NATIVE,
+                "label": f"Fund {chain_config['wrapped_native_symbol']} directly",
+                "description": (
+                    f"Send {chain_config['wrapped_native_symbol']} into each subwallet and swap from it directly."
+                ),
+            },
+            {
+                "value": SWAP_SOURCE_MODE_STABLECOIN,
+                "label": "Fund a stablecoin source token",
+                "description": "Send one stablecoin into each subwallet and use that token as the swap source.",
+            },
+        ],
+        "swap_source_token_options": [
+            {
+                "symbol": token["symbol"],
+                "name": token["name"],
+                "address": token["address"],
+                "decimals": int(token["decimals"]) if token.get("decimals") is not None else None,
+            }
+            for token in swap_source_token_options
+        ],
+        "swap_source_recommendation": swap_source_recommendation,
+        "swap_source": {
+            "mode": swap_source["mode"],
+            "funding_asset_kind": swap_source["funding_asset_kind"],
+            "funding_asset_symbol": swap_source.get("funding_asset_symbol"),
+            "funding_asset_address": swap_source.get("funding_asset_address"),
+            "source_token_symbol": swap_source.get("source_token_symbol"),
+            "source_token_address": swap_source.get("source_token_address"),
+            "uses_local_wrap": swap_source["uses_local_wrap"],
+        },
         "distribution_modes": [
             {
                 "value": "none",
@@ -1759,9 +2195,9 @@ def get_template_options(chain: str | None = None):
             },
             {
                 "value": "manual_weth_amount",
-                "label": f"Manual exact {chain_config['wrapped_native_symbol']}",
+                "label": f"Manual exact {swap_source.get('source_token_symbol') or chain_config['wrapped_native_symbol']}",
                 "description": (
-                    f"Assign exact {chain_config['wrapped_native_symbol']} amounts per contract across the selected tokens."
+                    f"Assign exact {swap_source.get('source_token_symbol') or chain_config['wrapped_native_symbol']} amounts per contract across the selected tokens."
                 ),
             },
         ],
@@ -1784,18 +2220,40 @@ def get_template_options(chain: str | None = None):
             "auto_top_up_target_eth": "0",
             "slippage_percent": "0.5",
             "fee_tier": None,
-            "auto_wrap_eth_to_weth": True,
+            "auto_wrap_eth_to_weth": swap_source["uses_local_wrap"],
+            "swap_source_mode": swap_source["mode"],
+            "swap_source_token_symbol": swap_source.get("source_token_symbol"),
+            "swap_source_token_address": swap_source.get("source_token_address"),
             "stablecoin_distribution_mode": "none",
             "stablecoin_allocations": [],
         },
         "hints": {
             "summary": f"This template defines one contract / one subwallet on {chain_config['label']}.",
             "swap_budget_note": (
-                f"Token swaps use {chain_config['wrapped_native_symbol']}, but the run funds "
-                f"{chain_config['native_symbol']} first and wraps only the required "
-                f"{chain_config['wrapped_native_symbol']} amount inside each sub-wallet."
+                (
+                    f"Token swaps source from {chain_config['native_symbol']} by wrapping only the required "
+                    f"{chain_config['wrapped_native_symbol']} amount inside each subwallet."
+                    if swap_source["mode"] == SWAP_SOURCE_MODE_NATIVE
+                    else (
+                        f"Token swaps source from {chain_config['wrapped_native_symbol']} directly. "
+                        f"The main wallet must fund {chain_config['wrapped_native_symbol']} into each subwallet."
+                        if swap_source["mode"] == SWAP_SOURCE_MODE_WRAPPED_NATIVE
+                        else (
+                            f"Token swaps source from {swap_source.get('source_token_symbol') or 'the selected stablecoin'} directly. "
+                            "The main wallet must already hold that stablecoin before automation starts."
+                        )
+                    )
+                )
             ),
             "swap_settings_note": swap_settings_note,
+            "swap_source_note": (
+                f"Current swap source: {swap_source.get('funding_asset_symbol') or chain_config['native_symbol']}."
+                + (
+                    " This chain is currently safer with a stablecoin source."
+                    if swap_source_recommendation and swap_source_recommendation.get("recommended_mode") == SWAP_SOURCE_MODE_STABLECOIN
+                    else ""
+                )
+            ),
             "auto_top_up_note": (
                 f"If a sub-wallet's post-wrap {chain_config['native_symbol']} balance falls to or below the trigger, "
                 f"the run can send a second {chain_config['native_symbol']} transfer from the main wallet to refill it to the target before swaps and deployments continue."
@@ -1988,6 +2446,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         raise ValueError("Template not found")
     chain = template.get("chain") or DEFAULT_TEMPLATE_CHAIN
     chain_config = get_template_chain_config(chain)
+    swap_source = resolve_template_swap_source(template)
 
     from src.services.wallet_service import get_wallet_summary
 
@@ -2002,8 +2461,10 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     cost_snapshot = _build_template_cost_snapshot(template, contract_count, include_live_market=False)
     required_eth_total = Decimal(str(cost_snapshot["totals"]["required_eth_total"]))
     required_weth_total = Decimal(str(cost_snapshot["totals"]["required_weth_total"]))
+    required_source_token_total = Decimal(str(cost_snapshot["totals"].get("required_source_token_total") or "0"))
     required_eth_per_contract = Decimal(str(cost_snapshot["per_contract"]["required_eth"]))
     required_weth_per_contract = Decimal(str(cost_snapshot["per_contract"]["required_weth"]))
+    required_source_token_per_contract = Decimal(str(cost_snapshot["per_contract"].get("required_source_token") or "0"))
     local_execution_gas_fee_eth_per_wallet = Decimal(str(cost_snapshot["per_contract"]["local_execution_gas_fee_eth"]))
     local_execution_gas_fee_eth_total = Decimal(str(cost_snapshot["totals"]["local_execution_gas_fee_eth_total"]))
     projected_auto_top_up_eth_total = Decimal(str(cost_snapshot["totals"].get("projected_auto_top_up_eth_total") or "0"))
@@ -2015,12 +2476,32 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
 
     available_eth = Decimal(str(wallet["eth_balance"]))
     available_weth = Decimal(str(wallet["weth_balance"]))
+    available_source_token = Decimal("0")
+    if swap_source["funding_asset_kind"] == "erc20" and swap_source.get("source_token_address"):
+        available_source_token = token_units_to_decimal(
+            get_token_balance_units(
+                swap_source["source_token_address"],
+                wallet["address"],
+                chain=chain,
+            ),
+            int(swap_source["source_token_decimals"] or 18),
+        )
     direct_contract_native_eth_total = Decimal(str(cost_snapshot["totals"].get("direct_contract_native_eth_total") or "0"))
     direct_contract_weth_total = Decimal(str(cost_snapshot["totals"].get("direct_contract_weth_total") or "0"))
+    wrapped_native_needed_total = direct_contract_weth_total + (
+        required_source_token_total if swap_source["mode"] == SWAP_SOURCE_MODE_WRAPPED_NATIVE else Decimal("0")
+    )
     weth_from_main_wallet = direct_contract_weth_total
-    weth_from_existing_main_wallet = min(available_weth, direct_contract_weth_total)
-    main_wallet_weth_wrapped = max(direct_contract_weth_total - available_weth, Decimal("0"))
+    weth_from_existing_main_wallet = min(available_weth, wrapped_native_needed_total)
+    main_wallet_weth_wrapped = max(wrapped_native_needed_total - available_weth, Decimal("0"))
+    source_token_from_main_wallet = required_source_token_total if swap_source["funding_asset_kind"] == "erc20" else Decimal("0")
+    source_token_shortfall = (
+        max(required_source_token_total - available_source_token, Decimal("0"))
+        if swap_source["mode"] == SWAP_SOURCE_MODE_STABLECOIN
+        else Decimal("0")
+    )
     funding_transaction_count = contract_count if required_eth_per_contract > 0 else 0
+    source_token_funding_transaction_count = int(execution_estimate.get("source_token_funding_transaction_count") or 0)
     wrap_transaction_count = int(execution_estimate["wrap_transaction_count"])
     approval_transaction_count = int(execution_estimate["approval_transaction_count"])
     swap_transaction_count = int(execution_estimate["swap_transaction_count"])
@@ -2042,6 +2523,9 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         + main_wallet_wrap_gas_units
     )
     funding_network_fee_eth = wei_to_decimal(int(funding_gas_price_wei) * funding_gas_units)
+    source_token_funding_network_fee_eth = wei_to_decimal(
+        int(funding_gas_price_wei) * ERC20_TRANSFER_GAS_LIMIT * source_token_funding_transaction_count
+    )
     main_wallet_direct_funding_network_fee_eth = wei_to_decimal(
         int(fund_treasury_gas_price_wei) * main_wallet_direct_funding_gas_units
     )
@@ -2063,6 +2547,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     total_network_fee_eth = (
         Decimal(str(cost_snapshot["totals"]["local_execution_gas_fee_eth_total"]))
         + funding_network_fee_eth
+        + source_token_funding_network_fee_eth
         + top_up_network_fee_eth
         + main_wallet_direct_funding_network_fee_eth
         + main_wallet_wrap_network_fee_eth
@@ -2076,6 +2561,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         total_eth_deducted
         + projected_auto_top_up_eth_total
         + funding_network_fee_eth
+        + source_token_funding_network_fee_eth
         + top_up_network_fee_eth
         + main_wallet_direct_funding_network_fee_eth
         + main_wallet_wrap_network_fee_eth
@@ -2086,6 +2572,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     remaining_weth_after_funding = max(available_weth - weth_from_existing_main_wallet, Decimal("0"))
     total_transaction_count = (
         funding_transaction_count
+        + source_token_funding_transaction_count
         + top_up_transaction_count
         + execute_transaction_count
         + wrap_transaction_count
@@ -2098,6 +2585,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     )
     can_proceed = (
         available_eth >= total_eth_required_with_fees
+        and (swap_source["mode"] != SWAP_SOURCE_MODE_STABLECOIN or available_source_token >= required_source_token_total)
         and (not requires_recipient or bool(recipient_address))
         and (not requires_recipient or test_auto_batch_send_enabled)
         and route_preflight["available"]
@@ -2119,7 +2607,17 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             f"Not enough {chain_config['native_symbol']} in the main wallet. "
             f"Need {_format_decimal(required_eth_total - available_eth)} more {chain_config['native_symbol']} "
             f"to fund gas reserve, sub-wallet {chain_config['native_symbol']}, "
-            f"automatic local execution gas headroom, and the local {chain_config['wrapped_native_symbol']} swap budget for the new subwallets."
+            + (
+                f"automatic local execution gas headroom, and the local {chain_config['wrapped_native_symbol']} swap budget for the new subwallets."
+                if swap_source["mode"] == SWAP_SOURCE_MODE_NATIVE
+                else "automatic local execution gas headroom for the new subwallets."
+            )
+        )
+    elif swap_source["mode"] == SWAP_SOURCE_MODE_STABLECOIN and available_source_token < required_source_token_total:
+        shortfall_reason = (
+            f"Not enough {swap_source['source_token_symbol']} in the main wallet. "
+            f"Need {_format_decimal(required_source_token_total - available_source_token)} more {swap_source['source_token_symbol']} "
+            "to fund the selected swap source into the new subwallets."
         )
     elif available_eth < total_eth_deducted:
         shortfall_reason = (
@@ -2131,8 +2629,8 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     elif available_eth < total_eth_required_with_fees:
         shortfall_reason = (
             f"Not enough {chain_config['native_symbol']} in the main wallet. "
-            f"Need {_format_decimal(total_eth_required_with_fees - available_eth)} more {chain_config['native_symbol']} "
-            "to fund the new subwallets, reserve any projected auto top-ups, and cover the main-wallet funding transaction fees."
+                f"Need {_format_decimal(total_eth_required_with_fees - available_eth)} more {chain_config['native_symbol']} "
+                "to fund the new subwallets, reserve any projected auto top-ups, and cover the main-wallet funding transaction fees."
         )
     elif not route_preflight["available"]:
         shortfall_reason = (
@@ -2198,6 +2696,31 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
                 "missing_native_amount": _format_decimal(missing_eth),
                 "required_native_total": _format_decimal(required_eth_total),
                 "available_native": _format_decimal(available_eth),
+            },
+        )
+    elif swap_source["mode"] == SWAP_SOURCE_MODE_STABLECOIN and available_source_token < required_source_token_total:
+        missing_source_token = required_source_token_total - available_source_token
+        preview_issue = _build_template_preview_issue(
+            "insufficient_source_token_balance",
+            f"Not enough {swap_source['source_token_symbol']} in the main wallet",
+            f"Add {_format_decimal(missing_source_token)} more {swap_source['source_token_symbol']} before starting automation.",
+            details=[
+                f"Available now: {_format_decimal(available_source_token)} {swap_source['source_token_symbol']}",
+                f"Needed for subwallet source funding: {_format_decimal(required_source_token_total)} {swap_source['source_token_symbol']}",
+                f"Wallets to create: {contract_count}",
+            ],
+            hint=(
+                f"Top up the main wallet with {swap_source['source_token_symbol']}, lower the wallet count, "
+                "or reduce the swap budget before retrying."
+            ),
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "source_token_symbol": swap_source["source_token_symbol"],
+                "source_token_address": swap_source.get("source_token_address"),
+                "missing_source_token_amount": _format_decimal(missing_source_token),
+                "required_source_token_total": _format_decimal(required_source_token_total),
+                "available_source_token": _format_decimal(available_source_token),
             },
         )
     elif available_eth < total_eth_deducted:
@@ -2284,6 +2807,15 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "chain_label": chain_config["label"],
         "native_symbol": chain_config["native_symbol"],
         "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
+        "swap_source": {
+            "mode": swap_source["mode"],
+            "funding_asset_kind": swap_source["funding_asset_kind"],
+            "funding_asset_symbol": swap_source.get("funding_asset_symbol"),
+            "funding_asset_address": swap_source.get("funding_asset_address"),
+            "source_token_symbol": swap_source.get("source_token_symbol"),
+            "source_token_address": swap_source.get("source_token_address"),
+            "uses_local_wrap": swap_source["uses_local_wrap"],
+        },
         "testing_recipient_address": recipient_address,
         "return_wallet_address": template.get("return_wallet_address"),
         "test_auto_execute_after_funding": test_auto_batch_send_enabled,
@@ -2293,6 +2825,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "balances": {
             "available_eth": _format_decimal(available_eth),
             "available_weth": _format_decimal(available_weth),
+            "available_source_token": _format_decimal(available_source_token),
             "wrappable_eth": _format_decimal(wrappable_eth),
             "remaining_eth_after_funding": _format_decimal(remaining_eth_after_funding),
             "remaining_weth_after_funding": _format_decimal(remaining_weth_after_funding),
@@ -2300,6 +2833,11 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
         "funding": {
             "eth_sent_to_subwallets": _format_decimal(required_eth_total),
             "weth_sent_to_subwallets": "0",
+            "source_token_symbol": swap_source.get("source_token_symbol"),
+            "source_token_address": swap_source.get("source_token_address"),
+            "source_token_sent_to_subwallets": _format_decimal(source_token_from_main_wallet),
+            "available_source_token": _format_decimal(available_source_token),
+            "source_token_shortfall": _format_decimal(source_token_shortfall),
             "weth_from_main_wallet": _format_decimal(weth_from_main_wallet),
             "weth_from_wrapped_eth": _format_decimal(weth_from_wrapped_eth),
             "main_wallet_weth_wrapped": _format_decimal(main_wallet_weth_wrapped),
@@ -2312,6 +2850,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "top_up_network_fee_eth": format_wallet_decimal(top_up_network_fee_eth),
             "main_wallet_network_fee_eth": format_wallet_decimal(
                 funding_network_fee_eth
+                + source_token_funding_network_fee_eth
                 + top_up_network_fee_eth
                 + main_wallet_direct_funding_network_fee_eth
                 + main_wallet_wrap_network_fee_eth
@@ -2326,6 +2865,7 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "return_sweep_gas_units_per_wallet": execution_estimate.get("return_sweep_gas_units_per_wallet"),
             "local_execution_gas_units_per_wallet": execution_estimate["local_execution_gas_units_per_wallet"],
             "funding_transaction_count": funding_transaction_count,
+            "source_token_funding_transaction_count": source_token_funding_transaction_count,
             "main_wallet_wrap_transaction_count": main_wallet_wrap_transaction_count,
             "main_wallet_wrap_gas_units": main_wallet_wrap_gas_units,
             "top_up_transaction_count": top_up_transaction_count,

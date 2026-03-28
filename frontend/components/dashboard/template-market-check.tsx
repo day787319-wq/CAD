@@ -10,6 +10,7 @@ import {
   Template,
   TemplateMarketCheck,
   getTemplateChainMeta,
+  getTemplateSwapSourceUi,
   formatAmount,
   formatFeeTier,
   formatRouteFeeTiers,
@@ -60,9 +61,9 @@ const copy = {
   loading: { en: "Loading current market pricing...", zn: "正在加载当前市场价格...", vn: "Đang tải giá thị trường hiện tại..." },
   stablePricing: { en: "Swap route pricing", zn: "兑换路由定价", vn: "Định giá tuyến swap" },
   noRoutes: {
-    en: "This template does not include a token swap route, so the preview focuses on sub-wallet native funding, local wrapped-token needs, and any direct contract native / wrapped funding from the main wallet.",
-    zn: "此模板不包含代币兑换路由，因此预览重点展示子钱包原生资产注资、本地包装代币需求，以及由主钱包提供的任何直接合约原生资产 / 包装资产注资。",
-    vn: "Mẫu này không bao gồm tuyến swap token, nên phần xem trước tập trung vào cấp vốn tài sản gốc cho ví con, nhu cầu token wrap cục bộ và mọi khoản cấp vốn trực tiếp native / wrapped cho hợp đồng từ ví chính.",
+    en: "This template does not include a token swap route, so the preview focuses on sub-wallet native funding, the selected source asset, and any direct contract native / wrapped funding from the main wallet.",
+    zn: "此模板不包含代币兑换路由，因此预览重点展示子钱包原生资产注资、当前来源资产，以及由主钱包提供的任何直接合约原生资产 / 包装资产注资。",
+    vn: "Mẫu này không bao gồm tuyến swap token, nên phần xem trước tập trung vào cấp vốn tài sản gốc cho ví con, tài sản nguồn hiện tại và mọi khoản cấp vốn trực tiếp native / wrapped cho hợp đồng từ ví chính.",
   },
 } as const;
 
@@ -93,6 +94,19 @@ export function TemplateMarketCheckPanel({
   const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
   const requestIdRef = useRef(0);
   const chainMeta = getTemplateChainMeta(template.chain);
+  const swapSourceUi = getTemplateSwapSourceUi({
+    chain: template.chain,
+    swap_source_mode: template.swap_source_mode,
+    swap_source_token_symbol: template.swap_source_token_symbol,
+    swap_source_token_address: template.swap_source_token_address,
+    runtimeSwapSource: marketCheck?.swap_source ?? null,
+  });
+  const sourceTokenSymbol = swapSourceUi.sourceTokenSymbol ?? chainMeta.wrappedNativeSymbol;
+  const sourcePriceUsd = !marketCheck
+    ? null
+    : swapSourceUi.isStablecoinMode && swapSourceUi.sourceTokenAddress
+      ? marketCheck.price_snapshot.token_prices?.[swapSourceUi.sourceTokenAddress.toLowerCase()] ?? null
+      : marketCheck.price_snapshot.weth_usd;
   const fundedQuotes = (marketCheck?.stablecoin_quotes ?? []).filter(
     (quote) => (toFiniteNumber(quote.per_contract_weth_amount) ?? 0) > 0,
   );
@@ -261,7 +275,7 @@ export function TemplateMarketCheckPanel({
             <>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
                 <MetricCard label={locale === "en" ? `Per-contract ${chainMeta.nativeSymbol}` : locale === "zn" ? `每合约 ${chainMeta.nativeSymbol}` : `${chainMeta.nativeSymbol} mỗi hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.required_eth, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
-                <MetricCard label={locale === "en" ? `Per-contract ${chainMeta.wrappedNativeSymbol}` : locale === "zn" ? `每合约 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} mỗi hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.required_weth, chainMeta.wrappedNativeSymbol)} hint={formatUsd(marketCheck.totals.required_weth_total_usd)} />
+                <MetricCard label={locale === "en" ? `Per-contract ${sourceTokenSymbol}` : locale === "zn" ? `每合约 ${sourceTokenSymbol}` : `${sourceTokenSymbol} mỗi hợp đồng`} value={formatTokenAmount(swapSourceUi.isNativeMode ? marketCheck.per_contract.required_weth : (marketCheck.per_contract.required_source_token ?? "0"), sourceTokenSymbol)} hint={formatUsd(swapSourceUi.isNativeMode ? marketCheck.totals.required_weth_total_usd : marketCheck.totals.required_source_token_total_usd)} />
                 <MetricCard label={locale === "en" ? "Funding total" : locale === "zn" ? "资金总额" : "Tổng cấp vốn"} value={formatTokenAmount(marketCheck.totals.required_eth_total, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.required_eth_total_usd)} />
                 <MetricCard label={locale === "en" ? "Network fees" : locale === "zn" ? "网络费用" : "Phí mạng"} value={formatTokenAmount(marketCheck.totals.total_network_fee_eth, chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.total_network_fee_eth_usd)} />
                 <MetricCard label={locale === "en" ? "All-in live total" : locale === "zn" ? "实时总成本" : "Tổng chi phí trực tiếp"} value={formatUsd(marketCheck.totals.total_eth_required_with_fees_usd ?? marketCheck.totals.combined_cost_usd)} hint={`${formatTokenAmount(marketCheck.totals.total_eth_required_with_fees, chainMeta.nativeSymbol)} ${locale === "en" ? "incl. funding, projected top-ups, and fees" : locale === "zn" ? "含资金、预计补充和费用" : "bao gồm cấp vốn, dự phòng nạp thêm và phí"}`} />
@@ -273,7 +287,7 @@ export function TemplateMarketCheckPanel({
                 <MetricCard label={locale === "en" ? `Contract ${chainMeta.wrappedNativeSymbol}` : locale === "zn" ? `合约 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} hợp đồng`} value={formatTokenAmount(marketCheck.per_contract.direct_contract_weth, chainMeta.wrappedNativeSymbol)} />
                 <MetricCard label={locale === "en" ? "Projected top-up reserve" : locale === "zn" ? "预计补充预留" : "Dự phòng nạp thêm"} value={formatTokenAmount(marketCheck.totals.projected_auto_top_up_eth_total ?? "0", chainMeta.nativeSymbol)} hint={formatUsd(marketCheck.totals.projected_auto_top_up_eth_total_usd)} />
                 <MetricCard label={`${chainMeta.nativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.eth_usd)} />
-                <MetricCard label={`${chainMeta.wrappedNativeSymbol} spot`} value={formatUsd(marketCheck.price_snapshot.weth_usd)} />
+                <MetricCard label={`${sourceTokenSymbol} spot`} value={formatUsd(sourcePriceUsd)} />
                 <MetricCard label={locale === "en" ? "Slippage" : locale === "zn" ? "滑点" : "Trượt giá"} value={`${formatAmount(marketCheck.slippage_percent)}%`} />
                 <MetricCard label={locale === "en" ? "Fee tier" : locale === "zn" ? "费率层级" : "Mức phí"} value={formatFeeTier(marketCheck.fee_tier, template.chain)} />
                 <MetricCard label={locale === "en" ? "Checked at" : locale === "zn" ? "检查时间" : "Thời điểm kiểm tra"} value={formatRelativeTimestamp(marketCheck.price_snapshot.fetched_at)} />
@@ -299,14 +313,14 @@ export function TemplateMarketCheckPanel({
                       </div>
 
                       <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
-                        <MetricCard label={locale === "en" ? `${chainMeta.wrappedNativeSymbol} allocated` : locale === "zn" ? `已分配 ${chainMeta.wrappedNativeSymbol}` : `${chainMeta.wrappedNativeSymbol} phân bổ`} value={`${formatAmount(quote.per_contract_weth_amount)} ${chainMeta.wrappedNativeSymbol}`} />
+                        <MetricCard label={locale === "en" ? `${quote.source_token_symbol ?? sourceTokenSymbol} allocated` : locale === "zn" ? `已分配 ${quote.source_token_symbol ?? sourceTokenSymbol}` : `${quote.source_token_symbol ?? sourceTokenSymbol} phân bổ`} value={`${formatAmount(quote.per_contract_source_amount ?? quote.per_contract_weth_amount)} ${quote.source_token_symbol ?? sourceTokenSymbol}`} />
                         <MetricCard label={locale === "en" ? "Token spot" : locale === "zn" ? "代币现价" : "Giá token hiện tại"} value={formatUsd(quote.token_usd)} />
                         <MetricCard label={locale === "en" ? "Est. output" : locale === "zn" ? "预计输出" : "Đầu ra ước tính"} value={quote.per_contract_output ? `${formatAmount(quote.per_contract_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_output_usd)} />
                         <MetricCard label={locale === "en" ? "Minimum received" : locale === "zn" ? "最低接收量" : "Nhận tối thiểu"} value={quote.per_contract_min_output ? `${formatAmount(quote.per_contract_min_output)} ${quote.token_symbol}` : "--"} hint={formatUsd(quote.per_contract_min_output_usd)} />
-                        <MetricCard label={locale === "en" ? "Backend" : locale === "zn" ? "路由后端" : "Backend"} value={formatSwapBackendLabel(quote.quote.backend)} />
-                        <MetricCard label={locale === "en" ? "Route fee" : locale === "zn" ? "路由费用" : "Phí tuyến"} value={formatRouteFeeTiers(quote.quote.fee_tier, quote.quote.path_fee_tiers, quote.quote.backend, template.chain)} />
+                        <MetricCard label={locale === "en" ? "Backend" : locale === "zn" ? "路由后端" : "Backend"} value={quote.requires_swap === false ? (locale === "en" ? "Direct funding" : locale === "zn" ? "直接注资" : "Cấp vốn trực tiếp") : formatSwapBackendLabel(quote.quote.backend)} />
+                        <MetricCard label={locale === "en" ? "Route fee" : locale === "zn" ? "路由费用" : "Phí tuyến"} value={quote.requires_swap === false ? (locale === "en" ? "No swap" : locale === "zn" ? "无需兑换" : "Không cần swap") : formatRouteFeeTiers(quote.quote.fee_tier, quote.quote.path_fee_tiers, quote.quote.backend, template.chain)} />
                         <MetricCard label={locale === "en" ? "Route path" : locale === "zn" ? "路由路径" : "Đường đi"} value={formatRoutePath(quote.quote.path_symbols, quote.quote.token_in, quote.quote.token_out)} />
-                        <MetricCard label={locale === "en" ? "Swap value" : locale === "zn" ? "兑换价值" : "Giá trị swap"} value={formatUsd(quote.per_contract_weth_usd)} hint={`${formatAmount(quote.quote.slippage_percent ?? marketCheck.slippage_percent)}% ${locale === "en" ? "slippage" : locale === "zn" ? "滑点" : "trượt giá"}`} />
+                        <MetricCard label={locale === "en" ? "Swap value" : locale === "zn" ? "兑换价值" : "Giá trị swap"} value={formatUsd(quote.per_contract_source_usd ?? quote.per_contract_weth_usd)} hint={`${formatAmount(quote.quote.slippage_percent ?? marketCheck.slippage_percent)}% ${locale === "en" ? "slippage" : locale === "zn" ? "滑点" : "trượt giá"}`} />
                       </div>
 
                       {!quote.quote.available && quote.quote.error ? (

@@ -300,6 +300,9 @@ class ScyllaDB:
                 auto_top_up_threshold_eth text,
                 auto_top_up_target_eth text,
                 auto_wrap_eth_to_weth boolean,
+                swap_source_mode text,
+                swap_source_token_symbol text,
+                swap_source_token_address text,
                 stablecoin_distribution_mode text,
                 stablecoin_allocations text
             )
@@ -385,6 +388,9 @@ class ScyllaDB:
                 "ALTER TABLE templates ADD auto_top_up_threshold_eth text",
                 "ALTER TABLE templates ADD auto_top_up_target_eth text",
                 "ALTER TABLE templates ADD auto_wrap_eth_to_weth boolean",
+                "ALTER TABLE templates ADD swap_source_mode text",
+                "ALTER TABLE templates ADD swap_source_token_symbol text",
+                "ALTER TABLE templates ADD swap_source_token_address text",
                 "ALTER TABLE templates ADD stablecoin_distribution_mode text",
                 "ALTER TABLE templates ADD stablecoin_allocations text",
                 "ALTER TABLE templates ADD recipient_address text",
@@ -606,6 +612,9 @@ class ScyllaDB:
             "auto_top_up_threshold_eth": template.get("auto_top_up_threshold_eth"),
             "auto_top_up_target_eth": template.get("auto_top_up_target_eth"),
             "auto_wrap_eth_to_weth": template.get("auto_wrap_eth_to_weth"),
+            "swap_source_mode": template.get("swap_source_mode"),
+            "swap_source_token_symbol": template.get("swap_source_token_symbol"),
+            "swap_source_token_address": template.get("swap_source_token_address"),
             "stablecoin_distribution_mode": template.get("stablecoin_distribution_mode"),
             "stablecoin_allocations": template.get("stablecoin_allocations"),
         }
@@ -643,10 +652,13 @@ class ScyllaDB:
                     auto_top_up_threshold_eth,
                     auto_top_up_target_eth,
                     auto_wrap_eth_to_weth,
+                    swap_source_mode,
+                    swap_source_token_symbol,
+                    swap_source_token_address,
                     stablecoin_distribution_mode,
                     stablecoin_allocations
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.session.execute(
                 query,
@@ -681,6 +693,9 @@ class ScyllaDB:
                     payload["auto_top_up_threshold_eth"],
                     payload["auto_top_up_target_eth"],
                     payload["auto_wrap_eth_to_weth"],
+                    payload["swap_source_mode"],
+                    payload["swap_source_token_symbol"],
+                    payload["swap_source_token_address"],
                     payload["stablecoin_distribution_mode"],
                     payload["stablecoin_allocations"],
                 ),
