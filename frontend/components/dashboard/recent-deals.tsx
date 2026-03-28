@@ -151,13 +151,6 @@ function walletSummary(wallet: ImportedWallet) {
   return `${wallet.address} | ${wallet.id}`;
 }
 
-function formatBalanceValue(value: string | number | null | undefined) {
-  if (value === null || value === undefined) return "Unavailable";
-  const numeric = typeof value === "number" ? value : Number.parseFloat(value ?? "");
-  if (!Number.isFinite(numeric)) return "Unavailable";
-  return numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
-}
-
 export function RecentDeals() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -426,20 +419,6 @@ export function RecentDeals() {
                 const walletChain = normalizeTemplateChain(savedWallet.chain);
                 const chainMeta = walletChain ? getTemplateChainMeta(walletChain) : null;
                 const chainLabel = savedWallet.chain_label ?? chainMeta?.label ?? null;
-                const nativeLabel = savedWallet.native_symbol
-                  ? locale === "en"
-                    ? `${savedWallet.native_symbol} balance`
-                    : locale === "zn"
-                      ? `${savedWallet.native_symbol} 余额`
-                      : `Số dư ${savedWallet.native_symbol}`
-                  : copy.nativeBalance[locale];
-                const wrappedLabel = savedWallet.wrapped_native_symbol
-                  ? locale === "en"
-                    ? `${savedWallet.wrapped_native_symbol} balance`
-                    : locale === "zn"
-                      ? `${savedWallet.wrapped_native_symbol} 余额`
-                      : `Số dư ${savedWallet.wrapped_native_symbol}`
-                  : copy.wrappedBalance[locale];
                 return (
                   <div
                     key={savedWallet.id}
@@ -489,15 +468,9 @@ export function RecentDeals() {
                       </div>
                     </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{nativeLabel}</p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.eth_balance)}</p>
-                      </div>
-                      <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{wrappedLabel}</p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(savedWallet.weth_balance)}</p>
-                      </div>
+                    <div className="mt-4 flex flex-wrap gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {chainLabel ? <span className="rounded-full border border-border/70 bg-background/70 px-3 py-1">{chainLabel}</span> : null}
+                      <span className="rounded-full border border-border/70 bg-background/70 px-3 py-1">{savedWallet.type === "imported_private_key" ? copy.privateKeyType[locale] : copy.mainType[locale]}</span>
                     </div>
                   </div>
                 );
@@ -556,31 +529,11 @@ export function RecentDeals() {
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    {wallet.native_symbol
-                      ? locale === "en"
-                        ? `${wallet.native_symbol} balance`
-                        : locale === "zn"
-                          ? `${wallet.native_symbol} 余额`
-                          : `Số dư ${wallet.native_symbol}`
-                      : copy.nativeBalance[locale]}
-                  </p>
-                  <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(wallet.eth_balance)}</p>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    {wallet.wrapped_native_symbol
-                      ? locale === "en"
-                        ? `${wallet.wrapped_native_symbol} balance`
-                        : locale === "zn"
-                          ? `${wallet.wrapped_native_symbol} 余额`
-                          : `Số dư ${wallet.wrapped_native_symbol}`
-                      : copy.wrappedBalance[locale]}
-                  </p>
-                  <p className="mt-1 text-sm font-semibold text-foreground">{formatBalanceValue(wallet.weth_balance)}</p>
-                </div>
+              <div className="mt-4 flex flex-wrap gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                {wallet.chain_label ? <span className="rounded-full border border-border/70 bg-background/70 px-3 py-1">{wallet.chain_label}</span> : null}
+                <span className="rounded-full border border-border/70 bg-background/70 px-3 py-1">
+                  {wallet.type === "imported_private_key" ? copy.privateKeyType[locale] : copy.mainType[locale]}
+                </span>
               </div>
             </div>
           ) : (

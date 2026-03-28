@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { MouseEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, CheckCircle2, Coins, Copy, Fuel, Loader2, Pencil, PlusCircle, RefreshCw, Rocket, Trash2, WalletCards } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Coins, Copy, FileText, Fuel, Loader2, Pencil, PlusCircle, RefreshCw, Rocket, Trash2, WalletCards } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { Section } from "@/app/page";
 import { Header } from "@/components/dashboard/header";
@@ -25,7 +25,7 @@ import {
   getTemplateStatusChainKey,
   isRpcOnline,
   type RuntimeChainStatus,
-  type RuntimeStatusResponse,
+  type RuntimeSingleStatusResponse,
 } from "@/lib/chain-status";
 import {
   TEMPLATE_API_URL,
@@ -117,6 +117,12 @@ type LinkedTreasuryContract = {
 type WalletDetails = BalanceWallet & {
   sub_wallets: BalanceWallet[];
   linked_contracts?: LinkedTreasuryContract[];
+};
+
+type ContractSourcePayload = {
+  contract_name: string;
+  source_path: string;
+  source_code: string;
 };
 
 function formatTokenBalance(value: string | number | null | undefined, symbol: string) {
@@ -856,6 +862,10 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [creatingSubWallets, setCreatingSubWallets] = useState(false);
   const [deletingWallet, setDeletingWallet] = useState(false);
   const [withdrawingContractAddress, setWithdrawingContractAddress] = useState<string | null>(null);
+  const [contractSourceOpen, setContractSourceOpen] = useState(false);
+  const [loadingContractSource, setLoadingContractSource] = useState(false);
+  const [contractSourceError, setContractSourceError] = useState<string | null>(null);
+  const [contractSourcePayload, setContractSourcePayload] = useState<ContractSourcePayload | null>(null);
   const [runReviewOpen, setRunReviewOpen] = useState(false);
   const [walletViewTab, setWalletViewTab] = useState("plan");
   const [runHistoryRefreshKey, setRunHistoryRefreshKey] = useState(0);
@@ -1081,15 +1091,15 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       if (!active) return;
       setLoadingSelectedChainStatus(true);
       try {
-        const response = await fetch(buildApiUrl("/status"), { cache: "no-store" });
-        const payload = (await readApiPayload(response)) as RuntimeStatusResponse | { detail?: string } | null;
+        const response = await fetch(buildApiUrl(`/status/${statusChainKey}`), { cache: "no-store" });
+        const payload = (await readApiPayload(response)) as RuntimeSingleStatusResponse | { detail?: string } | null;
         if (!response.ok) {
           throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load chain status");
         }
 
         const nextStatus =
-          Array.isArray((payload as RuntimeStatusResponse | null)?.status)
-            ? (payload as RuntimeStatusResponse).status.find((item) => `${item.chain}`.toUpperCase() === statusChainKey) ?? null
+          payload && "status" in payload && payload.status
+            ? (payload as RuntimeSingleStatusResponse).status
             : null;
 
         if (active) {
@@ -1334,6 +1344,30 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
     } finally {
       setWithdrawingContractAddress(null);
+    }
+  };
+
+  const handleViewContractSource = async (contractName?: string | null) => {
+    const resolvedContractName = `${contractName ?? "BatchTreasuryDistributor"}`.trim() || "BatchTreasuryDistributor";
+    setContractSourceOpen(true);
+    setLoadingContractSource(true);
+    setContractSourceError(null);
+
+    try {
+      const response = await fetch(
+        `${TEMPLATE_API_URL}/api/wallets/contracts/source?contract_name=${encodeURIComponent(resolvedContractName)}`,
+        { cache: "no-store" },
+      );
+      const payload = await readApiPayload(response);
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load contract source");
+      }
+      setContractSourcePayload(payload as ContractSourcePayload);
+    } catch (error) {
+      setContractSourcePayload(null);
+      setContractSourceError(error instanceof Error ? error.message : "Failed to load contract source");
+    } finally {
+      setLoadingContractSource(false);
     }
   };
 
@@ -1858,25 +1892,35 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                     </div>
                                   </div>
 
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={() => handleWithdrawContract(contract)}
-                                    disabled={withdrawing || !contract.can_withdraw}
-                                  >
-                                    {withdrawing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
-                                    {withdrawing
-                                      ? locale === "en"
-                                        ? "Withdrawing..."
-                                        : locale === "zn"
-                                          ? "提取中..."
-                                          : "Đang rút..."
-                                      : locale === "en"
-                                        ? "Withdraw To Subwallet"
-                                        : locale === "zn"
-                                          ? "提取到子钱包"
-                                          : "Rút về ví con"}
-                                  </Button>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      onClick={() => handleViewContractSource(contract.contract_name)}
+                                    >
+                                      <FileText className="h-4 w-4" />
+                                      {locale === "en" ? "View Code" : locale === "zn" ? "查看代码" : "Xem mã"}
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      onClick={() => handleWithdrawContract(contract)}
+                                      disabled={withdrawing || !contract.can_withdraw}
+                                    >
+                                      {withdrawing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
+                                      {withdrawing
+                                        ? locale === "en"
+                                          ? "Withdrawing..."
+                                          : locale === "zn"
+                                            ? "提取中..."
+                                            : "Đang rút..."
+                                        : locale === "en"
+                                          ? "Withdraw To Subwallet"
+                                          : locale === "zn"
+                                            ? "提取到子钱包"
+                                            : "Rút về ví con"}
+                                    </Button>
+                                  </div>
                                 </div>
 
                                 <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2865,6 +2909,61 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                   : locale === "zn"
                     ? "运行自动化"
                     : "Chạy tự động hóa"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={contractSourceOpen}
+        onOpenChange={(open) => {
+          setContractSourceOpen(open);
+          if (!open) {
+            setContractSourceError(null);
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[88vh] w-[calc(100vw-1.5rem)] flex-col overflow-hidden p-0 sm:max-w-5xl">
+          <DialogHeader className="shrink-0 border-b border-border/70 px-4 pt-5 pb-4 sm:px-6 sm:pt-6">
+            <DialogTitle>
+              {contractSourcePayload?.contract_name ?? (locale === "en" ? "Contract source" : locale === "zn" ? "合约源码" : "Mã nguồn hợp đồng")}
+            </DialogTitle>
+            <DialogDescription>
+              {contractSourcePayload?.source_path
+                ?? (locale === "en"
+                  ? "View the exact Solidity source currently configured by the app."
+                  : locale === "zn"
+                    ? "查看当前应用配置使用的 Solidity 源码。"
+                    : "Xem chính xác mã nguồn Solidity mà ứng dụng đang dùng.")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
+            {loadingContractSource ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{locale === "en" ? "Loading contract source..." : locale === "zn" ? "正在加载合约源码..." : "Đang tải mã nguồn hợp đồng..."}</span>
+              </div>
+            ) : contractSourceError ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {contractSourceError}
+              </div>
+            ) : contractSourcePayload ? (
+              <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 text-[11px] leading-5 text-slate-100">
+                <code>{contractSourcePayload.source_code}</code>
+              </pre>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {locale === "en"
+                  ? "Contract source is unavailable."
+                  : locale === "zn"
+                    ? "合约源码不可用。"
+                    : "Mã nguồn hợp đồng không khả dụng."}
+              </p>
+            )}
+          </div>
+          <DialogFooter className="shrink-0 border-t border-border/70 px-4 py-4 sm:px-6">
+            <Button type="button" variant="outline" onClick={() => setContractSourceOpen(false)}>
+              {locale === "en" ? "Close" : locale === "zn" ? "关闭" : "Đóng"}
             </Button>
           </DialogFooter>
         </DialogContent>

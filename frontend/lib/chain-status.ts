@@ -19,6 +19,7 @@ export type RuntimeChainStatus = {
   chain: StatusChainKey | string;
   type: string;
   status: string;
+  rpc_env_name?: string | null;
   error?: string;
   block?: number | null;
   block_hash?: string | null;
@@ -50,6 +51,11 @@ export type RuntimeChainStatus = {
 
 export type RuntimeStatusResponse = {
   status: RuntimeChainStatus[];
+  checked_at: string;
+};
+
+export type RuntimeSingleStatusResponse = {
+  status: RuntimeChainStatus;
   checked_at: string;
 };
 

@@ -1,4 +1,6 @@
 import json
+import re
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -8,6 +10,7 @@ CONTRACTS_SRC_DIR = REPO_ROOT / "contracts" / "src"
 GENERATED_ARTIFACTS_DIR = REPO_ROOT / "contracts" / "artifacts" / "generated"
 IMPORTED_ARTIFACTS_DIR = REPO_ROOT / "contracts" / "artifacts" / "src"
 DEFAULT_SOLC_VERSION = "0.8.20"
+BATCH_TREASURY_DISTRIBUTOR_DYNAMIC_COMMENT_RE = re.compile(r"^// \d{8} \d{4}\s*$", re.MULTILINE)
 CONTRACT_SPECS = {
     "ManagedTokenDistributor": {
         "source_path": CONTRACTS_SRC_DIR / "ManagedTokenDistributor.sol",
@@ -28,6 +31,28 @@ def _normalize_bytecode(value: str | None) -> str | None:
     if not value:
         return None
     return value if value.startswith("0x") else f"0x{value}"
+
+
+def stamp_batch_treasury_distributor_source_comment(moment: datetime | None = None) -> str:
+    spec = CONTRACT_SPECS["BatchTreasuryDistributor"]
+    source_path = spec["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    stamp = (moment or datetime.now(timezone.utc)).strftime("%Y%m%d %H%M")
+    replacement = f"// {stamp}"
+
+    if BATCH_TREASURY_DISTRIBUTOR_DYNAMIC_COMMENT_RE.search(source):
+        updated = BATCH_TREASURY_DISTRIBUTOR_DYNAMIC_COMMENT_RE.sub(replacement, source, count=1)
+    else:
+        lines = source.splitlines()
+        insert_at = 2 if len(lines) >= 2 else len(lines)
+        lines.insert(insert_at, replacement)
+        updated = "\n".join(lines)
+        if source.endswith("\n"):
+            updated += "\n"
+
+    if updated != source:
+        source_path.write_text(updated, encoding="utf-8")
+    return stamp
 
 
 def _load_artifact(path: Path, *, contract_name: str, source_path: Path) -> dict | None:
@@ -61,6 +86,8 @@ def compile_contract(contract_name: str) -> dict:
         raise RuntimeError("py-solc-x is not installed") from exc
 
     solc_version = spec["solc_version"]
+    if contract_name == "BatchTreasuryDistributor":
+        stamp_batch_treasury_distributor_source_comment()
     installed_versions = {str(version) for version in get_installed_solc_versions()}
     if solc_version not in installed_versions:
         install_solc(solc_version)
@@ -124,6 +151,22 @@ def get_contract_interface(contract_name: str) -> dict:
         if imported_artifact is not None:
             return imported_artifact
         raise
+
+
+def get_contract_source(contract_name: str) -> dict:
+    spec = CONTRACT_SPECS.get(contract_name)
+    if spec is None:
+        raise ValueError(f"Unsupported contract: {contract_name}")
+
+    source_path = spec["source_path"]
+    if not source_path.exists():
+        raise RuntimeError(f"Contract source not found: {source_path}")
+
+    return {
+        "contract_name": contract_name,
+        "source_path": str(source_path),
+        "source_code": source_path.read_text(encoding="utf-8"),
+    }
 
 
 def get_managed_token_distributor_interface() -> dict:

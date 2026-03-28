@@ -22,6 +22,7 @@ from src.services.wallet_service import (
     store_wallet,
     withdraw_subwallet_linked_treasury_contract as withdraw_subwallet_linked_treasury_contract_service,
 )
+from src.services.solidity_service import get_contract_source as get_contract_source_service
 
 router = APIRouter(prefix="/api/wallets", tags=["wallets"])
 
@@ -312,6 +313,19 @@ def withdraw_wallet_contract_endpoint(
         raise HTTPException(status_code=503, detail=str(re))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/contracts/source")
+def get_wallet_contract_source_endpoint(contract_name: str = Query(default="BatchTreasuryDistributor")):
+    try:
+        return get_contract_source_service(contract_name)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except RuntimeError as re:
+        raise HTTPException(status_code=404, detail=str(re))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/{wallet_id}")
 def get_wallet_endpoint(wallet_id: str):

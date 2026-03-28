@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
-//20260121 0919
+
+// 20260121 0919
 /**
  * @title BatchTreasuryDistributor
- * @notice 通用的资金托管 + 批量分发合约（ETH + ERC20）
+ * @notice 通用的资金托管 + 批量分发合约（Native + ERC20）
  * @dev 设计目标：可读、可审计、兼容非标准 ERC20、减少误用风险
  */
 interface IERC20Like {
@@ -66,36 +67,36 @@ contract BatchTreasuryDistributor is OwnableLite {
     using SafeERC20Lite for address;
 
     event Received(address indexed from, uint256 amount);
-    event EthSent(address indexed to, uint256 amount);
+    event NativeSent(address indexed to, uint256 amount);
     event TokenSent(address indexed token, address indexed to, uint256 amount);
     event Swept(address indexed token, uint256 amount);
-    event SweptETH(uint256 amount);
+    event SweptNative(uint256 amount);
 
     receive() external payable {
         emit Received(msg.sender, msg.value);
     }
 
     /**
-     * @notice 批量分发：每个 index 可以选择发 ETH、发指定 ERC20
+     * @notice 批量分发：每个 index 可以选择发原生币、发指定 ERC20
      * @param recipients   收款地址列表
-     * @param ethAmounts   每个地址对应要发送的 ETH 数量（可为 0）
+     * @param nativeAmounts 每个地址对应要发送的原生币数量（可为 0）
      * @param tokens       每个地址对应要发送的 token 地址（可为 address(0) 表示不发 token）
      * @param tokenAmounts 每个地址对应要发送的 token 数量（可为 0）
      *
      * @dev 重要约束：
      *      - 四个数组长度必须完全一致
-     *      - ETH 使用 call 发送（兼容合约地址），失败则 revert
+     *      - 原生币使用 call 发送（兼容合约地址），失败则 revert
      *      - ERC20 使用 safeTransfer（兼容不返回 bool 的 token）
      */
     function batchSend(
         address[] calldata recipients,
-        uint256[] calldata ethAmounts,
+        uint256[] calldata nativeAmounts,
         address[] calldata tokens,
         uint256[] calldata tokenAmounts
     ) external payable onlyOwner {
         uint256 n = recipients.length;
         require(
-            ethAmounts.length == n &&
+            nativeAmounts.length == n &&
             tokens.length == n &&
             tokenAmounts.length == n,
             "length mismatch"
@@ -103,13 +104,14 @@ contract BatchTreasuryDistributor is OwnableLite {
 
         for (uint256 i = 0; i < n; i++) {
             address to = recipients[i];
+            require(to != address(0), "to=0");
 
-            // 1) 发 ETH（可选）
-            uint256 ethAmt = ethAmounts[i];
-            if (ethAmt > 0) {
-                (bool ok, ) = payable(to).call{value: ethAmt}("");
-                require(ok, "ETH send failed");
-                emit EthSent(to, ethAmt);
+            // 1) 发原生币（可选）
+            uint256 nativeAmt = nativeAmounts[i];
+            if (nativeAmt > 0) {
+                (bool ok, ) = payable(to).call{value: nativeAmt}("");
+                require(ok, "native send failed");
+                emit NativeSent(to, nativeAmt);
             }
 
             // 2) 发 Token（可选）
@@ -124,14 +126,14 @@ contract BatchTreasuryDistributor is OwnableLite {
     }
 
     /**
-     * @notice 把合约里所有 ETH 提走给 owner
+     * @notice 把合约里所有原生币提走给 owner
      */
-    function sweepETH() external onlyOwner {
+    function sweepNative() external onlyOwner {
         uint256 bal = address(this).balance;
         if (bal > 0) {
             (bool ok, ) = payable(owner).call{value: bal}("");
-            require(ok, "sweep ETH failed");
-            emit SweptETH(bal);
+            require(ok, "sweep native failed");
+            emit SweptNative(bal);
         }
     }
 

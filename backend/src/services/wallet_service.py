@@ -3326,7 +3326,7 @@ def import_main_wallet(seed_phrase: str):
     return {
         'address': root_account.address,
         'encrypted_seed': encrypted_mnemonic,
-        **get_wallet_balances(root_account.address),
+        **get_wallet_balances(root_account.address, live_balances=False),
     }
 
 def generate_main_wallet():
@@ -3350,7 +3350,7 @@ def import_private_key_wallet(private_key: str):
     return {
         'address': account.address,
         'encrypted_key': encrypted_private_key,
-        **get_wallet_balances(account.address),
+        **get_wallet_balances(account.address, live_balances=False),
     }
 
 def _parse_derivation_index(value) -> int | None:
@@ -3701,7 +3701,10 @@ def execute_wallet_run(
 
     from src.services.template_service import build_template_stablecoin_routes, get_template, preview_template
     from src.services.contract_service import build_contract_execution_snapshot
-    from src.services.solidity_service import get_batch_treasury_distributor_interface
+    from src.services.solidity_service import (
+        get_batch_treasury_distributor_interface,
+        stamp_batch_treasury_distributor_source_comment,
+    )
 
     main_wallet = get_wallet(main_id)
     if not main_wallet or main_wallet["type"] not in {"main", "imported_private_key"}:
@@ -6107,6 +6110,7 @@ def execute_wallet_run(
                         if not balance_ready:
                             raise RuntimeError(balance_error or f"Subwallet {native_symbol} headroom check failed")
 
+                        stamp_batch_treasury_distributor_source_comment()
                         deployment_nonce = web3_client.eth.get_transaction_count(subwallet_address, "pending")
                         deployment_gas_pricing = resolve_legacy_aggressive_gas_pricing(
                             web3_client,
@@ -6878,6 +6882,7 @@ def list_saved_wallets(chain: str | None = None):
         serialize_wallet_record(
             record,
             chain=chain or record.get("chain"),
+            live_balances=False,
             include_token_holdings=False,
         )
         for record in root_wallets
@@ -7448,7 +7453,7 @@ def withdraw_subwallet_linked_treasury_contract(
                     wallet_address=wallet_address,
                     private_key=sub_wallet["private_key"],
                     abi=distributor_interface["abi"],
-                    function_name="sweepETH",
+                    function_name="sweepNative",
                     function_args=[],
                     nonce=next_nonce,
                     gas_price_wei=sweep_gas_price_wei,

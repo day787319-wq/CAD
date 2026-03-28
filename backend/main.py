@@ -8,7 +8,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -79,6 +79,15 @@ def get_status_chains() -> dict[str, dict]:
             "rpc_env_name": rpc_env_name,
         }
     return chains
+
+
+def get_status_chain(chain: str) -> tuple[str, dict]:
+    normalized_chain = str(chain or "").strip().upper()
+    chains = get_status_chains()
+    chain_info = chains.get(normalized_chain)
+    if not chain_info:
+        raise HTTPException(status_code=404, detail=f"Unknown chain '{chain}'")
+    return normalized_chain, chain_info
 
 
 def _jsonrpc_post(url: str, method: str, params=None, auth: tuple | None = None) -> dict | None:
@@ -267,12 +276,21 @@ def check_chain(chain: str, info: dict) -> dict:
             if info.get("rpc_env_name")
             else "RPC is not configured"
         )
-        return {"chain": chain, "type": t, "status": "unconfigured", "error": message}
-    if t == "EVM":    return _check_evm(chain, info["rpc"])
-    if t == "BTC":    return _check_btc(chain, info["rpc"])
-    if t == "SOLANA": return _check_solana(chain, info["rpc"])
-    if t == "TRON":   return _check_tron(chain, info["rpc"])
-    return {"chain": chain, "type": t, "status": "unknown"}
+        result = {"chain": chain, "type": t, "status": "unconfigured", "error": message}
+    elif t == "EVM":
+        result = _check_evm(chain, info["rpc"])
+    elif t == "BTC":
+        result = _check_btc(chain, info["rpc"])
+    elif t == "SOLANA":
+        result = _check_solana(chain, info["rpc"])
+    elif t == "TRON":
+        result = _check_tron(chain, info["rpc"])
+    else:
+        result = {"chain": chain, "type": t, "status": "unknown"}
+    return {
+        **result,
+        "rpc_env_name": info.get("rpc_env_name"),
+    }
 
 
 REQUEST_TIMEOUT_SECONDS = 120
@@ -316,6 +334,13 @@ app.add_middleware(
 def get_status():
     results = [check_chain(chain, info) for chain, info in get_status_chains().items()]
     return {"status": results, "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+
+
+@app.get("/status/{chain}")
+def get_chain_status(chain: str):
+    normalized_chain, chain_info = get_status_chain(chain)
+    result = check_chain(normalized_chain, chain_info)
+    return {"status": result, "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
 
 
 @app.get("/health")
