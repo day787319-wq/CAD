@@ -4157,23 +4157,79 @@ def execute_wallet_run(
         item["return_sweep_summary"] = return_sweep_summary
 
         candidate_tokens: list[dict] = []
-        seen_tokens: set[str] = set()
-        for token in [
-            resolve_token(wrapped_native_address, template_chain),
-            *(resolve_token(route["token_address"], template_chain) for route in stablecoin_routes),
-        ]:
-            normalized_address = token["address"].lower()
-            if normalized_address in seen_tokens:
-                continue
-            seen_tokens.add(normalized_address)
-            candidate_tokens.append(token)
 
-        return_sweep_summary["candidate_asset_count"] = len(candidate_tokens) + 1
+        def finalize_return_sweep_summary(*, error: str | None = None):
+            remaining_assets: list[dict] = []
+            native_balance_after_wei: int | None = None
 
-        token_balances_to_sweep: list[tuple[dict, int]] = []
-        for token in candidate_tokens:
-            balance_units = get_token_balance_units(token["address"], sub_wallet["address"])
-            if balance_units > 0:
+            for token in candidate_tokens:
+                try:
+                    remaining_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                except Exception:
+                    continue
+                if remaining_units <= 0:
+                    continue
+                remaining_assets.append(
+                    format_balance_entry(
+                        asset=token["symbol"],
+                        amount_decimal=token_units_to_decimal(remaining_units, int(token["decimals"])),
+                        token_address=token["address"],
+                        kind="token",
+                    )
+                )
+
+            try:
+                native_balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+                return_sweep_summary["native_balance_after"] = format_decimal(wei_to_decimal(native_balance_after_wei))
+                if native_balance_after_wei > 0:
+                    remaining_assets.append(
+                        format_balance_entry(
+                            asset=native_symbol,
+                            amount_decimal=wei_to_decimal(native_balance_after_wei),
+                            kind="native",
+                        )
+                    )
+            except Exception:
+                return_sweep_summary["native_balance_after"] = return_sweep_summary.get("native_balance_after")
+
+            return_sweep_summary["remaining_assets"] = remaining_assets
+            return_sweep_summary["remaining_asset_count"] = len(remaining_assets)
+            return_sweep_summary["detected_asset_count"] = max(
+                int(return_sweep_summary.get("detected_asset_count") or 0),
+                len(return_sweep_summary.get("detected_assets") or []),
+            )
+            return_sweep_summary["zero_balance_candidate_count"] = max(
+                int(return_sweep_summary.get("candidate_asset_count") or 0) - int(return_sweep_summary["detected_asset_count"]),
+                0,
+            )
+            return_sweep_summary["error"] = error
+            return_sweep_summary["fully_returned"] = not error and len(remaining_assets) == 0
+            return_sweep_summary["status"] = (
+                "completed"
+                if return_sweep_summary["fully_returned"]
+                else "partial" if int(return_sweep_summary.get("successful_asset_count") or 0) > 0 else "failed"
+            )
+            return_sweep_summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            seen_tokens: set[str] = set()
+            for token in [
+                resolve_token(wrapped_native_address, template_chain),
+                *(resolve_token(route["token_address"], template_chain) for route in stablecoin_routes),
+            ]:
+                normalized_address = token["address"].lower()
+                if normalized_address in seen_tokens:
+                    continue
+                seen_tokens.add(normalized_address)
+                candidate_tokens.append(token)
+
+            return_sweep_summary["candidate_asset_count"] = len(candidate_tokens) + 1
+
+            token_balances_to_sweep: list[tuple[dict, int]] = []
+            for token in candidate_tokens:
+                balance_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                if balance_units <= 0:
+                    continue
                 token_balances_to_sweep.append((token, balance_units))
                 return_sweep_summary["detected_assets"].append(
                     format_balance_entry(
@@ -4184,387 +4240,363 @@ def execute_wallet_run(
                     )
                 )
 
-        native_balance_before_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
-        return_sweep_summary["native_balance_before"] = format_decimal(wei_to_decimal(native_balance_before_wei))
-        if native_balance_before_wei > 0:
-            return_sweep_summary["detected_assets"].append(
-                format_balance_entry(
-                    asset=native_symbol,
-                    amount_decimal=wei_to_decimal(native_balance_before_wei),
-                    kind="native",
-                )
-            )
-
-        detected_asset_count = len(return_sweep_summary["detected_assets"])
-        return_sweep_summary["detected_asset_count"] = detected_asset_count
-        return_sweep_summary["zero_balance_candidate_count"] = max(
-            int(return_sweep_summary["candidate_asset_count"]) - detected_asset_count,
-            0,
-        )
-
-        record_run_log(
-            stage="cleanup",
-            event="subwallet_leftover_scan_completed",
-            status="completed",
-            message=(
-                f"Detected {detected_asset_count} leftover asset(s) on subwallet {item['address']} before return cleanup."
-                if detected_asset_count > 0
-                else f"No leftover assets were detected on subwallet {item['address']}."
-            ),
-            wallet_id=item["wallet_id"],
-            wallet_address=item["address"],
-            details={
-                "return_wallet_address": return_wallet_address,
-                "candidate_asset_count": return_sweep_summary["candidate_asset_count"],
-                "detected_asset_count": detected_asset_count,
-                "zero_balance_candidate_count": return_sweep_summary["zero_balance_candidate_count"],
-                "native_balance_before": return_sweep_summary["native_balance_before"],
-            },
-        )
-
-        for token, balance_units in token_balances_to_sweep:
-            amount_decimal = token_units_to_decimal(balance_units, int(token["decimals"]))
-            try:
-                sweep_receipt = None
-                sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
-                    web3_client,
-                    chain=template_chain,
-                    tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
-                )
-                sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
-                required_headroom_eth = estimate_gas_fee_eth(
-                    ERC20_TRANSFER_GAS_LIMIT + ETH_TRANSFER_GAS_LIMIT,
-                    tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
-                    gas_price_wei=sweep_gas_price_wei,
-                )
-                balance_ready, balance_error = ensure_subwallet_eth_headroom(
-                    item,
-                    reason=f"return leftover {token['symbol']} and still keep enough gas for the final {native_symbol} sweep",
-                    minimum_balance_eth=required_headroom_eth,
-                )
-                if not balance_ready:
-                    raise RuntimeError(
-                        balance_error
-                        or f"Return sweep {native_symbol} headroom check failed before returning {token['symbol']}"
+            native_balance_before_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+            return_sweep_summary["native_balance_before"] = format_decimal(wei_to_decimal(native_balance_before_wei))
+            if native_balance_before_wei > 0:
+                return_sweep_summary["detected_assets"].append(
+                    format_balance_entry(
+                        asset=native_symbol,
+                        amount_decimal=wei_to_decimal(native_balance_before_wei),
+                        kind="native",
                     )
-                sweep_nonce = web3_client.eth.get_transaction_count(checksum_subwallet_address, "pending")
-                last_sweep_error: WalletTransactionError | None = None
-                attempts_used = 0
+                )
 
-                for sweep_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
-                    attempts_used = sweep_attempt
-                    try:
-                        sweep_receipt = transfer_token_from_wallet(
-                            web3_client,
-                            token_address=token["address"],
-                            chain=template_chain,
-                            wallet_address=sub_wallet["address"],
-                            private_key=sub_wallet["private_key"],
-                            recipient_address=return_wallet_address,
-                            amount_units=balance_units,
-                            nonce=sweep_nonce,
-                            gas_price_wei=sweep_gas_price_wei,
-                            tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
-                            wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
-                        )
-                        break
-                    except WalletTransactionError as exc:
-                        last_sweep_error = exc
-                        if exc.retryable:
-                            sweep_receipt = recover_token_transfer_after_timeout(
-                                web3_client,
-                                token_address=token["address"],
-                                recipient_address=return_wallet_address,
-                                amount_units=balance_units,
-                                token_decimals=int(exc.details.get("token_decimals") or token["decimals"]),
-                                recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
-                                tx_hash=exc.tx_hash,
-                                nonce=sweep_nonce,
-                                gas_price_wei=exc.gas_price_wei,
-                            )
-                            if sweep_receipt:
-                                break
-                            if sweep_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
-                                sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
-                                    web3_client,
-                                    chain=template_chain,
-                                    tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
-                                    attempt=sweep_attempt + 1,
-                                    previous_gas_price_wei=exc.gas_price_wei,
-                                )
-                                sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
-                                continue
-                        raise
-
-                if not sweep_receipt:
-                    raise last_sweep_error or RuntimeError("Return sweep token transfer did not produce a confirmation")
-
-                balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
-                return_sweep_transactions.append(
-                    {
-                        "asset": token["symbol"],
-                        "token_address": token["address"],
-                        "amount": format_decimal(amount_decimal),
-                        "balance_before": format_decimal(amount_decimal),
-                        "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
-                        "kind": "token",
-                        "recipient_address": return_wallet_address,
-                        "destination_address": return_wallet_address,
-                        "tx_hash": sweep_receipt["tx_hash"],
-                        "status": sweep_receipt["status"],
-                        "attempts": attempts_used,
-                    }
-                )
-                return_sweep_summary["successful_asset_count"] = int(return_sweep_summary["successful_asset_count"]) + 1
-                return_sweep_success_count += 1
-                record_run_log(
-                    stage="cleanup",
-                    event="subwallet_leftover_token_returned",
-                    status="confirmed",
-                    message=f"Returned leftover {token['symbol']} from subwallet {item['address']} to the return wallet.",
-                    tx_hash=sweep_receipt["tx_hash"],
-                    wallet_id=item["wallet_id"],
-                    wallet_address=item["address"],
-                    movement={
-                        "action": "transfer",
-                        "asset": token["symbol"],
-                        "amount": format_decimal(amount_decimal),
-                        "from_address": item["address"],
-                        "to_address": return_wallet_address,
-                    },
-                    details={
-                        "attempts": attempts_used,
-                        "balance_before": format_decimal(amount_decimal),
-                        "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
-                    },
-                )
-            except Exception as exc:
-                balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
-                return_sweep_failure_count += 1
-                return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
-                return_sweep_transactions.append(
-                    {
-                        "asset": token["symbol"],
-                        "token_address": token["address"],
-                        "amount": format_decimal(amount_decimal),
-                        "balance_before": format_decimal(amount_decimal),
-                        "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
-                        "kind": "token",
-                        "recipient_address": return_wallet_address,
-                        "destination_address": return_wallet_address,
-                        "tx_hash": None,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
-                record_run_log(
-                    stage="cleanup",
-                    event="subwallet_leftover_token_return_failed",
-                    status="failed",
-                    message=f"Failed to return leftover {token['symbol']} from subwallet {item['address']}: {exc}",
-                    wallet_id=item["wallet_id"],
-                    wallet_address=item["address"],
-                    details={
-                        "asset": token["symbol"],
-                        "return_wallet_address": return_wallet_address,
-                        "balance_before": format_decimal(amount_decimal),
-                        "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
-                    },
-                )
-        eth_balance_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
-        eth_sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
-            web3_client,
-            chain=template_chain,
-            tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
-        )
-        gas_price_wei = int(eth_sweep_gas_pricing["submitted_gas_price_wei"])
-        eth_transfer_fee_wei = gas_price_wei * ETH_TRANSFER_GAS_LIMIT
-        transferable_eth_wei = int(eth_balance_wei) - int(eth_transfer_fee_wei)
-        if eth_balance_wei > 0 and transferable_eth_wei <= 0:
-            return_sweep_failure_count += 1
-            return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
-            return_sweep_transactions.append(
-                {
-                    "asset": native_symbol,
-                    "token_address": None,
-                    "amount": format_decimal(wei_to_decimal(eth_balance_wei)),
-                    "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                    "balance_after": format_decimal(wei_to_decimal(eth_balance_wei)),
-                    "kind": "native",
-                    "recipient_address": return_wallet_address,
-                    "destination_address": return_wallet_address,
-                    "tx_hash": None,
-                    "status": "failed",
-                    "error": (
-                        f"Not enough {native_symbol} remained to cover the final return transfer gas. "
-                        f"Need {format_decimal(wei_to_decimal(eth_transfer_fee_wei))} {native_symbol} in gas."
-                    ),
-                }
+            detected_asset_count = len(return_sweep_summary["detected_assets"])
+            return_sweep_summary["detected_asset_count"] = detected_asset_count
+            return_sweep_summary["zero_balance_candidate_count"] = max(
+                int(return_sweep_summary["candidate_asset_count"]) - detected_asset_count,
+                0,
             )
+
             record_run_log(
                 stage="cleanup",
-                event="subwallet_leftover_eth_return_failed",
-                status="failed",
+                event="subwallet_leftover_scan_completed",
+                status="completed",
                 message=(
-                    f"Leftover {native_symbol} remained on subwallet {item['address']} but could not be returned "
-                    f"because the final transfer gas could not be covered."
+                    f"Detected {detected_asset_count} leftover asset(s) on subwallet {item['address']} before return cleanup."
+                    if detected_asset_count > 0
+                    else f"No leftover assets were detected on subwallet {item['address']}."
                 ),
                 wallet_id=item["wallet_id"],
                 wallet_address=item["address"],
                 details={
                     "return_wallet_address": return_wallet_address,
-                    "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                    "required_gas_fee": format_decimal(wei_to_decimal(eth_transfer_fee_wei)),
+                    "candidate_asset_count": return_sweep_summary["candidate_asset_count"],
+                    "detected_asset_count": detected_asset_count,
+                    "zero_balance_candidate_count": return_sweep_summary["zero_balance_candidate_count"],
+                    "native_balance_before": return_sweep_summary["native_balance_before"],
                 },
             )
-        elif transferable_eth_wei > 0:
-            try:
-                eth_amount = wei_to_decimal(transferable_eth_wei)
-                sweep_tx = {
-                    **build_transaction_envelope(
-                        web3_client,
-                        checksum_subwallet_address,
-                        web3_client.eth.get_transaction_count(checksum_subwallet_address, "pending"),
-                        gas=ETH_TRANSFER_GAS_LIMIT,
-                        value=transferable_eth_wei,
-                        gas_price_wei=gas_price_wei,
+
+            cleanup_transfer_count = len(token_balances_to_sweep) + (1 if native_balance_before_wei > 0 or token_balances_to_sweep else 0)
+            cleanup_gas_units = (
+                len(token_balances_to_sweep) * ERC20_TRANSFER_GAS_LIMIT
+            ) + (
+                ETH_TRANSFER_GAS_LIMIT if cleanup_transfer_count > 0 else 0
+            )
+            if cleanup_gas_units > 0:
+                balance_ready, balance_error = ensure_subwallet_eth_headroom(
+                    item,
+                    reason="return leftover balances to the configured return wallet",
+                    minimum_balance_eth=estimate_gas_fee_eth(
+                        cleanup_gas_units,
+                        tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
                     ),
-                    "to": checksum_return_wallet_address,
-                }
-                sweep_hash = send_signed_transaction(web3_client, sweep_tx, sub_wallet["private_key"])
-                wait_for_transaction_success(
-                    web3_client,
-                    sweep_hash,
-                    timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
                 )
-                balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
-                return_sweep_transactions.append(
-                    {
-                        "asset": native_symbol,
-                        "token_address": None,
-                        "amount": format_decimal(eth_amount),
-                        "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                        "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
-                        "kind": "native",
-                        "recipient_address": return_wallet_address,
-                        "destination_address": return_wallet_address,
-                        "tx_hash": sweep_hash,
-                        "status": "confirmed",
-                    }
-                )
-                return_sweep_summary["successful_asset_count"] = int(return_sweep_summary["successful_asset_count"]) + 1
-                item["status"] = "returned"
-                return_sweep_success_count += 1
-                record_run_log(
-                    stage="cleanup",
-                    event="subwallet_leftover_eth_returned",
-                    status="confirmed",
-                    message=f"Returned leftover {native_symbol} from subwallet {item['address']} to the return wallet.",
-                    tx_hash=sweep_hash,
-                    wallet_id=item["wallet_id"],
-                    wallet_address=item["address"],
-                    movement={
-                        "action": "transfer",
-                        "asset": native_symbol,
-                        "amount": format_decimal(eth_amount),
-                        "from_address": item["address"],
-                        "to_address": return_wallet_address,
-                    },
-                    details={
-                        "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                        "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
-                    },
-                )
-            except Exception as exc:
-                balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+                if not balance_ready:
+                    return_sweep_failure_count += 1
+                    execution_failure_count += 1
+                    raise RuntimeError(balance_error or f"Return sweep {native_symbol} headroom check failed")
+
+            for token, balance_units in token_balances_to_sweep:
+                amount_decimal = token_units_to_decimal(balance_units, int(token["decimals"]))
+                try:
+                    sweep_receipt = None
+                    sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                        web3_client,
+                        chain=template_chain,
+                        tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                    )
+                    sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+                    required_headroom_eth = estimate_gas_fee_eth(
+                        ERC20_TRANSFER_GAS_LIMIT + ETH_TRANSFER_GAS_LIMIT,
+                        tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                        gas_price_wei=sweep_gas_price_wei,
+                    )
+                    balance_ready, balance_error = ensure_subwallet_eth_headroom(
+                        item,
+                        reason=f"return leftover {token['symbol']} and still keep enough gas for the final {native_symbol} sweep",
+                        minimum_balance_eth=required_headroom_eth,
+                    )
+                    if not balance_ready:
+                        raise RuntimeError(
+                            balance_error
+                            or f"Return sweep {native_symbol} headroom check failed before returning {token['symbol']}"
+                        )
+                    sweep_nonce = web3_client.eth.get_transaction_count(checksum_subwallet_address, "pending")
+                    last_sweep_error: WalletTransactionError | None = None
+                    attempts_used = 0
+
+                    for sweep_attempt in range(1, TOKEN_TRANSFER_MAX_ATTEMPTS + 1):
+                        attempts_used = sweep_attempt
+                        try:
+                            sweep_receipt = transfer_token_from_wallet(
+                                web3_client,
+                                token_address=token["address"],
+                                chain=template_chain,
+                                wallet_address=sub_wallet["address"],
+                                private_key=sub_wallet["private_key"],
+                                recipient_address=return_wallet_address,
+                                amount_units=balance_units,
+                                nonce=sweep_nonce,
+                                gas_price_wei=sweep_gas_price_wei,
+                                tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                                wait_timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
+                            )
+                            break
+                        except WalletTransactionError as exc:
+                            last_sweep_error = exc
+                            if exc.retryable:
+                                sweep_receipt = recover_token_transfer_after_timeout(
+                                    web3_client,
+                                    token_address=token["address"],
+                                    recipient_address=return_wallet_address,
+                                    amount_units=balance_units,
+                                    token_decimals=int(exc.details.get("token_decimals") or token["decimals"]),
+                                    recipient_balance_before=int(exc.details.get("recipient_balance_before") or 0),
+                                    tx_hash=exc.tx_hash,
+                                    nonce=sweep_nonce,
+                                    gas_price_wei=exc.gas_price_wei,
+                                )
+                                if sweep_receipt:
+                                    break
+                                if sweep_attempt < TOKEN_TRANSFER_MAX_ATTEMPTS:
+                                    sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                                        web3_client,
+                                        chain=template_chain,
+                                        tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                                        attempt=sweep_attempt + 1,
+                                        previous_gas_price_wei=exc.gas_price_wei,
+                                    )
+                                    sweep_gas_price_wei = int(sweep_gas_pricing["submitted_gas_price_wei"])
+                                    continue
+                            raise
+
+                    if not sweep_receipt:
+                        raise last_sweep_error or RuntimeError("Return sweep token transfer did not produce a confirmation")
+
+                    balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                    return_sweep_transactions.append(
+                        {
+                            "asset": token["symbol"],
+                            "token_address": token["address"],
+                            "amount": format_decimal(amount_decimal),
+                            "balance_before": format_decimal(amount_decimal),
+                            "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
+                            "kind": "token",
+                            "recipient_address": return_wallet_address,
+                            "destination_address": return_wallet_address,
+                            "tx_hash": sweep_receipt["tx_hash"],
+                            "status": sweep_receipt["status"],
+                            "attempts": attempts_used,
+                        }
+                    )
+                    return_sweep_summary["successful_asset_count"] = int(return_sweep_summary["successful_asset_count"]) + 1
+                    return_sweep_success_count += 1
+                    record_run_log(
+                        stage="cleanup",
+                        event="subwallet_leftover_token_returned",
+                        status="confirmed",
+                        message=f"Returned leftover {token['symbol']} from subwallet {item['address']} to the return wallet.",
+                        tx_hash=sweep_receipt["tx_hash"],
+                        wallet_id=item["wallet_id"],
+                        wallet_address=item["address"],
+                        movement={
+                            "action": "transfer",
+                            "asset": token["symbol"],
+                            "amount": format_decimal(amount_decimal),
+                            "from_address": item["address"],
+                            "to_address": return_wallet_address,
+                        },
+                        details={
+                            "attempts": attempts_used,
+                            "balance_before": format_decimal(amount_decimal),
+                            "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
+                        },
+                    )
+                except Exception as exc:
+                    balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                    return_sweep_failure_count += 1
+                    return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
+                    return_sweep_transactions.append(
+                        {
+                            "asset": token["symbol"],
+                            "token_address": token["address"],
+                            "amount": format_decimal(amount_decimal),
+                            "balance_before": format_decimal(amount_decimal),
+                            "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
+                            "kind": "token",
+                            "recipient_address": return_wallet_address,
+                            "destination_address": return_wallet_address,
+                            "tx_hash": None,
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                    )
+                    record_run_log(
+                        stage="cleanup",
+                        event="subwallet_leftover_token_return_failed",
+                        status="failed",
+                        message=f"Failed to return leftover {token['symbol']} from subwallet {item['address']}: {exc}",
+                        wallet_id=item["wallet_id"],
+                        wallet_address=item["address"],
+                        details={
+                            "asset": token["symbol"],
+                            "return_wallet_address": return_wallet_address,
+                            "balance_before": format_decimal(amount_decimal),
+                            "balance_after": format_decimal(token_units_to_decimal(balance_after_units, int(token["decimals"]))),
+                        },
+                    )
+                    raise
+
+            eth_balance_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+            eth_sweep_gas_pricing = resolve_legacy_aggressive_gas_pricing(
+                web3_client,
+                chain=template_chain,
+                tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+            )
+            gas_price_wei = int(eth_sweep_gas_pricing["submitted_gas_price_wei"])
+            eth_transfer_fee_wei = gas_price_wei * ETH_TRANSFER_GAS_LIMIT
+            transferable_eth_wei = int(eth_balance_wei) - int(eth_transfer_fee_wei)
+            if eth_balance_wei > 0 and transferable_eth_wei <= 0:
                 return_sweep_failure_count += 1
                 return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
                 return_sweep_transactions.append(
                     {
                         "asset": native_symbol,
                         "token_address": None,
-                        "amount": format_decimal(wei_to_decimal(transferable_eth_wei)),
+                        "amount": format_decimal(wei_to_decimal(eth_balance_wei)),
                         "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                        "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                        "balance_after": format_decimal(wei_to_decimal(eth_balance_wei)),
                         "kind": "native",
                         "recipient_address": return_wallet_address,
                         "destination_address": return_wallet_address,
                         "tx_hash": None,
                         "status": "failed",
-                        "error": str(exc),
+                        "error": (
+                            f"Not enough {native_symbol} remained to cover the final return transfer gas. "
+                            f"Need {format_decimal(wei_to_decimal(eth_transfer_fee_wei))} {native_symbol} in gas."
+                        ),
                     }
                 )
                 record_run_log(
                     stage="cleanup",
                     event="subwallet_leftover_eth_return_failed",
                     status="failed",
-                    message=f"Failed to return leftover {native_symbol} from subwallet {item['address']}: {exc}",
+                    message=(
+                        f"Leftover {native_symbol} remained on subwallet {item['address']} but could not be returned "
+                        f"because the final transfer gas could not be covered."
+                    ),
                     wallet_id=item["wallet_id"],
                     wallet_address=item["address"],
                     details={
                         "return_wallet_address": return_wallet_address,
                         "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
-                        "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                        "required_gas_fee": format_decimal(wei_to_decimal(eth_transfer_fee_wei)),
                     },
                 )
-
-        remaining_assets: list[dict] = []
-        for token in candidate_tokens:
-            remaining_units = get_token_balance_units(token["address"], sub_wallet["address"])
-            if remaining_units <= 0:
-                continue
-            remaining_assets.append(
-                format_balance_entry(
-                    asset=token["symbol"],
-                    amount_decimal=token_units_to_decimal(remaining_units, int(token["decimals"])),
-                    token_address=token["address"],
-                    kind="token",
+                raise RuntimeError(
+                    f"Not enough {native_symbol} remained to cover the final return transfer gas. "
+                    f"Need {format_decimal(wei_to_decimal(eth_transfer_fee_wei))} {native_symbol} in gas."
                 )
-            )
-
-        native_balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
-        return_sweep_summary["native_balance_after"] = format_decimal(wei_to_decimal(native_balance_after_wei))
-        if native_balance_after_wei > 0:
-            remaining_assets.append(
-                format_balance_entry(
-                    asset=native_symbol,
-                    amount_decimal=wei_to_decimal(native_balance_after_wei),
-                    kind="native",
-                )
-            )
-
-        return_sweep_summary["remaining_assets"] = remaining_assets
-        return_sweep_summary["remaining_asset_count"] = len(remaining_assets)
-        return_sweep_summary["detected_asset_count"] = max(
-            int(return_sweep_summary["detected_asset_count"]),
-            int(return_sweep_summary["successful_asset_count"]) + int(return_sweep_summary["failed_asset_count"]),
-            len(remaining_assets),
-        )
-        return_sweep_summary["zero_balance_candidate_count"] = max(
-            int(return_sweep_summary["candidate_asset_count"]) - int(return_sweep_summary["detected_asset_count"]),
-            0,
-        )
-        return_sweep_summary["fully_returned"] = return_sweep_summary["remaining_asset_count"] == 0
-        return_sweep_summary["status"] = (
-            "completed"
-            if return_sweep_summary["fully_returned"]
-            else "partial" if int(return_sweep_summary["successful_asset_count"]) > 0 else "failed"
-        )
-        return_sweep_summary["finished_at"] = datetime.now(timezone.utc).isoformat()
-
-        if remaining_assets:
-            remaining_text = ", ".join(
-                f"{asset['asset']} {asset['amount']}"
-                for asset in remaining_assets[:5]
-            )
-            return_sweep_summary["error"] = (
-                f"Leftover cleanup could not fully drain subwallet {item['address']}. Remaining assets: {remaining_text}."
-            )
+            if transferable_eth_wei > 0:
+                try:
+                    eth_amount = wei_to_decimal(transferable_eth_wei)
+                    sweep_tx = {
+                        **build_transaction_envelope(
+                            web3_client,
+                            checksum_subwallet_address,
+                            web3_client.eth.get_transaction_count(checksum_subwallet_address, "pending"),
+                            gas=ETH_TRANSFER_GAS_LIMIT,
+                            value=transferable_eth_wei,
+                            gas_price_wei=gas_price_wei,
+                        ),
+                        "to": checksum_return_wallet_address,
+                    }
+                    sweep_hash = send_signed_transaction(web3_client, sweep_tx, sub_wallet["private_key"])
+                    wait_for_transaction_success(
+                        web3_client,
+                        sweep_hash,
+                        timeout=get_legacy_gas_stage_pending_timeout_seconds(LEGACY_GAS_STAGE_RETURN_SWEEP),
+                    )
+                    balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+                    return_sweep_transactions.append(
+                        {
+                            "asset": native_symbol,
+                            "token_address": None,
+                            "amount": format_decimal(eth_amount),
+                            "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
+                            "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                            "kind": "native",
+                            "recipient_address": return_wallet_address,
+                            "destination_address": return_wallet_address,
+                            "tx_hash": sweep_hash,
+                            "status": "confirmed",
+                        }
+                    )
+                    return_sweep_summary["successful_asset_count"] = int(return_sweep_summary["successful_asset_count"]) + 1
+                    item["status"] = "returned"
+                    return_sweep_success_count += 1
+                    record_run_log(
+                        stage="cleanup",
+                        event="subwallet_leftover_eth_returned",
+                        status="confirmed",
+                        message=f"Returned leftover {native_symbol} from subwallet {item['address']} to the return wallet.",
+                        tx_hash=sweep_hash,
+                        wallet_id=item["wallet_id"],
+                        wallet_address=item["address"],
+                        movement={
+                            "action": "transfer",
+                            "asset": native_symbol,
+                            "amount": format_decimal(eth_amount),
+                            "from_address": item["address"],
+                            "to_address": return_wallet_address,
+                        },
+                        details={
+                            "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
+                            "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                        },
+                    )
+                except Exception as exc:
+                    balance_after_wei = int(web3_client.eth.get_balance(checksum_subwallet_address))
+                    return_sweep_failure_count += 1
+                    return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
+                    return_sweep_transactions.append(
+                        {
+                            "asset": native_symbol,
+                            "token_address": None,
+                            "amount": format_decimal(wei_to_decimal(transferable_eth_wei)),
+                            "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
+                            "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                            "kind": "native",
+                            "recipient_address": return_wallet_address,
+                            "destination_address": return_wallet_address,
+                            "tx_hash": None,
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                    )
+                    record_run_log(
+                        stage="cleanup",
+                        event="subwallet_leftover_eth_return_failed",
+                        status="failed",
+                        message=f"Failed to return leftover {native_symbol} from subwallet {item['address']}: {exc}",
+                        wallet_id=item["wallet_id"],
+                        wallet_address=item["address"],
+                        details={
+                            "return_wallet_address": return_wallet_address,
+                            "balance_before": format_decimal(wei_to_decimal(eth_balance_wei)),
+                            "balance_after": format_decimal(wei_to_decimal(balance_after_wei)),
+                        },
+                    )
+                    raise
+        except Exception as exc:
+            finalize_return_sweep_summary(error=str(exc))
             record_run_log(
                 stage="cleanup",
                 event="subwallet_leftover_cleanup_incomplete",
                 status="failed",
-                message=return_sweep_summary["error"],
+                message=return_sweep_summary["error"] or f"Return cleanup failed for subwallet {item['address']}.",
                 wallet_id=item["wallet_id"],
                 wallet_address=item["address"],
                 details={
@@ -4572,12 +4604,12 @@ def execute_wallet_run(
                     "remaining_asset_count": return_sweep_summary["remaining_asset_count"],
                     "successful_asset_count": return_sweep_summary["successful_asset_count"],
                     "failed_asset_count": return_sweep_summary["failed_asset_count"],
-                    "native_balance_after": return_sweep_summary["native_balance_after"],
+                    "native_balance_after": return_sweep_summary.get("native_balance_after"),
                 },
             )
-            execution_failure_count += 1
-            raise RuntimeError(return_sweep_summary["error"])
+            raise
 
+        finalize_return_sweep_summary()
         record_run_log(
             stage="cleanup",
             event="subwallet_leftover_cleanup_completed",
@@ -4593,7 +4625,7 @@ def execute_wallet_run(
                 "detected_asset_count": return_sweep_summary["detected_asset_count"],
                 "successful_asset_count": return_sweep_summary["successful_asset_count"],
                 "failed_asset_count": return_sweep_summary["failed_asset_count"],
-                "native_balance_after": return_sweep_summary["native_balance_after"],
+                "native_balance_after": return_sweep_summary.get("native_balance_after"),
             },
         )
 

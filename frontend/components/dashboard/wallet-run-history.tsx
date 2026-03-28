@@ -2562,11 +2562,17 @@ export function WalletRunHistory({
                                   </div>
                                 ) : (
                                   <div className="mt-3 rounded-xl border border-dashed border-border/70 bg-background/60 px-3 py-3 text-xs text-muted-foreground">
-                                    {locale === "en"
-                                      ? "No leftover asset transfers were needed for this subwallet."
-                                      : locale === "zn"
-                                        ? "该子钱包无需执行剩余资产回收转账。"
-                                        : "Ví con này không cần giao dịch hoàn trả số dư còn lại."}
+                                    {returnSweepSummary?.error || returnSweepDetectedCount > 0
+                                      ? locale === "en"
+                                        ? "Cleanup stopped before any return transfer was confirmed."
+                                        : locale === "zn"
+                                          ? "在任何回收转账确认之前，清理流程已停止。"
+                                          : "Quá trình dọn dẹp đã dừng trước khi có giao dịch hoàn trả nào được xác nhận."
+                                      : locale === "en"
+                                        ? "No leftover asset transfers were needed for this subwallet."
+                                        : locale === "zn"
+                                          ? "该子钱包无需执行剩余资产回收转账。"
+                                          : "Ví con này không cần giao dịch hoàn trả số dư còn lại."}
                                   </div>
                                 )}
 
