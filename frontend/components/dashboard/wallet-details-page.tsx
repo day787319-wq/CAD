@@ -31,6 +31,7 @@ import {
   TEMPLATE_API_URL,
   Template,
   TemplateOptions,
+  TemplatePreviewIssue,
   TemplateWalletSupportPreview,
   buildTemplateWalletSupportPreview,
   formatAmount,
@@ -127,6 +128,307 @@ type ContractSourcePayload = {
   source_path: string;
   source_code: string;
 };
+
+type TemplatePreviewFailurePayload = {
+  detail?: string | TemplatePreviewIssue | null;
+  error?: TemplatePreviewIssue | null;
+};
+
+type ActionIssueFallback = {
+  code?: string;
+  title: string;
+  summary: string;
+  hint?: string;
+  details?: string[];
+};
+
+function normalizePreviewFailureMessage(value: unknown) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) return null;
+  return normalized.toLowerCase() === "internal server error" ? null : normalized;
+}
+
+function extractPayloadErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+
+  const record = payload as {
+    detail?: unknown;
+    error?: Partial<TemplatePreviewIssue> | null;
+    preview_issue?: Partial<TemplatePreviewIssue> | null;
+    shortfall_reason?: unknown;
+  };
+
+  const candidates = [
+    normalizePreviewFailureMessage(typeof record.detail === "string" ? record.detail : null),
+    normalizePreviewFailureMessage(typeof record.shortfall_reason === "string" ? record.shortfall_reason : null),
+    normalizePreviewFailureMessage(record.error?.summary),
+    normalizePreviewFailureMessage(record.preview_issue?.summary),
+    Array.isArray(record.error?.details)
+      ? record.error?.details.map((value) => normalizePreviewFailureMessage(value)).find(Boolean) ?? null
+      : null,
+    Array.isArray(record.preview_issue?.details)
+      ? record.preview_issue?.details.map((value) => normalizePreviewFailureMessage(value)).find(Boolean) ?? null
+      : null,
+  ];
+
+  return candidates.find((value): value is string => Boolean(value)) ?? fallback;
+}
+
+function buildFallbackActionIssue(
+  locale: SupportedLocale,
+  fallback: ActionIssueFallback,
+  message?: string | null,
+): TemplatePreviewIssue {
+  const fallbackSummary = message ?? normalizePreviewFailureMessage(fallback.summary) ?? localeText(locale, {
+    en: "The action failed before it could complete.",
+    zn: "该操作在完成前失败。",
+    vn: "Thao tác đã thất bại trước khi hoàn tất.",
+  });
+  const fallbackDetails = Array.isArray(fallback.details)
+    ? fallback.details
+        .map((value) => normalizePreviewFailureMessage(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
+  return {
+    code: `${fallback.code ?? "action_failed"}`.trim() || "action_failed",
+    title: normalizePreviewFailureMessage(fallback.title) ?? localeText(locale, {
+      en: "Action failed",
+      zn: "操作失败",
+      vn: "Thao tác thất bại",
+    }),
+    summary: fallbackSummary,
+    details: fallbackDetails.length ? fallbackDetails : [fallbackSummary],
+    hint: normalizePreviewFailureMessage(fallback.hint) ?? localeText(locale, {
+      en: "Review the current wallet state and try again.",
+      zn: "请检查当前钱包状态后再重试。",
+      vn: "Hãy kiểm tra trạng thái ví hiện tại rồi thử lại.",
+    }),
+  };
+}
+
+function normalizeActionIssue(
+  issue: unknown,
+  locale: SupportedLocale,
+  fallback: ActionIssueFallback,
+  fallbackMessage?: string | null,
+): TemplatePreviewIssue {
+  const fallbackIssue = buildFallbackActionIssue(locale, fallback, fallbackMessage);
+  if (!issue || typeof issue !== "object") {
+    return fallbackIssue;
+  }
+
+  const record = issue as Partial<TemplatePreviewIssue>;
+  const details = Array.isArray(record.details)
+    ? record.details
+        .map((value) => normalizePreviewFailureMessage(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
+
+  return {
+    code: `${record.code ?? fallbackIssue.code}`.trim() || fallbackIssue.code,
+    title: normalizePreviewFailureMessage(record.title) ?? fallbackIssue.title,
+    summary: normalizePreviewFailureMessage(record.summary) ?? fallbackIssue.summary,
+    details: details.length ? details : fallbackIssue.details,
+    hint: normalizePreviewFailureMessage(record.hint) ?? fallbackIssue.hint ?? null,
+    context: record.context ?? null,
+  };
+}
+
+function extractActionIssueFromPayload(
+  payload: unknown,
+  locale: SupportedLocale,
+  fallback: ActionIssueFallback,
+): TemplatePreviewIssue {
+  if (payload && typeof payload === "object") {
+    const record = payload as
+      | (TemplatePreviewFailurePayload & {
+          preview_issue?: TemplatePreviewIssue | null;
+          shortfall_reason?: string | null;
+        })
+      | null;
+    const explicitIssue = record?.error ?? record?.preview_issue;
+    const nestedDetailIssue = record?.detail && typeof record.detail === "object" ? record.detail : null;
+    const fallbackMessage =
+      normalizePreviewFailureMessage(record?.shortfall_reason)
+      ?? normalizePreviewFailureMessage(typeof record?.detail === "string" ? record.detail : null);
+    return normalizeActionIssue(explicitIssue ?? nestedDetailIssue, locale, fallback, fallbackMessage);
+  }
+
+  return buildFallbackActionIssue(locale, fallback);
+}
+
+function buildFallbackPreviewIssue(locale: SupportedLocale, message?: string | null): TemplatePreviewIssue {
+  return buildFallbackActionIssue(
+    locale,
+    {
+      code: "preview_failed",
+      title: localeText(locale, {
+        en: "Automation check failed",
+        zn: "自动化检查失败",
+        vn: "Kiểm tra tự động hóa thất bại",
+      }),
+      summary: localeText(locale, {
+        en: "The automation check failed before it could finish validating balances, routes, and funding.",
+        zn: "自动化检查在完成余额、路由和资金验证前失败。",
+        vn: "Kiểm tra tự động hóa đã thất bại trước khi hoàn tất xác minh số dư, tuyến swap và cấp vốn.",
+      }),
+      hint: localeText(locale, {
+        en: "Check the chain RPC, main wallet balance, recipient settings, and funded token routes, then try again.",
+        zn: "请检查链 RPC、主钱包余额、接收地址设置和已注资代币路由后再重试。",
+        vn: "Hãy kiểm tra RPC của chain, số dư ví chính, cài đặt người nhận và các tuyến token được cấp vốn rồi thử lại.",
+      }),
+      details: [
+        localeText(locale, {
+          en: "The backend did not return any additional preview error details.",
+          zn: "后端没有返回更多预览错误细节。",
+          vn: "Backend không trả về thêm chi tiết lỗi cho bước kiểm tra này.",
+        }),
+      ],
+    },
+    message,
+  );
+}
+
+function extractPreviewIssueFromPayload(payload: unknown, locale: SupportedLocale): TemplatePreviewIssue {
+  return extractActionIssueFromPayload(
+    payload,
+    locale,
+    {
+      code: "preview_failed",
+      title: localeText(locale, {
+        en: "Automation check failed",
+        zn: "自动化检查失败",
+        vn: "Kiểm tra tự động hóa thất bại",
+      }),
+      summary: localeText(locale, {
+        en: "The automation check failed before it could finish validating balances, routes, and funding.",
+        zn: "自动化检查在完成余额、路由和资金验证前失败。",
+        vn: "Kiểm tra tự động hóa đã thất bại trước khi hoàn tất xác minh số dư, tuyến swap và cấp vốn.",
+      }),
+      hint: localeText(locale, {
+        en: "Check the chain RPC, main wallet balance, recipient settings, and funded token routes, then try again.",
+        zn: "请检查链 RPC、主钱包余额、接收地址设置和已注资代币路由后再重试。",
+        vn: "Hãy kiểm tra RPC của chain, số dư ví chính, cài đặt người nhận và các tuyến token được cấp vốn rồi thử lại.",
+      }),
+    },
+  );
+}
+
+function buildSweepIssueFromPayload(
+  payload: {
+    return_wallet_address?: string | null;
+    errors?: Array<{ error?: string | null; asset?: string | null }>;
+    summary?: {
+      error?: string | null;
+      detected_asset_count?: number | null;
+      successful_asset_count?: number | null;
+      failed_asset_count?: number | null;
+      remaining_asset_count?: number | null;
+    } | null;
+  },
+  locale: SupportedLocale,
+): TemplatePreviewIssue {
+  const detectedCount = Number(payload.summary?.detected_asset_count ?? 0);
+  const successfulCount = Number(payload.summary?.successful_asset_count ?? 0);
+  const failedCount = Number(payload.summary?.failed_asset_count ?? 0);
+  const remainingCount = Number(payload.summary?.remaining_asset_count ?? 0);
+  const errorMessages = (payload.errors ?? [])
+    .map((entry) => normalizePreviewFailureMessage(entry.error))
+    .filter((value): value is string => Boolean(value));
+  const summaryMessage =
+    normalizePreviewFailureMessage(payload.summary?.error)
+    ?? errorMessages[0]
+    ?? localeText(locale, {
+      en: "The leftover sweep did not fully complete.",
+      zn: "剩余资产清扫未完全完成。",
+      vn: "Lệnh sweep tài sản dư chưa hoàn tất.",
+    });
+
+  return {
+    code: successfulCount > 0 ? "subwallet_sweep_partial" : "subwallet_sweep_failed",
+    title: successfulCount > 0
+      ? localeText(locale, {
+        en: "Subwallet sweep partially completed",
+        zn: "子钱包清扫部分完成",
+        vn: "Sweep ví con hoàn tất một phần",
+      })
+      : localeText(locale, {
+        en: "Subwallet sweep failed",
+        zn: "子钱包清扫失败",
+        vn: "Sweep ví con thất bại",
+      }),
+    summary: summaryMessage,
+    details: [
+      localeText(locale, {
+        en: `Detected leftover assets: ${detectedCount}`,
+        zn: `检测到的剩余资产：${detectedCount}`,
+        vn: `Số tài sản dư được phát hiện: ${detectedCount}`,
+      }),
+      localeText(locale, {
+        en: `Successfully returned: ${successfulCount}`,
+        zn: `成功返还：${successfulCount}`,
+        vn: `Đã hoàn trả thành công: ${successfulCount}`,
+      }),
+      localeText(locale, {
+        en: `Failed return attempts: ${failedCount}`,
+        zn: `返还失败次数：${failedCount}`,
+        vn: `Số lần hoàn trả thất bại: ${failedCount}`,
+      }),
+      localeText(locale, {
+        en: `Assets still remaining: ${remainingCount}`,
+        zn: `仍然剩余的资产：${remainingCount}`,
+        vn: `Số tài sản vẫn còn lại: ${remainingCount}`,
+      }),
+      ...(payload.return_wallet_address ? [
+        localeText(locale, {
+          en: `Return wallet: ${payload.return_wallet_address}`,
+          zn: `回收地址：${payload.return_wallet_address}`,
+          vn: `Ví nhận lại: ${payload.return_wallet_address}`,
+        }),
+      ] : []),
+      ...errorMessages,
+    ].filter(Boolean),
+    hint: localeText(locale, {
+      en: "Retry the sweep after checking the return wallet, the chain RPC, and the subwallet's remaining native gas.",
+      zn: "请检查回收地址、链 RPC 和子钱包剩余原生 gas 后再重试清扫。",
+      vn: "Hãy kiểm tra ví nhận lại, RPC của chain và lượng gas native còn lại của ví con rồi thử sweep lại.",
+    }),
+  };
+}
+
+function buildWithdrawIssueFromPayload(
+  payload: {
+    errors?: Array<{ error?: string | null }>;
+  },
+  locale: SupportedLocale,
+): TemplatePreviewIssue {
+  const errorMessages = (payload.errors ?? [])
+    .map((entry) => normalizePreviewFailureMessage(entry.error))
+    .filter((value): value is string => Boolean(value));
+  const summaryMessage = errorMessages[0] ?? localeText(locale, {
+    en: "The contract withdrawal did not complete.",
+    zn: "合约提取未完成。",
+    vn: "Lệnh rút khỏi hợp đồng chưa hoàn tất.",
+  });
+
+  return {
+    code: "contract_withdraw_failed",
+    title: localeText(locale, {
+      en: "Contract withdrawal failed",
+      zn: "合约提取失败",
+      vn: "Rút khỏi hợp đồng thất bại",
+    }),
+    summary: summaryMessage,
+    details: errorMessages.length ? errorMessages : [summaryMessage],
+    hint: localeText(locale, {
+      en: "Check the treasury contract balance, subwallet gas, and chain RPC, then retry the withdraw action.",
+      zn: "请检查资金库合约余额、子钱包 gas 和链 RPC，然后再重试提取。",
+      vn: "Hãy kiểm tra số dư treasury, gas của ví con và RPC của chain rồi thử rút lại.",
+    }),
+  };
+}
 
 function formatTokenBalance(value: string | number | null | undefined, symbol: string) {
   return value === null || value === undefined ? "Unavailable" : `${formatAmount(value)} ${symbol}`;
@@ -846,7 +1148,6 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const { locale } = useI18n();
   const requestedChainParam = searchParams.get("chain");
   const preferredChain = normalizeTemplateChain(requestedChainParam);
-  const hasExplicitPreferredChain = Boolean(requestedChainParam);
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wallet, setWallet] = useState<WalletDetails | null>(null);
@@ -871,6 +1172,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [contractSourceError, setContractSourceError] = useState<string | null>(null);
   const [contractSourcePayload, setContractSourcePayload] = useState<ContractSourcePayload | null>(null);
   const [runReviewOpen, setRunReviewOpen] = useState(false);
+  const [runPreviewIssue, setRunPreviewIssue] = useState<TemplatePreviewIssue | null>(null);
   const [walletViewTab, setWalletViewTab] = useState("plan");
   const [runHistoryRefreshKey, setRunHistoryRefreshKey] = useState(0);
   const [reviewPreview, setReviewPreview] = useState<TemplateWalletSupportPreview | null>(null);
@@ -886,16 +1188,17 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     () => templates.find((template) => template.id === selectedTemplateId) ?? null,
     [selectedTemplateId, templates],
   );
+  const subwalletChain = useMemo<Template["chain"] | undefined>(() => {
+    if (wallet?.type !== "sub") return undefined;
+    return normalizeTemplateChain(
+      wallet.return_sweep_chain ?? wallet.linked_contracts?.[0]?.chain ?? wallet.chain ?? preferredChain,
+    );
+  }, [preferredChain, wallet?.chain, wallet?.linked_contracts, wallet?.return_sweep_chain, wallet?.type]);
   const walletBalanceChain = useMemo<Template["chain"] | undefined>(() => {
     if (selectedTemplate?.chain) return selectedTemplate.chain;
-    if (wallet?.type === "sub") {
-      if (hasExplicitPreferredChain) return preferredChain;
-      return (wallet.linked_contracts?.[0]?.chain as Template["chain"] | undefined)
-        ?? (wallet.chain as Template["chain"] | undefined)
-        ?? preferredChain;
-    }
+    if (wallet?.type === "sub") return subwalletChain;
     return undefined;
-  }, [selectedTemplate?.chain, hasExplicitPreferredChain, preferredChain, wallet?.type, wallet?.linked_contracts, wallet?.chain]);
+  }, [selectedTemplate?.chain, subwalletChain, wallet?.type]);
   const isSubwallet = wallet?.type === "sub";
   const hasWalletBalanceContext = Boolean(selectedTemplate || wallet?.type === "sub");
   const walletMatchesSelectedChain = !walletBalanceChain || !wallet?.chain || wallet.chain === walletBalanceChain;
@@ -956,13 +1259,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         ]);
 
         if (!walletResponse.ok) {
-          throw new Error((walletPayload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
+          throw new Error(extractPayloadErrorMessage(walletPayload, "Failed to load wallet"));
         }
         if (!templateResponse.ok) {
-          throw new Error((templatePayload as { detail?: string } | null)?.detail ?? "Failed to load templates");
+          throw new Error(extractPayloadErrorMessage(templatePayload, "Failed to load templates"));
         }
         if (!optionsResponse.ok) {
-          throw new Error((optionsPayload as { detail?: string } | null)?.detail ?? "Failed to load template options");
+          throw new Error(extractPayloadErrorMessage(optionsPayload, "Failed to load template options"));
         }
 
         if (active) {
@@ -1016,7 +1319,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         );
         const payload = await readApiPayload(response);
         if (!response.ok) {
-          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
+          throw new Error(extractPayloadErrorMessage(payload, "Failed to load wallet"));
         }
         if (active) {
           setWallet(payload as WalletDetails);
@@ -1056,7 +1359,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`);
         const payload = await readApiPayload(response);
         if (!response.ok) {
-          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load wallet");
+          throw new Error(extractPayloadErrorMessage(payload, "Failed to load wallet"));
         }
         if (active) {
           setWallet(payload as WalletDetails);
@@ -1098,7 +1401,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         const response = await fetch(buildApiUrl(`/status/${statusChainKey}`), { cache: "no-store" });
         const payload = (await readApiPayload(response)) as RuntimeSingleStatusResponse | { detail?: string } | null;
         if (!response.ok) {
-          throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load chain status");
+          throw new Error(extractPayloadErrorMessage(payload, "Failed to load chain status"));
         }
 
         const nextStatus =
@@ -1245,11 +1548,26 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
               : "Số dư ví đã được làm mới từ backend.",
       });
     } catch (error) {
-      toast({
-        title: locale === "en" ? "Refresh failed" : locale === "zn" ? "刷新失败" : "Làm mới thất bại",
-        description: error instanceof Error ? error.message : (locale === "en" ? "Failed to refresh wallet balances" : locale === "zn" ? "刷新钱包余额失败" : "Không thể làm mới số dư ví"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "wallet_refresh_failed",
+            title: localeText(locale, { en: "Refresh failed", zn: "刷新失败", vn: "Làm mới thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to refresh wallet balances.",
+              zn: "刷新钱包余额失败。",
+              vn: "Không thể làm mới số dư ví.",
+            }),
+            hint: localeText(locale, {
+              en: "Check the selected chain RPC and try the refresh again.",
+              zn: "请检查所选链的 RPC 后再重试刷新。",
+              vn: "Hãy kiểm tra RPC của chain đã chọn rồi thử làm mới lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null),
+        ),
+      );
     } finally {
       setRefreshingWallet(false);
     }
@@ -1266,7 +1584,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${walletId}/details${query}`);
     const payload = await readApiPayload(response);
     if (!response.ok) {
-      throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to refresh wallet balances");
+      throw new Error(extractPayloadErrorMessage(payload, "Failed to refresh wallet balances"));
     }
     setWallet(payload as WalletDetails);
     return payload as WalletDetails;
@@ -1283,12 +1601,32 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          chain: walletBalanceChain ?? preferredChain ?? wallet.return_sweep_chain ?? wallet.chain,
+          chain: subwalletChain ?? wallet.return_sweep_chain ?? wallet.chain ?? preferredChain,
         }),
       });
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to sweep subwallet leftovers");
+        setRunPreviewIssue(
+          extractActionIssueFromPayload(
+            payload,
+            locale,
+            {
+              code: "subwallet_sweep_failed",
+              title: localeText(locale, { en: "Subwallet sweep failed", zn: "子钱包清扫失败", vn: "Sweep ví con thất bại" }),
+              summary: localeText(locale, {
+                en: "Failed to sweep leftover assets from this subwallet.",
+                zn: "清扫该子钱包中的剩余资产失败。",
+                vn: "Không thể sweep tài sản dư từ ví con này.",
+              }),
+              hint: localeText(locale, {
+                en: "Check the return wallet, chain RPC, and remaining subwallet gas, then retry the sweep.",
+                zn: "请检查回收地址、链 RPC 和子钱包剩余 gas 后再重试清扫。",
+                vn: "Hãy kiểm tra ví nhận lại, RPC của chain và lượng gas còn lại của ví con rồi thử sweep lại.",
+              }),
+            },
+          ),
+        );
+        return;
       }
 
       const sweepPayload = payload as {
@@ -1305,6 +1643,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       const detectedCount = Number(sweepPayload.summary?.detected_asset_count ?? 0);
       const confirmedCount = sweepPayload.transactions?.length ?? 0;
       const errorCount = sweepPayload.errors?.length ?? 0;
+      if (errorCount > 0) {
+        setRunPreviewIssue(buildSweepIssueFromPayload(sweepPayload, locale));
+        void fetchWalletDetails(
+          subwalletChain ?? (wallet.return_sweep_chain as Template["chain"] | undefined) ?? (wallet.chain as Template["chain"] | undefined),
+        ).catch(() => undefined);
+        return;
+      }
       toast({
         title:
           detectedCount === 0
@@ -1319,17 +1664,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                 : locale === "zn"
                   ? "子钱包已清扫"
                   : "Đã sweep ví con"
-              : confirmedCount > 0
-                ? locale === "en"
-                  ? "Subwallet sweep partial"
-                  : locale === "zn"
-                    ? "子钱包清扫部分完成"
-                    : "Sweep ví con một phần"
-                : locale === "en"
-                  ? "Subwallet sweep failed"
-                  : locale === "zn"
-                    ? "子钱包清扫失败"
-                    : "Sweep ví con thất bại",
+              : locale === "en"
+                ? "Subwallet swept"
+                : locale === "zn"
+                  ? "子钱包已清扫"
+                  : "Đã sweep ví con",
         description:
           detectedCount === 0
             ? locale === "en"
@@ -1337,34 +1676,34 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
               : locale === "zn"
                 ? "该子钱包当前没有受跟踪的剩余资产。"
                 : "Ví con này hiện không giữ tài sản dư đang được theo dõi."
-            : errorCount === 0
-              ? locale === "en"
-                ? `${confirmedCount} return transaction${confirmedCount === 1 ? "" : "s"} sent to ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`
-                : locale === "zn"
-                  ? `已向 ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")} 发送 ${confirmedCount} 笔回收交易。`
-                  : `Đã gửi ${confirmedCount} giao dịch hoàn trả tới ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`
-              : (sweepPayload.errors?.[0]?.error
-                  ?? (locale === "en"
-                    ? "The leftover sweep did not fully complete."
-                    : locale === "zn"
-                      ? "剩余资产清扫未完全完成。"
-                      : "Lệnh sweep tài sản dư chưa hoàn tất.")),
-        variant: errorCount > 0 && confirmedCount === 0 ? "destructive" : undefined,
-      });
-      await fetchWalletDetails(walletBalanceChain ?? (wallet.return_sweep_chain as Template["chain"] | undefined) ?? (wallet.chain as Template["chain"] | undefined));
-    } catch (error) {
-      toast({
-        title: locale === "en" ? "Sweep failed" : locale === "zn" ? "清扫失败" : "Sweep thất bại",
-        description:
-          error instanceof Error
-            ? error.message
-            : (locale === "en"
-              ? "Failed to sweep subwallet leftovers"
+            : locale === "en"
+              ? `${confirmedCount} return transaction${confirmedCount === 1 ? "" : "s"} sent to ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`
               : locale === "zn"
-                ? "清扫子钱包剩余资产失败"
-                : "Không thể sweep tài sản dư của ví con"),
-        variant: "destructive",
+                ? `已向 ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")} 发送 ${confirmedCount} 笔回收交易。`
+                : `Đã gửi ${confirmedCount} giao dịch hoàn trả tới ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`,
       });
+      await fetchWalletDetails(subwalletChain ?? (wallet.return_sweep_chain as Template["chain"] | undefined) ?? (wallet.chain as Template["chain"] | undefined));
+    } catch (error) {
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "subwallet_sweep_failed",
+            title: localeText(locale, { en: "Subwallet sweep failed", zn: "子钱包清扫失败", vn: "Sweep ví con thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to sweep leftover assets from this subwallet.",
+              zn: "清扫该子钱包中的剩余资产失败。",
+              vn: "Không thể sweep tài sản dư từ ví con này.",
+            }),
+            hint: localeText(locale, {
+              en: "Check the return wallet, chain RPC, and remaining subwallet gas, then retry the sweep.",
+              zn: "请检查回收地址、链 RPC 和子钱包剩余 gas 后再重试清扫。",
+              vn: "Hãy kiểm tra ví nhận lại, RPC của chain và lượng gas còn lại của ví con rồi thử sweep lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null),
+        ),
+      );
     } finally {
       setSweepingSubwallet(false);
     }
@@ -1389,7 +1728,27 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       );
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to withdraw contract funds");
+        setRunPreviewIssue(
+          extractActionIssueFromPayload(
+            payload,
+            locale,
+            {
+              code: "contract_withdraw_failed",
+              title: localeText(locale, { en: "Withdraw failed", zn: "提取失败", vn: "Rút thất bại" }),
+              summary: localeText(locale, {
+                en: "Failed to withdraw funds from the linked treasury contract.",
+                zn: "从关联资金库合约中提取资金失败。",
+                vn: "Không thể rút tài sản khỏi treasury liên kết.",
+              }),
+              hint: localeText(locale, {
+                en: "Check the subwallet gas, chain RPC, and contract ownership, then retry the withdraw action.",
+                zn: "请检查子钱包 gas、链 RPC 和合约所有权后再重试提取。",
+                vn: "Hãy kiểm tra gas của ví con, RPC của chain và quyền sở hữu hợp đồng rồi thử rút lại.",
+              }),
+            },
+          ),
+        );
+        return;
       }
 
       const withdrawPayload = payload as {
@@ -1399,6 +1758,11 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       };
       const confirmedCount = withdrawPayload.transactions?.length ?? 0;
       const errorCount = withdrawPayload.errors?.length ?? 0;
+      if (errorCount > 0) {
+        setRunPreviewIssue(buildWithdrawIssueFromPayload(withdrawPayload, locale));
+        void fetchWalletDetails(walletBalanceChain ?? (contract.chain as Template["chain"] | undefined)).catch(() => undefined);
+        return;
+      }
       toast({
         title:
           confirmedCount > 0
@@ -1425,25 +1789,34 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
               : locale === "zn"
                 ? `已提交 ${confirmedCount} 笔提取交易。资金会先返回到子钱包所有者。`
                 : `Đã gửi ${confirmedCount} giao dịch rút. Tài sản sẽ quay về ví con sở hữu trước.`
-            : errorCount > 0
-              ? (withdrawPayload.errors?.[0]?.error ?? (locale === "en" ? "The contract withdrawal did not complete." : locale === "zn" ? "合约提取未完成。" : "Lệnh rút khỏi hợp đồng chưa hoàn tất."))
-              : locale === "en"
+            : locale === "en"
                 ? "This treasury contract does not currently hold tracked assets."
                 : locale === "zn"
                   ? "该资金库合约当前没有持有受跟踪的资产。"
                   : "Treasury contract này hiện không giữ tài sản đang được theo dõi.",
-        variant: errorCount > 0 && confirmedCount === 0 ? "destructive" : undefined,
       });
       await fetchWalletDetails(walletBalanceChain ?? (contract.chain as Template["chain"] | undefined));
     } catch (error) {
-      toast({
-        title: locale === "en" ? "Withdraw failed" : locale === "zn" ? "提取失败" : "Rút thất bại",
-        description:
-          error instanceof Error
-            ? error.message
-            : (locale === "en" ? "Failed to withdraw contract funds" : locale === "zn" ? "提取合约资金失败" : "Không thể rút tài sản khỏi hợp đồng"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "contract_withdraw_failed",
+            title: localeText(locale, { en: "Withdraw failed", zn: "提取失败", vn: "Rút thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to withdraw funds from the linked treasury contract.",
+              zn: "从关联资金库合约中提取资金失败。",
+              vn: "Không thể rút tài sản khỏi treasury liên kết.",
+            }),
+            hint: localeText(locale, {
+              en: "Check the subwallet gas, chain RPC, and contract ownership, then retry the withdraw action.",
+              zn: "请检查子钱包 gas、链 RPC 和合约所有权后再重试提取。",
+              vn: "Hãy kiểm tra gas của ví con, RPC của chain và quyền sở hữu hợp đồng rồi thử rút lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null),
+        ),
+      );
     } finally {
       setWithdrawingContractAddress(null);
     }
@@ -1462,7 +1835,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       );
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to load contract source");
+        throw new Error(extractPayloadErrorMessage(payload, "Failed to load contract source"));
       }
       setContractSourcePayload(payload as ContractSourcePayload);
     } catch (error) {
@@ -1492,7 +1865,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to delete wallet");
+        throw new Error(extractPayloadErrorMessage(payload, "Failed to delete wallet"));
       }
       const deletePayload = payload as { deleted_subwallet_count?: number };
       toast({
@@ -1512,11 +1885,26 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
       router.push(dashboardPath);
     } catch (error) {
-      toast({
-        title: locale === "en" ? "Delete failed" : locale === "zn" ? "删除失败" : "Xóa thất bại",
-        description: error instanceof Error ? error.message : (locale === "en" ? "Failed to delete wallet" : locale === "zn" ? "删除钱包失败" : "Không thể xóa ví"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "wallet_delete_failed",
+            title: localeText(locale, { en: "Delete failed", zn: "删除失败", vn: "Xóa thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to delete the wallet.",
+              zn: "删除钱包失败。",
+              vn: "Không thể xóa ví.",
+            }),
+            hint: localeText(locale, {
+              en: "Retry the delete action after confirming there is no active run depending on this wallet.",
+              zn: "请确认没有活动运行依赖该钱包后再重试删除。",
+              vn: "Hãy xác nhận không có lượt chạy đang hoạt động phụ thuộc vào ví này rồi thử xóa lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null),
+        ),
+      );
     } finally {
       setDeletingWallet(false);
     }
@@ -1546,7 +1934,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to delete template");
+        throw new Error(extractPayloadErrorMessage(payload, "Failed to delete template"));
       }
 
       const nextTemplates = templates.filter((item) => item.id !== template.id);
@@ -1559,34 +1947,62 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         description: locale === "en" ? "The template was removed from the active library." : locale === "zn" ? "该模板已从当前模板库移除。" : "Mẫu đã được xóa khỏi thư viện đang hoạt động.",
       });
     } catch (deleteError) {
-      toast({
-        title: locale === "en" ? "Delete failed" : locale === "zn" ? "删除失败" : "Xóa thất bại",
-        description: deleteError instanceof Error ? deleteError.message : (locale === "en" ? "Failed to delete template" : locale === "zn" ? "删除模板失败" : "Không thể xóa mẫu"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "template_delete_failed",
+            title: localeText(locale, { en: "Delete failed", zn: "删除失败", vn: "Xóa thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to delete the template.",
+              zn: "删除模板失败。",
+              vn: "Không thể xóa mẫu.",
+            }),
+            hint: localeText(locale, {
+              en: "Retry after confirming the template is not currently needed by another run.",
+              zn: "请确认没有其他运行正在使用该模板后再重试删除。",
+              vn: "Hãy xác nhận không có lượt chạy nào khác đang dùng mẫu này rồi thử xóa lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(deleteError instanceof Error ? deleteError.message : null),
+        ),
+      );
     }
   };
 
   const handleProceed = async () => {
     if (!wallet || !selectedTemplate || !preview) {
-      toast({
-        title: locale === "en" ? "Preview required" : locale === "zn" ? "需要预览" : "Cần xem trước",
-        description: locale === "en" ? "Pick a template and enter a contract count first so we can verify wallet support." : locale === "zn" ? "请先选择模板并输入合约数量，以便检查钱包支持情况。" : "Hãy chọn mẫu và nhập số lượng hợp đồng trước để kiểm tra hỗ trợ của ví.",
-        variant: "destructive",
+      setRunPreviewIssue({
+        code: "preview_required",
+        title: localeText(locale, { en: "Preview required", zn: "需要预览", vn: "Cần xem trước" }),
+        summary: localeText(locale, {
+          en: "Pick a template and enter a subwallet count before starting the automation check.",
+          zn: "请先选择模板并输入子钱包数量，然后再开始自动化检查。",
+          vn: "Hãy chọn mẫu và nhập số lượng ví con trước khi bắt đầu kiểm tra tự động hóa.",
+        }),
+        details: [
+          localeText(locale, {
+            en: "The app needs a live preview first so it can verify wallet balances, route availability, and required funding.",
+            zn: "应用需要先生成实时预览，以验证钱包余额、路由可用性和所需资金。",
+            vn: "Ứng dụng cần bản xem trước trực tiếp để xác minh số dư ví, khả dụng của route và số vốn cần thiết.",
+          }),
+        ],
+        hint: localeText(locale, {
+          en: "Select a template, confirm the chain, and enter the number of subwallets you want to create.",
+          zn: "请选择模板、确认链，并输入想要创建的子钱包数量。",
+          vn: "Hãy chọn mẫu, xác nhận chain và nhập số lượng ví con muốn tạo.",
+        }),
       });
       return;
     }
 
     if (!preview.can_proceed) {
-      toast({
-        title: locale === "en" ? "Cannot create subwallets" : locale === "zn" ? "无法创建子钱包" : "Không thể tạo ví con",
-        description: preview.shortfall_reason ?? (locale === "en" ? "This main wallet cannot support the selected template and contract count." : locale === "zn" ? "当前主钱包无法支持所选模板和合约数量。" : "Ví chính hiện không thể hỗ trợ mẫu và số lượng hợp đồng đã chọn."),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(extractPreviewIssueFromPayload(preview, locale));
       return;
     }
 
     setPreparingRun(true);
+    setRunPreviewIssue(null);
     try {
       const response = await fetch(`${TEMPLATE_API_URL}/api/templates/preview`, {
         method: "POST",
@@ -1601,20 +2017,28 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to prepare run preview");
+        setRunPreviewIssue(extractPreviewIssueFromPayload(payload, locale));
+        return;
       }
       const previewPayload = payload as TemplateWalletSupportPreview;
       if (!previewPayload.can_proceed) {
-        throw new Error(previewPayload.shortfall_reason ?? "This main wallet cannot support the selected template right now.");
+        setRunPreviewIssue(extractPreviewIssueFromPayload(previewPayload, locale));
+        return;
       }
       setReviewPreview(previewPayload);
       setRunReviewOpen(true);
     } catch (error) {
-      toast({
-        title: locale === "en" ? "Cannot create subwallets" : locale === "zn" ? "无法创建子钱包" : "Không thể tạo ví con",
-        description: error instanceof Error ? error.message : (locale === "en" ? "Failed to prepare run preview" : locale === "zn" ? "准备运行预览失败" : "Không thể chuẩn bị bản xem trước chạy"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackPreviewIssue(
+          locale,
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null)
+            ?? localeText(locale, {
+              en: "Failed to prepare the automation preview.",
+              zn: "准备自动化预览失败。",
+              vn: "Không thể chuẩn bị bản xem trước tự động hóa.",
+            }),
+        ),
+      );
     } finally {
       setPreparingRun(false);
     }
@@ -1643,7 +2067,27 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
       });
       const payload = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to execute run");
+        setRunPreviewIssue(
+          extractActionIssueFromPayload(
+            payload,
+            locale,
+            {
+              code: "run_execute_failed",
+              title: localeText(locale, { en: "Run failed", zn: "运行失败", vn: "Chạy thất bại" }),
+              summary: localeText(locale, {
+                en: "Failed to execute the automation run.",
+                zn: "执行自动化运行失败。",
+                vn: "Không thể thực thi lượt chạy tự động hóa.",
+              }),
+              hint: localeText(locale, {
+                en: "Review the preview warnings, the selected chain RPC, and the wallet funding, then retry the run.",
+                zn: "请检查预览警告、所选链 RPC 和钱包资金后再重试运行。",
+                vn: "Hãy kiểm tra các cảnh báo của preview, RPC của chain đã chọn và số vốn của ví rồi thử chạy lại.",
+              }),
+            },
+          ),
+        );
+        return;
       }
       const runPayload = payload as { status?: string };
 
@@ -1673,11 +2117,26 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         variant: runStatus === "failed" || runStatus === "partial" ? "destructive" : undefined,
       });
     } catch (error) {
-      toast({
-        title: locale === "en" ? "Run failed" : locale === "zn" ? "运行失败" : "Chạy thất bại",
-        description: error instanceof Error ? error.message : (locale === "en" ? "Failed to execute run" : locale === "zn" ? "执行运行失败" : "Không thể thực thi lượt chạy"),
-        variant: "destructive",
-      });
+      setRunPreviewIssue(
+        buildFallbackActionIssue(
+          locale,
+          {
+            code: "run_execute_failed",
+            title: localeText(locale, { en: "Run failed", zn: "运行失败", vn: "Chạy thất bại" }),
+            summary: localeText(locale, {
+              en: "Failed to execute the automation run.",
+              zn: "执行自动化运行失败。",
+              vn: "Không thể thực thi lượt chạy tự động hóa.",
+            }),
+            hint: localeText(locale, {
+              en: "Review the preview warnings, the selected chain RPC, and the wallet funding, then retry the run.",
+              zn: "请检查预览警告、所选链 RPC 和钱包资金后再重试运行。",
+              vn: "Hãy kiểm tra các cảnh báo của preview, RPC của chain đã chọn và số vốn của ví rồi thử chạy lại.",
+            }),
+          },
+          normalizePreviewFailureMessage(error instanceof Error ? error.message : null),
+        ),
+      );
     } finally {
       setCreatingSubWallets(false);
     }
@@ -1756,13 +2215,31 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
             ) : (
               <>
                 <SectionBlock
-                  title={locale === "en" ? "Main wallet" : locale === "zn" ? "主钱包" : "Ví chính"}
+                  title={
+                    isSubwallet
+                      ? locale === "en"
+                        ? "Subwallet"
+                        : locale === "zn"
+                          ? "子钱包"
+                          : "Ví con"
+                      : locale === "en"
+                        ? "Main wallet"
+                        : locale === "zn"
+                          ? "主钱包"
+                          : "Ví chính"
+                  }
                   description={
-                    locale === "en"
-                      ? "Each selected contract creates one new subwallet. This page checks local funding first, then the review step confirms the funding plan before submission."
-                      : locale === "zn"
-                        ? "每个选定合约都会创建一个新的子钱包。此页面先检查本地资金支持，再在提交前确认执行计划。"
-                        : "Mỗi hợp đồng được chọn sẽ tạo một ví con mới. Trang này kiểm tra hỗ trợ vốn trước, rồi bước xem lại sẽ xác nhận kế hoạch trước khi gửi."
+                    isSubwallet
+                      ? locale === "en"
+                        ? "This subwallet view is read-only. You can inspect balances, linked treasury contracts, and sweep leftover funds back to the configured return wallet."
+                        : locale === "zn"
+                          ? "此子钱包页面为只读。你可以查看余额、关联的资金库合约，并将剩余资金清扫回已配置的回收地址。"
+                          : "Trang ví con này chỉ để xem. Bạn có thể kiểm tra số dư, các hợp đồng treasury liên kết và sweep tài sản dư về ví nhận lại đã cấu hình."
+                      : locale === "en"
+                        ? "Each selected contract creates one new subwallet. This page checks local funding first, then the review step confirms the funding plan before submission."
+                        : locale === "zn"
+                          ? "每个选定合约都会创建一个新的子钱包。此页面先检查本地资金支持，再在提交前确认执行计划。"
+                          : "Mỗi hợp đồng được chọn sẽ tạo một ví con mới. Trang này kiểm tra hỗ trợ vốn trước, rồi bước xem lại sẽ xác nhận kế hoạch trước khi gửi."
                   }
                 >
                   <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -1820,7 +2297,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                     <InfoCard
                       label={locale === "en" ? "Creation mode" : locale === "zn" ? "创建方式" : "Chế độ tạo"}
                       value={
-                        wallet.type === "imported_private_key"
+                        isSubwallet
+                          ? locale === "en"
+                            ? "Run-created subwallet"
+                            : locale === "zn"
+                              ? "运行创建的子钱包"
+                              : "Ví con được tạo bởi lượt chạy"
+                          : wallet.type === "imported_private_key"
                           ? locale === "en"
                             ? "Linked wallets from private key"
                             : locale === "zn"
@@ -1834,7 +2317,13 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                       }
                       className="sm:col-span-2"
                       hint={
-                        wallet.type === "imported_private_key"
+                        isSubwallet
+                          ? locale === "en"
+                            ? "This wallet was created for an automation run. It cannot create child wallets, but it can still sweep leftovers and recover linked treasury funds."
+                            : locale === "zn"
+                              ? "这个钱包是为一次自动化运行创建的。它不能再创建子钱包，但仍可清扫剩余资金并提取关联资金库合约中的资产。"
+                              : "Ví này được tạo cho một lượt chạy tự động hóa. Nó không thể tạo ví con khác, nhưng vẫn có thể sweep tài sản dư và rút tài sản từ treasury liên kết."
+                          : wallet.type === "imported_private_key"
                           ? locale === "en"
                             ? "No seed phrase is required. Each new wallet is generated independently and linked to this imported wallet."
                             : locale === "zn"
@@ -2724,7 +3213,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                                 type="button"
                                 className="sm:min-w-[220px]"
                                 onClick={handleProceed}
-                                disabled={!preview?.can_proceed || creatingSubWallets || preparingRun}
+                                disabled={creatingSubWallets || preparingRun}
                               >
                                 <Rocket className="h-4 w-4" />
                                 {creatingSubWallets
@@ -2795,6 +3284,83 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
         template={editingTemplate}
         onSaved={upsertTemplate}
       />
+
+      <Dialog
+        open={Boolean(runPreviewIssue)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRunPreviewIssue(null);
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[88vh] w-[calc(100vw-1.5rem)] flex-col overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 border-b border-border/70 px-4 pt-5 pb-4 sm:px-6 sm:pt-6">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-rose-700">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle>{runPreviewIssue?.title ?? localeText(locale, { en: "Automation check failed", zn: "自动化检查失败", vn: "Kiểm tra tự động hóa thất bại" })}</DialogTitle>
+                <DialogDescription className="mt-2 text-sm leading-6 text-slate-600">
+                  {runPreviewIssue?.summary
+                    ?? localeText(locale, {
+                      en: "The automation check could not finish.",
+                      zn: "自动化检查未能完成。",
+                      vn: "Bước kiểm tra tự động hóa không thể hoàn tất.",
+                    })}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-4">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-rose-700">
+                {localeText(locale, { en: "What went wrong", zn: "问题原因", vn: "Vấn đề đã xảy ra" })}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-rose-900">{runPreviewIssue?.summary}</p>
+            </div>
+
+            <div className="cad-panel-soft px-4 py-4">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                {localeText(locale, { en: "What the check found", zn: "检查结果", vn: "Những gì bước kiểm tra đã phát hiện" })}
+              </p>
+              {runPreviewIssue?.details?.length ? (
+                <div className="mt-3 space-y-2">
+                  {runPreviewIssue.details.map((detail, index) => (
+                    <div key={`${runPreviewIssue.code}-${index}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
+                      {detail}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-slate-600">
+                  {localeText(locale, {
+                    en: "The backend did not return additional detail for this failure.",
+                    zn: "后端没有返回此失败的更多细节。",
+                    vn: "Backend không trả về thêm chi tiết cho lỗi này.",
+                  })}
+                </p>
+              )}
+            </div>
+
+            {runPreviewIssue?.hint ? (
+              <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-4">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-700">
+                  {localeText(locale, { en: "What to do next", zn: "下一步操作", vn: "Làm gì tiếp theo" })}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-sky-900">{runPreviewIssue.hint}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-border/70 px-4 py-4 sm:px-6">
+            <Button type="button" variant="outline" onClick={() => setRunPreviewIssue(null)}>
+              {localeText(locale, { en: "Close", zn: "关闭", vn: "Đóng" })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={runReviewOpen}

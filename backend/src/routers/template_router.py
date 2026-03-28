@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.services.template_service import (
+    build_template_preview_error_payload,
     create_template as create_template_service,
     delete_template_token as delete_template_token_service,
     get_template_editor_market_snapshot as get_template_editor_market_snapshot_service,
@@ -181,8 +183,11 @@ def preview_template_endpoint(request: TemplatePreviewRequest):
             request.contract_count,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        error_payload = build_template_preview_error_payload(exc)
+        return JSONResponse(status_code=400, content={"detail": error_payload["summary"], "error": error_payload})
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        error_payload = build_template_preview_error_payload(exc)
+        return JSONResponse(status_code=503, content={"detail": error_payload["summary"], "error": error_payload})
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        error_payload = build_template_preview_error_payload(exc)
+        return JSONResponse(status_code=500, content={"detail": error_payload["summary"], "error": error_payload})

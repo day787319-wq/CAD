@@ -1,4 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -26,6 +27,70 @@ from src.services.wallet_service import (
 from src.services.solidity_service import get_contract_source as get_contract_source_service
 
 router = APIRouter(prefix="/api/wallets", tags=["wallets"])
+
+
+def _normalize_wallet_action_message(message: str | None) -> str | None:
+    normalized = str(message or "").strip()
+    if not normalized or normalized.casefold() == "internal server error":
+        return None
+    return normalized
+
+
+def _build_wallet_action_error_payload(
+    message: str | None,
+    *,
+    code: str,
+    title: str,
+    summary: str,
+    hint: str,
+) -> dict:
+    normalized_message = _normalize_wallet_action_message(message)
+    lowered = (normalized_message or "").casefold()
+
+    if "rpc is unavailable" in lowered or "rpc is not configured" in lowered:
+        return {
+            "code": "rpc_unavailable",
+            "title": "Chain RPC unavailable",
+            "summary": normalized_message or "The selected chain RPC is unavailable for this action.",
+            "details": [normalized_message] if normalized_message else [],
+            "hint": "Retry after the chain RPC recovers.",
+        }
+
+    if "needs at least" in lowered or "headroom check failed" in lowered:
+        return {
+            "code": "insufficient_native_gas",
+            "title": "Not enough native gas",
+            "summary": normalized_message or "The wallet does not have enough native gas to complete this action.",
+            "details": [normalized_message] if normalized_message else [],
+            "hint": "Top up the wallet with more native gas, then retry the action.",
+        }
+
+    if "no return wallet is configured" in lowered:
+        return {
+            "code": "missing_return_wallet",
+            "title": "Return wallet not configured",
+            "summary": normalized_message or "This subwallet does not have a return wallet configured.",
+            "details": [normalized_message] if normalized_message else [],
+            "hint": "Set a valid return wallet on the template or originating run before retrying the sweep.",
+        }
+
+    if "matches the subwallet address" in lowered:
+        return {
+            "code": "invalid_return_wallet",
+            "title": "Return wallet configuration error",
+            "summary": normalized_message or "The configured return wallet matches the subwallet address.",
+            "details": [normalized_message] if normalized_message else [],
+            "hint": "Choose a different return wallet address before retrying the sweep.",
+        }
+
+    fallback_summary = normalized_message or summary
+    return {
+        "code": code,
+        "title": title,
+        "summary": fallback_summary,
+        "details": [normalized_message] if normalized_message else [summary],
+        "hint": hint,
+    }
 
 class ImportMainWalletRequest(BaseModel):
     seed_phrase: str
@@ -175,11 +240,32 @@ def execute_wallet_run_endpoint(request: WalletRunRequest, background_tasks: Bac
         )
         return run_record
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        error_payload = _build_wallet_action_error_payload(
+            str(ve),
+            code="run_execute_failed",
+            title="Run failed",
+            summary="Failed to execute the automation run.",
+            hint="Review the preview warnings, chain RPC, and wallet funding, then retry the run.",
+        )
+        return JSONResponse(status_code=400, content={"detail": error_payload["summary"], "error": error_payload})
     except RuntimeError as re:
-        raise HTTPException(status_code=503, detail=str(re))
+        error_payload = _build_wallet_action_error_payload(
+            str(re),
+            code="run_execute_failed",
+            title="Run failed",
+            summary="Failed to execute the automation run.",
+            hint="Review the preview warnings, chain RPC, and wallet funding, then retry the run.",
+        )
+        return JSONResponse(status_code=503, content={"detail": error_payload["summary"], "error": error_payload})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_payload = _build_wallet_action_error_payload(
+            str(e),
+            code="run_execute_failed",
+            title="Run failed",
+            summary="Failed to execute the automation run.",
+            hint="Review the preview warnings, chain RPC, and wallet funding, then retry the run.",
+        )
+        return JSONResponse(status_code=500, content={"detail": error_payload["summary"], "error": error_payload})
 
 
 @router.get("/runs")
@@ -313,11 +399,32 @@ def withdraw_wallet_contract_endpoint(
     except ValueError as ve:
         message = str(ve)
         status_code = 404 if message == "Wallet not found" else 400
-        raise HTTPException(status_code=status_code, detail=message)
+        error_payload = _build_wallet_action_error_payload(
+            message,
+            code="contract_withdraw_failed",
+            title="Withdraw failed",
+            summary="Failed to withdraw funds from the linked treasury contract.",
+            hint="Check the subwallet gas, chain RPC, and contract ownership, then retry the withdraw action.",
+        )
+        return JSONResponse(status_code=status_code, content={"detail": error_payload["summary"], "error": error_payload})
     except RuntimeError as re:
-        raise HTTPException(status_code=503, detail=str(re))
+        error_payload = _build_wallet_action_error_payload(
+            str(re),
+            code="contract_withdraw_failed",
+            title="Withdraw failed",
+            summary="Failed to withdraw funds from the linked treasury contract.",
+            hint="Check the subwallet gas, chain RPC, and contract ownership, then retry the withdraw action.",
+        )
+        return JSONResponse(status_code=503, content={"detail": error_payload["summary"], "error": error_payload})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_payload = _build_wallet_action_error_payload(
+            str(e),
+            code="contract_withdraw_failed",
+            title="Withdraw failed",
+            summary="Failed to withdraw funds from the linked treasury contract.",
+            hint="Check the subwallet gas, chain RPC, and contract ownership, then retry the withdraw action.",
+        )
+        return JSONResponse(status_code=500, content={"detail": error_payload["summary"], "error": error_payload})
 
 
 @router.post("/{wallet_id}/sweep")
@@ -333,11 +440,32 @@ def sweep_subwallet_leftovers_endpoint(
     except ValueError as ve:
         message = str(ve)
         status_code = 404 if message == "Wallet not found" else 400
-        raise HTTPException(status_code=status_code, detail=message)
+        error_payload = _build_wallet_action_error_payload(
+            message,
+            code="subwallet_sweep_failed",
+            title="Subwallet sweep failed",
+            summary="Failed to sweep leftover assets from this subwallet.",
+            hint="Check the return wallet, chain RPC, and remaining subwallet gas, then retry the sweep.",
+        )
+        return JSONResponse(status_code=status_code, content={"detail": error_payload["summary"], "error": error_payload})
     except RuntimeError as re:
-        raise HTTPException(status_code=503, detail=str(re))
+        error_payload = _build_wallet_action_error_payload(
+            str(re),
+            code="subwallet_sweep_failed",
+            title="Subwallet sweep failed",
+            summary="Failed to sweep leftover assets from this subwallet.",
+            hint="Check the return wallet, chain RPC, and remaining subwallet gas, then retry the sweep.",
+        )
+        return JSONResponse(status_code=503, content={"detail": error_payload["summary"], "error": error_payload})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_payload = _build_wallet_action_error_payload(
+            str(e),
+            code="subwallet_sweep_failed",
+            title="Subwallet sweep failed",
+            summary="Failed to sweep leftover assets from this subwallet.",
+            hint="Check the return wallet, chain RPC, and remaining subwallet gas, then retry the sweep.",
+        )
+        return JSONResponse(status_code=500, content={"detail": error_payload["summary"], "error": error_payload})
 
 
 @router.get("/contracts/source")

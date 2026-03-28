@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-// 20260328 0417
+// 20260328 0603
 /**
  * @title BatchTreasuryDistributor
  * @notice 通用的资金托管 + 批量分发合约（Native + ERC20）

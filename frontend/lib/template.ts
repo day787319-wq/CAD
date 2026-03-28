@@ -369,6 +369,10 @@ export type TemplateWalletSupportPreview = {
   template_id: string;
   wallet_id: string;
   contract_count: number;
+  chain?: TemplateChain;
+  chain_label?: string;
+  native_symbol?: string;
+  wrapped_native_symbol?: string;
   testing_recipient_address?: string | null;
   return_wallet_address?: string | null;
   test_auto_execute_after_funding?: boolean;
@@ -471,6 +475,20 @@ export type TemplateWalletSupportPreview = {
     expected_action_count: number;
     message: string;
   };
+  route_preflight?: {
+    available: boolean;
+    errors: string[];
+  };
+  preview_issue?: TemplatePreviewIssue | null;
+};
+
+export type TemplatePreviewIssue = {
+  code: string;
+  title: string;
+  summary: string;
+  details: string[];
+  hint?: string | null;
+  context?: Record<string, string | number | boolean | null> | null;
 };
 
 export type TemplateStablecoinQuote = {

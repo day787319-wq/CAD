@@ -1327,6 +1327,57 @@ def token_units_to_decimal(value: int, decimals: int) -> Decimal:
     return Decimal(value) / (Decimal(10) ** decimals)
 
 
+def get_token_balance_units(
+    token_address: str,
+    owner_address: str,
+    *,
+    web3_client: Web3 | None = None,
+    chain: str | None = None,
+) -> int:
+    client = web3_client
+    if client is None:
+        normalized_chain = normalize_template_chain(chain)
+        if not normalized_chain:
+            raise ValueError("A valid chain is required to fetch token balances")
+        client = get_web3(normalized_chain)
+        if not client:
+            runtime = get_chain_runtime_config(normalized_chain)
+            raise RuntimeError(f"{runtime['chain_label']} RPC is unavailable")
+
+    token_contract = client.eth.contract(
+        address=Web3.to_checksum_address(token_address),
+        abi=ERC20_ABI,
+    )
+    return int(token_contract.functions.balanceOf(Web3.to_checksum_address(owner_address)).call())
+
+
+def estimate_gas_fee_eth(
+    gas_units: int,
+    *,
+    tx_stage: str = LEGACY_GAS_STAGE_FUND_TREASURY,
+    gas_price_wei: int | None = None,
+    web3_client: Web3 | None = None,
+    chain: str | None = None,
+) -> Decimal:
+    client = web3_client
+    normalized_chain = normalize_template_chain(chain)
+    if client is None:
+        if not normalized_chain:
+            raise ValueError("A valid chain is required to estimate gas fees")
+        client = get_web3(normalized_chain)
+        if not client:
+            runtime = get_chain_runtime_config(normalized_chain)
+            raise RuntimeError(f"{runtime['chain_label']} RPC is unavailable")
+
+    return estimate_legacy_aggressive_stage_fee_eth(
+        client,
+        int(gas_units),
+        chain=normalized_chain,
+        tx_stage=tx_stage,
+        gas_price_wei=gas_price_wei,
+    )
+
+
 def estimate_execution_network_fee_wei(contract_count: int, *, eth_per_wallet: Decimal, weth_per_wallet: Decimal, wrap_eth_total: Decimal) -> dict:
     web3_client = get_web3()
     if not web3_client or not web3_client.is_connected():
@@ -7196,7 +7247,11 @@ def execute_subwallet_return_sweep(
 
         for token in deduped_candidate_tokens:
             try:
-                remaining_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                remaining_units = get_token_balance_units(
+                    token["address"],
+                    sub_wallet["address"],
+                    web3_client=web3_client,
+                )
             except Exception:
                 continue
             if remaining_units <= 0:
@@ -7248,7 +7303,11 @@ def execute_subwallet_return_sweep(
 
         token_balances_to_sweep: list[tuple[dict, int]] = []
         for token in deduped_candidate_tokens:
-            balance_units = get_token_balance_units(token["address"], sub_wallet["address"])
+            balance_units = get_token_balance_units(
+                token["address"],
+                sub_wallet["address"],
+                web3_client=web3_client,
+            )
             if balance_units <= 0:
                 continue
             token_balances_to_sweep.append((token, balance_units))
@@ -7312,6 +7371,8 @@ def execute_subwallet_return_sweep(
                 minimum_balance_eth=estimate_gas_fee_eth(
                     cleanup_gas_units,
                     tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
+                    web3_client=web3_client,
+                    chain=chain,
                 ),
             )
             if not balance_ready:
@@ -7331,6 +7392,8 @@ def execute_subwallet_return_sweep(
                     ERC20_TRANSFER_GAS_LIMIT + ETH_TRANSFER_GAS_LIMIT,
                     tx_stage=LEGACY_GAS_STAGE_RETURN_SWEEP,
                     gas_price_wei=sweep_gas_price_wei,
+                    web3_client=web3_client,
+                    chain=chain,
                 )
                 balance_ready, balance_error = ensure_headroom(
                     reason=f"return leftover {token['symbol']} and still keep enough gas for the final {native_symbol} sweep",
@@ -7393,7 +7456,11 @@ def execute_subwallet_return_sweep(
                 if not sweep_receipt:
                     raise last_sweep_error or RuntimeError("Return sweep token transfer did not produce a confirmation")
 
-                balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                balance_after_units = get_token_balance_units(
+                    token["address"],
+                    sub_wallet["address"],
+                    web3_client=web3_client,
+                )
                 return_sweep_transactions.append(
                     {
                         "asset": token["symbol"],
@@ -7433,7 +7500,11 @@ def execute_subwallet_return_sweep(
                     },
                 )
             except Exception as exc:
-                balance_after_units = get_token_balance_units(token["address"], sub_wallet["address"])
+                balance_after_units = get_token_balance_units(
+                    token["address"],
+                    sub_wallet["address"],
+                    web3_client=web3_client,
+                )
                 return_sweep_summary["failed_asset_count"] = int(return_sweep_summary["failed_asset_count"]) + 1
                 return_sweep_transactions.append(
                     {

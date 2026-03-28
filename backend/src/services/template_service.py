@@ -98,6 +98,137 @@ def _normalize_route_error_message(message: str | None) -> str | None:
     return normalized
 
 
+def _normalize_preview_error_message(message: str | None) -> str | None:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return None
+    if normalized.casefold() == "internal server error":
+        return None
+    return normalized
+
+
+def _dedupe_preview_details(values) -> list[str]:
+    unique_values: list[str] = []
+    seen_values: set[str] = set()
+    for value in values or []:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen_values:
+            continue
+        seen_values.add(normalized)
+        unique_values.append(normalized)
+    return unique_values
+
+
+def _build_template_preview_issue(
+    code: str,
+    title: str,
+    summary: str,
+    *,
+    details: list[str] | None = None,
+    hint: str | None = None,
+    context: dict | None = None,
+) -> dict:
+    return {
+        "code": str(code or "preview_failed"),
+        "title": str(title or "Automation check failed"),
+        "summary": str(summary or "The automation check failed before it could finish."),
+        "details": _dedupe_preview_details(details or []),
+        "hint": str(hint).strip() if str(hint or "").strip() else None,
+        "context": context or None,
+    }
+
+
+def build_template_preview_error_payload(exc: Exception) -> dict:
+    message = _normalize_preview_error_message(str(exc))
+    normalized_route_message = _normalize_route_error_message(message)
+    lowered = (normalized_route_message or "").casefold()
+
+    if "rpc is unavailable" in lowered:
+        return _build_template_preview_issue(
+            "rpc_unavailable",
+            "Chain RPC unavailable",
+            normalized_route_message or "The selected chain RPC is unavailable.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Retry the automation check after the node recovers. Do not treat this as a permanent no-route result.",
+        )
+
+    if "live wallet balances are unavailable" in lowered:
+        return _build_template_preview_issue(
+            "live_balances_unavailable",
+            "Live wallet balances unavailable",
+            normalized_route_message or "The backend could not refresh the live main wallet balances for this preview.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Refresh the wallet on the selected chain and make sure the chain RPC is healthy before trying again.",
+        )
+
+    if "wallet not found" in lowered:
+        return _build_template_preview_issue(
+            "wallet_not_found",
+            "Main wallet not found",
+            "The selected main wallet is no longer available to the preview check.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Reload the page, reselect the main wallet, and try the automation check again.",
+        )
+
+    if "template not found" in lowered:
+        return _build_template_preview_issue(
+            "template_not_found",
+            "Template not found",
+            "The selected template is no longer available to the automation check.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Reload the template list, select a valid template, and try again.",
+        )
+
+    if "select a main wallet" in lowered:
+        return _build_template_preview_issue(
+            "main_wallet_required",
+            "Main wallet required",
+            "This automation check can only run from a main wallet.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Go back and choose the main wallet instead of one of its subwallets.",
+        )
+
+    if "contract_count must be between" in lowered:
+        return _build_template_preview_issue(
+            "invalid_contract_count",
+            "Invalid subwallet count",
+            normalized_route_message or "The selected subwallet count is outside the supported range.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Use a subwallet count between 1 and 100, then run the check again.",
+        )
+
+    if "testing_recipient_address is required" in lowered or "recipient_address is required" in lowered:
+        return _build_template_preview_issue(
+            "missing_recipient",
+            "Recipient address required",
+            normalized_route_message or "This template needs a recipient address before automation can continue.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Open the template, set the recipient address, and rerun the automation check.",
+        )
+
+    if ROUTE_STATUS_NO_ROUTE_FOUND.casefold() in lowered or "no swap route found" in lowered:
+        return _build_template_preview_issue(
+            "route_unavailable",
+            "Token route unavailable",
+            normalized_route_message or "One or more funded token routes do not currently have a live swap route.",
+            details=[normalized_route_message] if normalized_route_message else [],
+            hint="Recheck the affected token, remove it from the funded list, or wait for routing support to recover.",
+        )
+
+    fallback_summary = (
+        message
+        or "The automation check failed before the app could finish validating balances, routes, and funding."
+    )
+    fallback_details = [message] if message else ["The backend did not return any additional error details for this preview failure."]
+    return _build_template_preview_issue(
+        "preview_failed",
+        "Automation check failed",
+        fallback_summary,
+        details=fallback_details,
+        hint="Retry the automation check. If this keeps failing, inspect the chain RPC, wallet balances, recipient settings, and funded token routes.",
+    )
+
+
 def _build_allocation_route_metadata(
     route_status: str | None = None,
     route_error: str | None = None,
@@ -1855,11 +1986,12 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
     template = get_template(template_id)
     if not template:
         raise ValueError("Template not found")
-    chain_config = get_template_chain_config(template.get("chain"))
+    chain = template.get("chain") or DEFAULT_TEMPLATE_CHAIN
+    chain_config = get_template_chain_config(chain)
 
     from src.services.wallet_service import get_wallet_summary
 
-    wallet = get_wallet_summary(wallet_id, chain=template.get("chain"))
+    wallet = get_wallet_summary(wallet_id, chain=chain)
     if not wallet:
         raise ValueError("Wallet not found")
     if wallet.get("type") == "sub":
@@ -2008,10 +2140,150 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             + "; ".join(route_preflight["errors"])
         )
 
+    preview_issue = None
+    if requires_recipient and not recipient_address:
+        preview_issue = _build_template_preview_issue(
+            "missing_recipient",
+            "Recipient address required",
+            "This template funds BatchTreasuryDistributor, so a testing recipient address is required before automation can start.",
+            details=[
+                f"Template: {template.get('name') or template.get('id')}",
+                f"Chain: {chain_config['label']}",
+                "testing_recipient_address is currently empty.",
+                f"Wallets to create: {contract_count}",
+            ],
+            hint="Open the template, set testing_recipient_address (or recipient_address), then run the automation check again.",
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "native_symbol": chain_config["native_symbol"],
+                "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
+                "contract_count": contract_count,
+            },
+        )
+    elif requires_recipient and not test_auto_batch_send_enabled:
+        preview_issue = _build_template_preview_issue(
+            "testing_batch_send_required",
+            "Testing batch send must be enabled",
+            "This template funds BatchTreasuryDistributor, but testing auto batch send is turned off.",
+            details=[
+                f"Template: {template.get('name') or template.get('id')}",
+                f"Chain: {chain_config['label']}",
+                "test_auto_batch_send_after_funding is currently disabled.",
+                "The current testing flow only supports funded treasury contracts when batchSend() runs immediately after funding.",
+            ],
+            hint="Enable test_auto_batch_send_after_funding before starting automation for this template.",
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "contract_count": contract_count,
+            },
+        )
+    elif available_eth < required_eth_total:
+        missing_eth = required_eth_total - available_eth
+        preview_issue = _build_template_preview_issue(
+            "insufficient_native_balance",
+            f"Not enough {chain_config['native_symbol']} in the main wallet",
+            f"Add {_format_decimal(missing_eth)} more {chain_config['native_symbol']} before starting automation.",
+            details=[
+                f"Available now: {_format_decimal(available_eth)} {chain_config['native_symbol']}",
+                f"Needed for subwallet funding, gas reserve, local execution, and local {chain_config['wrapped_native_symbol']} swaps: {_format_decimal(required_eth_total)} {chain_config['native_symbol']}",
+                f"Wallets to create: {contract_count}",
+            ],
+            hint=f"Top up the main wallet, reduce the wallet count, or lower the gas reserve / swap budget for this template.",
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "native_symbol": chain_config["native_symbol"],
+                "missing_native_amount": _format_decimal(missing_eth),
+                "required_native_total": _format_decimal(required_eth_total),
+                "available_native": _format_decimal(available_eth),
+            },
+        )
+    elif available_eth < total_eth_deducted:
+        missing_eth = total_eth_deducted - available_eth
+        preview_issue = _build_template_preview_issue(
+            "insufficient_native_balance",
+            f"Not enough {chain_config['native_symbol']} in the main wallet",
+            f"Add {_format_decimal(missing_eth)} more {chain_config['native_symbol']} to cover the planned funding transfers.",
+            details=[
+                f"Available now: {_format_decimal(available_eth)} {chain_config['native_symbol']}",
+                f"Needed for direct funding and required wraps before fees: {_format_decimal(total_eth_deducted)} {chain_config['native_symbol']}",
+                f"Direct contract {chain_config['native_symbol']} total: {_format_decimal(direct_contract_native_eth_total)} {chain_config['native_symbol']}",
+                f"Main-wallet {chain_config['wrapped_native_symbol']} wrap shortfall: {_format_decimal(main_wallet_weth_wrapped)} {chain_config['native_symbol']}",
+            ],
+            hint="Top up the main wallet or lower the direct contract funding and wrapped-native requirements before retrying.",
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "native_symbol": chain_config["native_symbol"],
+                "missing_native_amount": _format_decimal(missing_eth),
+                "required_native_total": _format_decimal(total_eth_deducted),
+                "available_native": _format_decimal(available_eth),
+            },
+        )
+    elif available_eth < total_eth_required_with_fees:
+        missing_eth = total_eth_required_with_fees - available_eth
+        preview_issue = _build_template_preview_issue(
+            "insufficient_native_balance",
+            f"Not enough {chain_config['native_symbol']} in the main wallet",
+            f"Add {_format_decimal(missing_eth)} more {chain_config['native_symbol']} to cover projected fees and reserves.",
+            details=[
+                f"Available now: {_format_decimal(available_eth)} {chain_config['native_symbol']}",
+                f"Needed including projected fees and auto top-up reserve: {_format_decimal(total_eth_required_with_fees)} {chain_config['native_symbol']}",
+                f"Projected auto top-up reserve: {_format_decimal(projected_auto_top_up_eth_total)} {chain_config['native_symbol']}",
+                f"Estimated network fees: {format_wallet_decimal(total_network_fee_eth)} {chain_config['native_symbol']}",
+            ],
+            hint="Top up the main wallet or lower the contract count, auto top-up reserve, or gas-heavy steps before retrying.",
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "native_symbol": chain_config["native_symbol"],
+                "missing_native_amount": _format_decimal(missing_eth),
+                "required_native_total": format_wallet_decimal(total_eth_required_with_fees),
+                "available_native": _format_decimal(available_eth),
+            },
+        )
+    elif not route_preflight["available"]:
+        route_errors = _dedupe_preview_details(route_preflight["errors"])
+        rpc_only = bool(route_errors) and all("rpc is unavailable" in item.casefold() for item in route_errors)
+        no_route_count = sum(1 for item in route_errors if ROUTE_STATUS_NO_ROUTE_FOUND.casefold() in item.casefold())
+        preview_issue = _build_template_preview_issue(
+            "rpc_unavailable" if rpc_only else "route_unavailable",
+            f"{chain_config['label']} route check failed",
+            (
+                f"The live preview could not verify any funded routes on {chain_config['label']} because the chain RPC is unavailable."
+                if rpc_only
+                else (
+                    "One or more funded token routes do not currently have a usable live swap route."
+                    if no_route_count
+                    else f"One or more funded token routes failed the live route check on {chain_config['label']}."
+                )
+            ),
+            details=route_errors,
+            hint=(
+                "Retry after the chain RPC recovers. Do not treat this result as a permanent no-route decision."
+                if rpc_only
+                else "Recheck or remove the listed tokens, or lower the swap budget until those funded routes are available again."
+            ),
+            context={
+                "chain": chain,
+                "chain_label": chain_config["label"],
+                "native_symbol": chain_config["native_symbol"],
+                "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
+                "route_error_count": len(route_errors),
+                "no_route_count": no_route_count,
+            },
+        )
+
     return {
         "template_id": template["id"],
         "wallet_id": wallet_id,
         "contract_count": contract_count,
+        "chain": chain,
+        "chain_label": chain_config["label"],
+        "native_symbol": chain_config["native_symbol"],
+        "wrapped_native_symbol": chain_config["wrapped_native_symbol"],
         "testing_recipient_address": recipient_address,
         "return_wallet_address": template.get("return_wallet_address"),
         "test_auto_execute_after_funding": test_auto_batch_send_enabled,
@@ -2079,5 +2351,6 @@ def preview_template(wallet_id: str, template_id: str, contract_count: int):
             "message": registry_sync_preview["message"],
         },
         "route_preflight": route_preflight,
+        "preview_issue": preview_issue,
         **cost_snapshot,
     }
