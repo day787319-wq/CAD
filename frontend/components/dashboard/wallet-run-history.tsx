@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { API_URL, readApiPayload } from "@/lib/api";
 import { localeTagByLocale, type SupportedLocale } from "@/lib/i18n";
+import { getTemplateChainMeta, normalizeTemplateChain, type TemplateChain } from "@/lib/template";
 
 type FundingTransaction = {
   tx_hash?: string;
@@ -75,6 +76,8 @@ type RunLog = {
 };
 
 type DeployedContract = {
+  chain?: string | null;
+  chain_label?: string | null;
   contract_name?: string;
   wallet_id?: string;
   wallet_address?: string;
@@ -184,6 +187,11 @@ type WalletRun = {
   main_wallet_id: string;
   main_wallet_address: string;
   main_wallet_type?: string;
+  chain?: string | null;
+  chain_label?: string | null;
+  native_symbol?: string | null;
+  wrapped_native_symbol?: string | null;
+  wrapped_native_address?: string | null;
   template_id: string;
   template_name: string;
   contract_count: number;
@@ -284,7 +292,13 @@ type ReturnSweepAggregate = {
   zeroBalanceCount: number;
 };
 
-const WETH_TOKEN_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+type RunChainContext = {
+  chain: TemplateChain;
+  chainLabel: string;
+  nativeSymbol: string;
+  wrappedNativeSymbol: string;
+  wrappedNativeAddress?: string | null;
+};
 
 function shortValue(value: string | null | undefined, head = 6, tail = 4) {
   if (!value) return "Unavailable";
@@ -312,8 +326,58 @@ function formatTimestamp(value: string | null | undefined, locale: SupportedLoca
   }).format(parsed);
 }
 
-function getDisplayTokenSymbol(tokenSymbol: string | null | undefined, tokenAddress: string | null | undefined) {
-  if ((tokenAddress ?? "").toLowerCase() === WETH_TOKEN_ADDRESS.toLowerCase()) return "WETH";
+function replaceRunSymbolMentions(label: string, chainContext: Pick<RunChainContext, "nativeSymbol" | "wrappedNativeSymbol">) {
+  return label
+    .replace(/\bweth\b/gi, chainContext.wrappedNativeSymbol)
+    .replace(/\beth\b/gi, chainContext.nativeSymbol);
+}
+
+function getRunChainCandidate(run: WalletRun): TemplateChain | null {
+  const directChain = normalizeTemplateChain(run.chain);
+  if (directChain) return directChain;
+
+  for (const contract of run.deployed_contracts ?? []) {
+    const contractChain = normalizeTemplateChain(contract.chain);
+    if (contractChain) return contractChain;
+  }
+
+  for (const subWallet of run.sub_wallets ?? []) {
+    const deployedContractChain = normalizeTemplateChain(subWallet.deployed_contract?.chain);
+    if (deployedContractChain) return deployedContractChain;
+    for (const contract of subWallet.deployed_contracts ?? []) {
+      const contractChain = normalizeTemplateChain(contract.chain);
+      if (contractChain) return contractChain;
+    }
+  }
+
+  return null;
+}
+
+function getRunChainContext(run: WalletRun): RunChainContext {
+  const chain = getRunChainCandidate(run) ?? "ethereum_mainnet";
+  const meta = getTemplateChainMeta(chain);
+  return {
+    chain,
+    chainLabel: run.chain_label ?? meta.label,
+    nativeSymbol: run.native_symbol ?? meta.nativeSymbol,
+    wrappedNativeSymbol: run.wrapped_native_symbol ?? meta.wrappedNativeSymbol,
+    wrappedNativeAddress: run.wrapped_native_address ?? null,
+  };
+}
+
+function getDisplayTokenSymbol(
+  tokenSymbol: string | null | undefined,
+  tokenAddress: string | null | undefined,
+  chainContext: Pick<RunChainContext, "wrappedNativeSymbol" | "wrappedNativeAddress">,
+) {
+  if (tokenSymbol) return tokenSymbol;
+  if (
+    chainContext.wrappedNativeAddress
+    && tokenAddress
+    && tokenAddress.toLowerCase() === chainContext.wrappedNativeAddress.toLowerCase()
+  ) {
+    return chainContext.wrappedNativeSymbol;
+  }
   return tokenSymbol ?? "TOKEN";
 }
 
@@ -476,15 +540,16 @@ function getLogHeadingLabel(log: RunLog, locale: SupportedLocale) {
   return getLocalizedLogLabel(log.stage ?? log.event ?? log.status ?? "run", locale);
 }
 
-function formatLogDetailLabel(key: string, locale: SupportedLocale) {
+function formatLogDetailLabel(key: string, locale: SupportedLocale, chainContext: Pick<RunChainContext, "nativeSymbol" | "wrappedNativeSymbol">) {
   const normalized = key.toLowerCase();
-  if (logDetailLabelMap[normalized]) return logDetailLabelMap[normalized][locale];
-  return toTitleLabel(
-    key
-      .replace(/\beth\b/gi, "ETH")
-      .replace(/\bweth\b/gi, "WETH")
-      .replace(/\bid\b/gi, "ID")
-      .replace(/\btx\b/gi, "TX")
+  if (logDetailLabelMap[normalized]) {
+    return replaceRunSymbolMentions(logDetailLabelMap[normalized][locale], chainContext);
+  }
+  return replaceRunSymbolMentions(
+    toTitleLabel(key)
+      .replace(/\bId\b/g, "ID")
+      .replace(/\bTx\b/g, "TX"),
+    chainContext,
   );
 }
 
@@ -498,18 +563,26 @@ function formatLogDetailValue(key: string, value: string | number | boolean | nu
   return text;
 }
 
-function getLogDetailEntries(details: RunLog["details"], locale: SupportedLocale) {
+function getLogDetailEntries(
+  details: RunLog["details"],
+  locale: SupportedLocale,
+  chainContext: Pick<RunChainContext, "nativeSymbol" | "wrappedNativeSymbol">,
+) {
   if (!details) return [];
   return Object.entries(details)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .map(([key, value]) => ({
       key,
-      label: formatLogDetailLabel(key, locale),
+      label: formatLogDetailLabel(key, locale, chainContext),
       value: formatLogDetailValue(key, value, locale),
     }));
 }
 
-function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
+function getLocalizedLogMessage(
+  log: RunLog,
+  locale: SupportedLocale,
+  chainContext: Pick<RunChainContext, "nativeSymbol" | "wrappedNativeSymbol">,
+) {
   const message = (log.message ?? "").trim();
   if (!message) return log.event ? getLocalizedLogLabel(log.event, locale) : (locale === "en" ? "Run activity" : locale === "zn" ? "运行活动" : "Hoạt động chạy");
 
@@ -543,24 +616,24 @@ function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
         : `Đã tạo ví con #${index} tại ${address}.`;
   }
 
-  const submittedTransferMatch = message.match(/^Submitted ETH transfer to subwallet (0x[a-fA-F0-9]+)\.$/i);
+  const submittedTransferMatch = message.match(/^Submitted ([A-Za-z0-9.]+) transfer to subwallet (0x[a-fA-F0-9]+)\.$/i);
   if (submittedTransferMatch) {
-    const [, address] = submittedTransferMatch;
+    const [, assetSymbol, address] = submittedTransferMatch;
     return locale === "en"
       ? message
       : locale === "zn"
-        ? `已向子钱包 ${address} 提交 ETH 转账。`
-        : `Đã gửi giao dịch chuyển ETH đến ví con ${address}.`;
+        ? `已向子钱包 ${address} 提交 ${assetSymbol} 转账。`
+        : `Đã gửi giao dịch chuyển ${assetSymbol} đến ví con ${address}.`;
   }
 
-  const confirmedFundingMatch = message.match(/^Confirmed ETH funding for subwallet (0x[a-fA-F0-9]+)\.$/i);
+  const confirmedFundingMatch = message.match(/^Confirmed ([A-Za-z0-9.]+) funding for subwallet (0x[a-fA-F0-9]+)\.$/i);
   if (confirmedFundingMatch) {
-    const [, address] = confirmedFundingMatch;
+    const [, assetSymbol, address] = confirmedFundingMatch;
     return locale === "en"
       ? message
       : locale === "zn"
-        ? `已确认对子钱包 ${address} 的 ETH 注资。`
-        : `Đã xác nhận cấp vốn ETH cho ví con ${address}.`;
+        ? `已确认对子钱包 ${address} 的 ${assetSymbol} 注资。`
+        : `Đã xác nhận cấp vốn ${assetSymbol} cho ví con ${address}.`;
   }
 
   const finishedMatch = message.match(/^Run finished with status ([a-z_]+)\.$/i);
@@ -577,8 +650,14 @@ function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
     return locale === "en" ? message : locale === "zn" ? "注资转账已准备好提交。" : "Các giao dịch cấp vốn đã sẵn sàng để gửi.";
   }
 
-  if (message === "Submitting ETH funding transfers from the main wallet.") {
-    return locale === "en" ? message : locale === "zn" ? "正在从主钱包提交 ETH 注资转账。" : "Đang gửi các giao dịch cấp vốn ETH từ ví chính.";
+  const submittingFundingMatch = message.match(/^Submitting ([A-Za-z0-9.]+) funding transfers from the main wallet\.$/i);
+  if (submittingFundingMatch) {
+    const [, assetSymbol] = submittingFundingMatch;
+    return locale === "en"
+      ? message
+      : locale === "zn"
+        ? `正在从主钱包提交 ${assetSymbol} 注资转账。`
+        : `Đang gửi các giao dịch cấp vốn ${assetSymbol} từ ví chính.`;
   }
 
   if (message === "Saved the run snapshot and wallet batch details.") {
@@ -592,8 +671,8 @@ function getLocalizedLogMessage(log: RunLog, locale: SupportedLocale) {
     return locale === "en"
       ? message
       : locale === "zn"
-        ? "已跳过资金合约自动部署。此模板当前只为子钱包提供原生币资金。如需部署，请添加正数的兑换预算并配置分配，或将直接合约原生币或包装原生币设置为大于 0。"
-        : "Đã bỏ qua tự động triển khai hợp đồng treasury. Mẫu này hiện chỉ cấp vốn native cho ví con. Để triển khai, hãy thêm ngân sách swap dương và cấu hình phân bổ, hoặc đặt cấp vốn native hay wrapped-native trực tiếp cho hợp đồng lớn hơn 0.";
+        ? `已跳过资金合约自动部署。此模板当前只为子钱包提供 ${chainContext.nativeSymbol} 资金。如需部署，请添加正数的兑换预算并配置分配，或将直接合约 ${chainContext.nativeSymbol}/${chainContext.wrappedNativeSymbol} 设置为大于 0。`
+        : `Đã bỏ qua tự động triển khai hợp đồng treasury. Mẫu này hiện chỉ cấp vốn ${chainContext.nativeSymbol} cho ví con. Để triển khai, hãy thêm ngân sách swap dương và cấu hình phân bổ, hoặc đặt cấp vốn ${chainContext.nativeSymbol}/${chainContext.wrappedNativeSymbol} trực tiếp cho hợp đồng lớn hơn 0.`;
   }
 
   return message;
@@ -1813,6 +1892,7 @@ export function WalletRunHistory({
       ) : (
         <Accordion type="single" collapsible value={openRunId} onValueChange={setOpenRunId} className="space-y-3">
           {runs.map((run) => {
+            const runChainContext = getRunChainContext(run);
             const effectiveRunStatus = getEffectiveRunStatus(run);
             const progressSteps = getRunProgressSteps(run, effectiveRunStatus, locale);
             const automationHeadline = getAutomationHeadline(effectiveRunStatus, locale);
@@ -1854,9 +1934,9 @@ export function WalletRunHistory({
                         <p className="mt-1 text-sm font-semibold text-foreground">{run.contract_count}</p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "ETH funded" : locale === "zn" ? "已注资 ETH" : "ETH đã cấp vốn"}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? `${runChainContext.nativeSymbol} funded` : locale === "zn" ? `已注资 ${runChainContext.nativeSymbol}` : `${runChainContext.nativeSymbol} đã cấp vốn`}</p>
                         <p className="mt-1 text-sm font-semibold text-foreground">
-                          {formatAmount(run.preview?.funding?.total_eth_deducted, "ETH")}
+                          {formatAmount(run.preview?.funding?.total_eth_deducted, runChainContext.nativeSymbol)}
                         </p>
                       </div>
                       <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
@@ -1941,7 +2021,7 @@ export function WalletRunHistory({
                               {locale === "en" ? "Network fee estimate" : locale === "zn" ? "网络费预估" : "Ước tính phí mạng"}
                             </p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">
-                              {formatAmount(run.preview?.execution?.total_network_fee_eth ?? run.funding_fee_estimate?.fee_eth, "ETH")}
+                              {formatAmount(run.preview?.execution?.total_network_fee_eth ?? run.funding_fee_estimate?.fee_eth, runChainContext.nativeSymbol)}
                             </p>
                           </div>
                         </div>
@@ -2092,7 +2172,7 @@ export function WalletRunHistory({
                                           <div className="space-y-1">
                                             {subWallet.deployed_contracts.map((contract, contractIndex) => (
                                               <div key={`${subWallet.wallet_id}-contract-${contractIndex}`} className="font-mono">
-                                                {getDisplayTokenSymbol(contract.token_symbol, contract.token_address)} {contract.contract_address
+                                                {getDisplayTokenSymbol(contract.token_symbol, contract.token_address, runChainContext)} {contract.contract_address
                                                   ? shortValue(contract.contract_address, 8, 6)
                                                   : contract.tx_hash
                                                     ? shortValue(contract.tx_hash, 8, 6)
@@ -2155,7 +2235,7 @@ export function WalletRunHistory({
                               }
                             >
                               {run.run_logs.map((log, index) => {
-                                const detailEntries = getLogDetailEntries(log.details, locale);
+                                const detailEntries = getLogDetailEntries(log.details, locale, runChainContext);
                                 const stageLabel = getLogHeadingLabel(log, locale);
                                 const hasMeta = Boolean(log.movement || log.wallet_address || detailEntries.length || log.tx_hash);
                                 const isLogActive = isRunLive && index === latestLogIndex && shouldAnimateLogStatus(log.status);
@@ -2180,7 +2260,7 @@ export function WalletRunHistory({
                                           <span className="text-sm font-semibold text-foreground">{stageLabel}</span>
                                         </div>
                                         <p className="mt-2 text-sm font-semibold text-foreground">
-                                          {getLocalizedLogMessage(log, locale)}
+                                          {getLocalizedLogMessage(log, locale, runChainContext)}
                                         </p>
                                         {countdownLabel ? (
                                           <p className="mt-2 text-xs font-semibold text-sky-700">{countdownLabel}</p>
@@ -2251,7 +2331,7 @@ export function WalletRunHistory({
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
                           <p className="text-[11px] uppercase tracking-wide text-slate-500">{locale === "en" ? "Movement entries" : locale === "zn" ? "变动记录" : "Mục biến động"}</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">{run.run_logs?.length ?? 0}</p>
-                          {latestLog ? <p className="mt-2 text-xs text-slate-500">{getLocalizedLogMessage(latestLog, locale)}</p> : null}
+                          {latestLog ? <p className="mt-2 text-xs text-slate-500">{getLocalizedLogMessage(latestLog, locale, runChainContext)}</p> : null}
                         </div>
                         {wrappedTransactionCount > 0 ? (
                           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.28)]">
@@ -2297,7 +2377,7 @@ export function WalletRunHistory({
                                   <p className="mt-2 text-xs text-slate-500">
                                     {contract.wallet_address ? `${locale === "en" ? "Subwallet" : locale === "zn" ? "子钱包" : "Ví con"} ${shortValue(contract.wallet_address, 10, 6)}` : locale === "en" ? "Subwallet unavailable" : locale === "zn" ? "子钱包不可用" : "Ví con không khả dụng"}
                                     {contract.recipient_address ? ` • ${locale === "en" ? "Recipient" : locale === "zn" ? "接收地址" : "Người nhận"} ${shortValue(contract.recipient_address, 10, 6)}` : ""}
-                                    {contract.amount ? ` • ${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address))}` : ""}
+                                    {contract.amount ? ` • ${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address, runChainContext))}` : ""}
                                     {contract.deployment_attempts ? ` • ${locale === "en" ? "Attempts" : locale === "zn" ? "尝试次数" : "Lần thử"} ${contract.deployment_attempts}` : ""}
                                   </p>
                                   {contract.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-slate-700">{contract.tx_hash}</p> : null}
@@ -2367,15 +2447,15 @@ export function WalletRunHistory({
                                 <p className="mt-1 text-sm font-semibold text-foreground">{subWallet.status ?? (locale === "en" ? "created" : locale === "zn" ? "已创建" : "đã tạo")}</p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Expected ETH" : locale === "zn" ? "预计 ETH" : "ETH dự kiến"}</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? `Expected ${runChainContext.nativeSymbol}` : locale === "zn" ? `预计 ${runChainContext.nativeSymbol}` : `${runChainContext.nativeSymbol} dự kiến`}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">
-                                  {formatAmount(subWallet.expected_funding?.eth, "ETH")}
+                                  {formatAmount(subWallet.expected_funding?.eth, runChainContext.nativeSymbol)}
                                 </p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
-                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? "Local WETH wrap" : locale === "zn" ? "本地 WETH 包装" : "Wrap WETH cục bộ"}</p>
+                                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "en" ? `Local ${runChainContext.wrappedNativeSymbol} wrap` : locale === "zn" ? `本地 ${runChainContext.wrappedNativeSymbol} 包装` : `Wrap ${runChainContext.wrappedNativeSymbol} cục bộ`}</p>
                                 <p className="mt-1 text-sm font-semibold text-foreground">
-                                  {formatAmount(subWallet.expected_local_wrap_weth ?? subWallet.expected_funding?.weth, "WETH")}
+                                  {formatAmount(subWallet.expected_local_wrap_weth ?? subWallet.expected_funding?.weth, runChainContext.wrappedNativeSymbol)}
                                 </p>
                               </div>
                               <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-2">
@@ -2392,27 +2472,27 @@ export function WalletRunHistory({
                               <div className="mt-4 grid gap-3 md:grid-cols-2">
                                 {subWallet.funding_transactions?.eth?.tx_hash ? (
                                   <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
-                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? "ETH transfer" : locale === "zn" ? "ETH 转账" : "Chuyển ETH"}</p>
+                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? `${runChainContext.nativeSymbol} transfer` : locale === "zn" ? `${runChainContext.nativeSymbol} 转账` : `Chuyển ${runChainContext.nativeSymbol}`}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                      {formatAmount(subWallet.funding_transactions.eth.amount, "ETH")} · {subWallet.funding_transactions.eth.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
+                                      {formatAmount(subWallet.funding_transactions.eth.amount, runChainContext.nativeSymbol)} · {subWallet.funding_transactions.eth.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
                                     </p>
                                     <p className="mt-2 break-all font-mono text-xs text-foreground">{subWallet.funding_transactions.eth.tx_hash}</p>
                                   </div>
                                 ) : null}
                                 {subWallet.funding_transactions?.weth?.tx_hash ? (
                                   <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
-                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? "WETH transfer" : locale === "zn" ? "WETH 转账" : "Chuyển WETH"}</p>
+                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? `${runChainContext.wrappedNativeSymbol} transfer` : locale === "zn" ? `${runChainContext.wrappedNativeSymbol} 转账` : `Chuyển ${runChainContext.wrappedNativeSymbol}`}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                      {formatAmount(subWallet.funding_transactions.weth.amount, "WETH")} · {subWallet.funding_transactions.weth.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
+                                      {formatAmount(subWallet.funding_transactions.weth.amount, runChainContext.wrappedNativeSymbol)} · {subWallet.funding_transactions.weth.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
                                     </p>
                                     <p className="mt-2 break-all font-mono text-xs text-foreground">{subWallet.funding_transactions.weth.tx_hash}</p>
                                   </div>
                                 ) : null}
                                 {subWallet.wrap_transaction?.tx_hash ? (
                                   <div className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
-                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Local ETH wrap" : locale === "zn" ? "本地 ETH 包装" : "Wrap ETH cục bộ"}</p>
+                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? `Local ${runChainContext.nativeSymbol} wrap` : locale === "zn" ? `本地 ${runChainContext.nativeSymbol} 包装` : `Wrap ${runChainContext.nativeSymbol} cục bộ`}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                      {formatAmount(subWallet.wrap_transaction.eth_wrapped, "ETH")} {locale === "en" ? "wrapped" : locale === "zn" ? "已包装" : "đã wrap"} · {subWallet.wrap_transaction.status ?? (locale === "en" ? "confirmed" : locale === "zn" ? "已确认" : "đã xác nhận")}
+                                      {formatAmount(subWallet.wrap_transaction.eth_wrapped, runChainContext.nativeSymbol)} {locale === "en" ? "wrapped" : locale === "zn" ? "已包装" : "đã wrap"} · {subWallet.wrap_transaction.status ?? (locale === "en" ? "confirmed" : locale === "zn" ? "已确认" : "đã xác nhận")}
                                     </p>
                                     <p className="mt-2 break-all font-mono text-xs text-foreground">{subWallet.wrap_transaction.tx_hash}</p>
                                   </div>
@@ -2426,7 +2506,7 @@ export function WalletRunHistory({
                                   <div key={`${subWallet.wallet_id}-approval-${index}`} className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
                                     <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Router approval" : locale === "zn" ? "路由授权" : "Phê duyệt router"}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                      {formatAmount(approval.amount, approval.token_symbol ?? "WETH")} · {approval.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
+                                      {formatAmount(approval.amount, approval.token_symbol ?? runChainContext.wrappedNativeSymbol)} · {approval.status ?? (locale === "en" ? "submitted" : locale === "zn" ? "已提交" : "đã gửi")}
                                     </p>
                                     {approval.attempts || approval.confirmation_source ? (
                                       <p className="mt-1 text-[11px] text-muted-foreground">
@@ -2447,7 +2527,7 @@ export function WalletRunHistory({
                                   <div key={`${subWallet.wallet_id}-swap-card-${index}`} className="rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
                                     <p className="text-sm font-semibold text-foreground">{swap.token_symbol ?? (locale === "en" ? "Swap" : locale === "zn" ? "兑换" : "Swap")}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                      {formatAmount(swap.amount_in, "WETH")} {locale === "en" ? "in" : locale === "zn" ? "输入" : "vào"}
+                                      {formatAmount(swap.amount_in, runChainContext.wrappedNativeSymbol)} {locale === "en" ? "in" : locale === "zn" ? "输入" : "vào"}
                                       {swap.amount_out ? ` · ${formatAmount(swap.amount_out, swap.token_symbol ?? "TOKEN")} ${locale === "en" ? "out" : locale === "zn" ? "输出" : "ra"}` : ""}
                                       {swap.status ? ` · ${swap.status}` : ""}
                                     </p>
@@ -2471,7 +2551,7 @@ export function WalletRunHistory({
                                     <p className="text-sm font-semibold text-foreground">{contract?.contract_name ?? "BatchTreasuryDistributor"}</p>
                                     <p className="mt-1 text-xs text-muted-foreground">
                                       {contract?.amount
-                                        ? `${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address))} to ${shortValue(contract.recipient_address ?? "", 10, 6)}`
+                                        ? `${formatAmount(contract.amount, getDisplayTokenSymbol(contract.token_symbol, contract.token_address, runChainContext))} to ${shortValue(contract.recipient_address ?? "", 10, 6)}`
                                         : locale === "en" ? "Deployment details unavailable" : locale === "zn" ? "部署详情不可用" : "Chi tiết triển khai không khả dụng"}
                                     </p>
                                     {contract?.contract_address ? (

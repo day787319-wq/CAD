@@ -895,10 +895,10 @@ export function TemplateEditor({ open, onOpenChange, options, template, onSaved 
                 <p className="text-xs text-muted-foreground">
                   {currentOptions?.hints.return_wallet_note ??
                     (locale === "en"
-                      ? "Optional. After the run, leftover ETH, WETH, and supported token balances still sitting in a sub-wallet will be swept here."
+                      ? `Optional. After the run, leftover ${nativeSymbol}, ${wrappedNativeSymbol}, and supported token balances still sitting in a sub-wallet will be swept here.`
                       : locale === "zn"
-                        ? "可选。运行结束后，子钱包中剩余的 ETH、WETH 和受支持代币余额会被归集到这里。"
-                        : "Tùy chọn. Sau khi chạy xong, ETH, WETH và số dư token được hỗ trợ còn lại trong ví con sẽ được gom về đây.")}
+                        ? `可选。运行结束后，子钱包中剩余的 ${nativeSymbol}、${wrappedNativeSymbol} 和受支持代币余额会被归集到这里。`
+                        : `Tùy chọn. Sau khi chạy xong, ${nativeSymbol}, ${wrappedNativeSymbol} và số dư token được hỗ trợ còn lại trong ví con sẽ được gom về đây.`)}
                 </p>
               </div>
 

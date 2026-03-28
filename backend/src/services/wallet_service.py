@@ -3615,6 +3615,11 @@ def create_wallet_run(main_id: str, template_id: str, count: int = 1, *, preview
         "main_wallet_id": main_id,
         "main_wallet_address": main_wallet["address"],
         "main_wallet_type": main_wallet["type"],
+        "chain": template_chain,
+        "chain_label": chain_config["label"],
+        "native_symbol": native_symbol,
+        "wrapped_native_symbol": wrapped_native_symbol,
+        "wrapped_native_address": wrapped_native_address,
         "template_id": template["id"],
         "template_name": template["name"],
         "contract_count": count,
@@ -3984,6 +3989,10 @@ def execute_wallet_run(
             "main_wallet_address": main_wallet["address"],
             "main_wallet_type": main_wallet["type"],
             "chain": template_chain,
+            "chain_label": chain_config["label"],
+            "native_symbol": native_symbol,
+            "wrapped_native_symbol": wrapped_native_symbol,
+            "wrapped_native_address": wrapped_native_address,
             "template_id": template["id"],
             "template_name": template["name"],
             "contract_count": count,
@@ -6823,26 +6832,7 @@ def execute_wallet_run(
         },
     )
 
-    run_record = {
-        "id": run_id,
-        "main_wallet_id": main_id,
-        "main_wallet_address": main_wallet["address"],
-        "main_wallet_type": main_wallet["type"],
-        "template_id": template["id"],
-        "template_name": template["name"],
-        "contract_count": count,
-        "status": status,
-        "created_at": created_at,
-        "error": error_message,
-        "preview": preview,
-        "funding_fee_estimate": funding_fee_estimate,
-        "wrap_transaction": wrap_transaction,
-        "contract_execution": contract_execution,
-        "deployed_contracts": deployed_contracts,
-        "run_logs": run_logs,
-        "sub_wallets": run_sub_wallets,
-    }
-    return db.upsert_wallet_run(run_record)
+    return db.upsert_wallet_run(build_run_record())
 
 def store_wallet(wallet_id: str, data: dict, wallet_type: str = 'sub', parent_id: str = None):
     encrypted_key = data['encrypted_seed'] if wallet_type == 'main' else data['encrypted_key']
@@ -6894,8 +6884,65 @@ def list_saved_wallets(chain: str | None = None):
     ]
 
 
+@lru_cache(maxsize=256)
+def _get_template_run_chain(template_id: str) -> str | None:
+    if not template_id:
+        return None
+    from src.services.template_service import get_template
+
+    template = get_template(template_id)
+    if not template:
+        return None
+    return normalize_template_chain(template.get("chain"))
+
+
+def _detect_wallet_run_chain(run: dict) -> str | None:
+    for candidate in [run.get("chain")]:
+        normalized = normalize_template_chain(candidate)
+        if normalized:
+            return normalized
+
+    template_id = str(run.get("template_id") or "").strip()
+    if template_id:
+        try:
+            normalized = _get_template_run_chain(template_id)
+        except Exception:
+            normalized = None
+        if normalized:
+            return normalized
+
+    for contract in _iter_run_deployed_contracts(run):
+        normalized = normalize_template_chain(contract.get("chain"))
+        if normalized:
+            return normalized
+
+    return None
+
+
+def _enrich_wallet_run_chain_metadata(run: dict) -> dict:
+    enriched = dict(run)
+    normalized_chain = _detect_wallet_run_chain(enriched)
+    if not normalized_chain:
+        return enriched
+
+    chain_config = get_template_chain_config(normalized_chain)
+    enriched["chain"] = normalized_chain
+    if not enriched.get("chain_label"):
+        enriched["chain_label"] = chain_config["label"]
+    if not enriched.get("native_symbol"):
+        enriched["native_symbol"] = chain_config["native_symbol"]
+    if not enriched.get("wrapped_native_symbol"):
+        enriched["wrapped_native_symbol"] = chain_config["wrapped_native_symbol"]
+    if not enriched.get("wrapped_native_address"):
+        enriched["wrapped_native_address"] = Web3.to_checksum_address(chain_config["wrapped_native_address"])
+    return enriched
+
+
 def list_wallet_runs(main_wallet_id: str | None = None):
-    return db.list_wallet_runs(main_wallet_id=main_wallet_id)
+    return [
+        _enrich_wallet_run_chain_metadata(run)
+        for run in db.list_wallet_runs(main_wallet_id=main_wallet_id)
+    ]
 
 
 def _iter_run_deployed_contracts(run: dict) -> list[dict]:
