@@ -107,10 +107,42 @@ type ContractExecutionTransaction = TransactionRecord & {
   recipient_address?: string | null;
 };
 
+type ReturnSweepAssetBalance = {
+  asset?: string | null;
+  amount?: string | null;
+  token_address?: string | null;
+  kind?: string | null;
+};
+
 type ReturnSweepTransaction = TransactionRecord & {
   asset?: string | null;
   amount?: string | null;
   destination_address?: string | null;
+  recipient_address?: string | null;
+  token_address?: string | null;
+  kind?: string | null;
+  attempts?: number | null;
+  balance_before?: string | null;
+  balance_after?: string | null;
+};
+
+type ReturnSweepSummary = {
+  status?: string | null;
+  return_wallet_address?: string | null;
+  candidate_asset_count?: number | null;
+  detected_asset_count?: number | null;
+  successful_asset_count?: number | null;
+  failed_asset_count?: number | null;
+  remaining_asset_count?: number | null;
+  zero_balance_candidate_count?: number | null;
+  fully_returned?: boolean | null;
+  native_balance_before?: string | null;
+  native_balance_after?: string | null;
+  detected_assets?: ReturnSweepAssetBalance[];
+  remaining_assets?: ReturnSweepAssetBalance[];
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
 };
 
 type RunSubWallet = {
@@ -137,6 +169,7 @@ type RunSubWallet = {
   swap_transactions?: SwapTransaction[];
   contract_execution_transactions?: ContractExecutionTransaction[];
   return_sweep_transactions?: ReturnSweepTransaction[];
+  return_sweep_summary?: ReturnSweepSummary | null;
   private_key_access?: {
     wallet_id?: string;
     export_supported?: boolean;
@@ -243,6 +276,14 @@ type TerminalRunCounters = {
   returnSweepSuccessCount: number;
   returnSweepFailureCount: number;
 };
+
+type ReturnSweepAggregate = {
+  hasActualSummary: boolean;
+  detectedCount: number;
+  remainingCount: number;
+  zeroBalanceCount: number;
+};
+
 const WETH_TOKEN_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 function shortValue(value: string | null | undefined, head = 6, tail = 4) {
@@ -857,6 +898,94 @@ function countReturnSweepFailures(run: WalletRun) {
   return run.sub_wallets?.reduce((total, wallet) => total + countFailedRecords(wallet.return_sweep_transactions), 0) ?? 0;
 }
 
+function getReturnSweepAggregate(run: WalletRun): ReturnSweepAggregate {
+  return run.sub_wallets?.reduce<ReturnSweepAggregate>((total, wallet) => {
+    if (!wallet.return_sweep_summary) return total;
+    return {
+      hasActualSummary: true,
+      detectedCount: total.detectedCount + parseCount(wallet.return_sweep_summary.detected_asset_count),
+      remainingCount: total.remainingCount + parseCount(wallet.return_sweep_summary.remaining_asset_count),
+      zeroBalanceCount: total.zeroBalanceCount + parseCount(wallet.return_sweep_summary.zero_balance_candidate_count),
+    };
+  }, {
+    hasActualSummary: false,
+    detectedCount: 0,
+    remainingCount: 0,
+    zeroBalanceCount: 0,
+  }) ?? {
+    hasActualSummary: false,
+    detectedCount: 0,
+    remainingCount: 0,
+    zeroBalanceCount: 0,
+  };
+}
+
+function getReturnSweepDisplayStatus(summary: ReturnSweepSummary | null | undefined, transactions: ReturnSweepTransaction[] | null | undefined) {
+  const summaryStatus = normalizeStatus(summary?.status);
+  if (summaryStatus) return summaryStatus;
+
+  const completedCount = countSuccessfulRecords(transactions);
+  const failedCount = countFailedRecords(transactions);
+  if (completedCount > 0 && failedCount > 0) return "partial";
+  if (failedCount > 0) return "failed";
+  if (completedCount > 0) return "completed";
+  return "skipped";
+}
+
+function getReturnSweepNote({
+  locale,
+  actualSummary,
+  completedCount,
+  failedCount,
+  expectedCount,
+  remainingCount,
+  zeroBalanceCount,
+}: {
+  locale: SupportedLocale;
+  actualSummary: ReturnSweepAggregate;
+  completedCount: number;
+  failedCount: number;
+  expectedCount: number;
+  remainingCount: number;
+  zeroBalanceCount: number;
+}) {
+  if (!actualSummary.hasActualSummary) {
+    return getCountNote({
+      completedCount,
+      expectedCount,
+      skippedText: locale === "en" ? "No leftover sweep used" : locale === "zn" ? "未执行剩余资金回收" : "Không dùng hoàn trả số dư còn lại",
+      locale,
+      failedCount,
+    });
+  }
+
+  if (expectedCount <= 0) {
+    if (failedCount > 0) {
+      return locale === "en"
+        ? `${failedCount} cleanup failure${failedCount === 1 ? "" : "s"}`
+        : locale === "zn"
+          ? `${failedCount} 个清理失败`
+          : `${failedCount} lỗi dọn dẹp`;
+    }
+    return locale === "en"
+      ? "No leftover balances were detected"
+      : locale === "zn"
+        ? "未检测到剩余余额"
+        : "Không phát hiện số dư còn lại";
+  }
+
+  const confirmedLabel = locale === "en" ? "confirmed" : locale === "zn" ? "已确认" : "đã xác nhận";
+  const failedLabel = locale === "en" ? "failed" : locale === "zn" ? "失败" : "thất bại";
+  const remainingLabel = locale === "en" ? "remaining" : locale === "zn" ? "仍剩余" : "còn lại";
+  const zeroBalanceLabel = locale === "en" ? "zero balance" : locale === "zn" ? "零余额" : "số dư bằng 0";
+
+  const parts = [`${completedCount} / ${expectedCount} ${confirmedLabel}`];
+  if (failedCount > 0) parts.push(`${failedCount} ${failedLabel}`);
+  if (remainingCount > 0) parts.push(`${remainingCount} ${remainingLabel}`);
+  if (zeroBalanceCount > 0) parts.push(`${zeroBalanceCount} ${zeroBalanceLabel}`);
+  return parts.join(" · ");
+}
+
 function someRunLog(run: WalletRun, predicate: (log: RunLog) => boolean) {
   return run.run_logs?.some(predicate) ?? false;
 }
@@ -949,14 +1078,22 @@ function getRunProgressSteps(run: WalletRun, effectiveRunStatus: string, locale:
   const topUpFailed = Math.max(countTopUpFailures(run), terminalRunCounters.topUpFailureCount, topUpLoggedFailures);
   const topUpAttempts = Math.max(countTopUpAttempts(run), topUpCompleted + topUpFailed);
 
+  const returnSweepAggregate = getReturnSweepAggregate(run);
   const plannedReturnSweep = parseCount(execution?.return_sweep_transaction_count);
-  const returnSweepLoggedFailures = run.run_logs?.filter((log) => normalizeStatus(log.stage) === "cleanup" && isFailedStatus(log.status)).length ?? 0;
+  const returnSweepLoggedFailures = run.run_logs?.filter((log) => (
+    normalizeStatus(log.stage) === "cleanup"
+    && ["subwallet_leftover_token_return_failed", "subwallet_leftover_eth_return_failed"].includes(normalizeStatus(log.event))
+    && isFailedStatus(log.status)
+  )).length ?? 0;
   const returnSweepCompleted = Math.max(countReturnSweepTransactions(run), terminalRunCounters.returnSweepSuccessCount);
   const returnSweepFailed = Math.max(countReturnSweepFailures(run), terminalRunCounters.returnSweepFailureCount, returnSweepLoggedFailures);
   const returnSweepAttempts = Math.max(countReturnSweepAttempts(run), returnSweepCompleted + returnSweepFailed);
-  const expectedReturnSweep = normalizeStatus(effectiveRunStatus) === "completed"
-    ? returnSweepAttempts
-    : Math.max(plannedReturnSweep, returnSweepAttempts);
+  const actualReturnSweepExpected = Math.max(returnSweepAggregate.detectedCount, returnSweepAttempts);
+  const expectedReturnSweep = returnSweepAggregate.hasActualSummary
+    ? actualReturnSweepExpected
+    : normalizeStatus(effectiveRunStatus) === "completed"
+      ? returnSweepAttempts
+      : Math.max(plannedReturnSweep, returnSweepAttempts);
 
   return [
     {
@@ -1169,12 +1306,14 @@ function getRunProgressSteps(run: WalletRun, effectiveRunStatus: string, locale:
         running: false,
         effectiveRunStatus,
       }),
-      note: getCountNote({
+      note: getReturnSweepNote({
         completedCount: returnSweepCompleted,
         expectedCount: expectedReturnSweep,
-        skippedText: locale === "en" ? "No leftover sweep used" : locale === "zn" ? "未执行剩余资金回收" : "Không dùng hoàn trả số dư còn lại",
         locale,
         failedCount: returnSweepFailed,
+        actualSummary: returnSweepAggregate,
+        remainingCount: returnSweepAggregate.remainingCount,
+        zeroBalanceCount: returnSweepAggregate.zeroBalanceCount,
       }),
       expectedCount: expectedReturnSweep,
       completedCount: returnSweepCompleted,
@@ -2178,6 +2317,15 @@ export function WalletRunHistory({
                     <div className="space-y-3">
                       <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Created wallets" : locale === "zn" ? "已创建钱包" : "Ví đã tạo"}</p>
                       {run.sub_wallets?.map((subWallet) => {
+                        const returnSweepSummary = subWallet.return_sweep_summary;
+                        const returnSweepTransactions = subWallet.return_sweep_transactions ?? [];
+                        const returnSweepStatus = getReturnSweepDisplayStatus(returnSweepSummary, returnSweepTransactions);
+                        const returnSweepDetectedCount = parseCount(returnSweepSummary?.detected_asset_count);
+                        const returnSweepSuccessfulCount = parseCount(returnSweepSummary?.successful_asset_count);
+                        const returnSweepFailedCount = parseCount(returnSweepSummary?.failed_asset_count);
+                        const returnSweepRemainingCount = parseCount(returnSweepSummary?.remaining_asset_count);
+                        const returnSweepZeroBalanceCount = parseCount(returnSweepSummary?.zero_balance_candidate_count);
+
                         return (
                           <div key={subWallet.wallet_id} className="rounded-2xl border border-border/70 bg-background px-4 py-4">
                             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2340,6 +2488,102 @@ export function WalletRunHistory({
                                     ) : null}
                                   </div>
                                 ))}
+                              </div>
+                            ) : null}
+
+                            {(returnSweepSummary || returnSweepTransactions.length) ? (
+                              <div className="mt-4 rounded-xl border border-border/70 bg-secondary/10 px-3 py-3">
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-sm font-semibold text-foreground">{locale === "en" ? "Leftover return" : locale === "zn" ? "剩余资金回收" : "Hoàn trả số dư còn lại"}</p>
+                                    {returnSweepSummary?.return_wallet_address ? (
+                                      <p className="mt-1 text-xs text-muted-foreground">
+                                        {locale === "en" ? "Return wallet" : locale === "zn" ? "回收钱包" : "Ví nhận lại"} {shortValue(returnSweepSummary.return_wallet_address, 10, 6)}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone(returnSweepStatus)}`}>
+                                    {returnSweepStatus}
+                                  </span>
+                                </div>
+
+                                {returnSweepSummary ? (
+                                  <p className="mt-2 text-xs text-muted-foreground">
+                                    {locale === "en"
+                                      ? `Detected ${returnSweepDetectedCount} leftover asset${returnSweepDetectedCount === 1 ? "" : "s"} · Returned ${returnSweepSuccessfulCount} · Failed ${returnSweepFailedCount} · Remaining ${returnSweepRemainingCount}`
+                                      : locale === "zn"
+                                        ? `检测到 ${returnSweepDetectedCount} 个剩余资产 · 已回收 ${returnSweepSuccessfulCount} 个 · 失败 ${returnSweepFailedCount} 个 · 剩余 ${returnSweepRemainingCount} 个`
+                                        : `Phát hiện ${returnSweepDetectedCount} tài sản còn lại · Đã trả ${returnSweepSuccessfulCount} · Thất bại ${returnSweepFailedCount} · Còn lại ${returnSweepRemainingCount}`}
+                                    {returnSweepZeroBalanceCount > 0
+                                      ? locale === "en"
+                                        ? ` · ${returnSweepZeroBalanceCount} candidate asset${returnSweepZeroBalanceCount === 1 ? "" : "s"} had zero balance`
+                                        : locale === "zn"
+                                          ? ` · ${returnSweepZeroBalanceCount} 个候选资产余额为 0`
+                                          : ` · ${returnSweepZeroBalanceCount} tài sản ứng viên có số dư bằng 0`
+                                      : ""}
+                                  </p>
+                                ) : null}
+
+                                {returnSweepSummary?.error ? (
+                                  <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                                    {returnSweepSummary.error}
+                                  </div>
+                                ) : null}
+
+                                {returnSweepTransactions.length ? (
+                                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                    {returnSweepTransactions.map((sweep, index) => {
+                                      const destinationAddress = sweep.recipient_address ?? sweep.destination_address;
+                                      return (
+                                        <div key={`${subWallet.wallet_id}-return-sweep-${index}`} className="rounded-xl border border-border/70 bg-background/70 px-3 py-3">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <p className="text-sm font-semibold text-foreground">{sweep.asset ?? (locale === "en" ? "Asset" : locale === "zn" ? "资产" : "Tài sản")}</p>
+                                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone(sweep.status)}`}>
+                                              {sweep.status ?? (locale === "en" ? "unknown" : locale === "zn" ? "未知" : "không xác định")}
+                                            </span>
+                                          </div>
+                                          <p className="mt-1 text-xs text-muted-foreground">
+                                            {formatAmount(sweep.amount, sweep.asset ?? "")}
+                                            {destinationAddress ? ` · ${locale === "en" ? "to" : locale === "zn" ? "到" : "đến"} ${shortValue(destinationAddress, 10, 6)}` : ""}
+                                            {sweep.attempts ? ` · ${locale === "en" ? "attempts" : locale === "zn" ? "尝试次数" : "lần thử"} ${sweep.attempts}` : ""}
+                                          </p>
+                                          {sweep.balance_before || sweep.balance_after ? (
+                                            <p className="mt-1 text-[11px] text-muted-foreground">
+                                              {sweep.balance_before ? `${locale === "en" ? "before" : locale === "zn" ? "之前" : "trước"} ${formatAmount(sweep.balance_before, sweep.asset ?? "")}` : ""}
+                                              {sweep.balance_before && sweep.balance_after ? " · " : ""}
+                                              {sweep.balance_after ? `${locale === "en" ? "after" : locale === "zn" ? "之后" : "sau"} ${formatAmount(sweep.balance_after, sweep.asset ?? "")}` : ""}
+                                            </p>
+                                          ) : null}
+                                          {sweep.tx_hash ? <p className="mt-2 break-all font-mono text-xs text-foreground">{sweep.tx_hash}</p> : null}
+                                          {sweep.error ? <p className="mt-2 text-xs text-destructive">{sweep.error}</p> : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 rounded-xl border border-dashed border-border/70 bg-background/60 px-3 py-3 text-xs text-muted-foreground">
+                                    {locale === "en"
+                                      ? "No leftover asset transfers were needed for this subwallet."
+                                      : locale === "zn"
+                                        ? "该子钱包无需执行剩余资产回收转账。"
+                                        : "Ví con này không cần giao dịch hoàn trả số dư còn lại."}
+                                  </div>
+                                )}
+
+                                {returnSweepSummary?.remaining_assets?.length ? (
+                                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                                      {locale === "en" ? "Remaining after cleanup" : locale === "zn" ? "清理后仍剩余" : "Còn lại sau khi dọn dẹp"}
+                                    </p>
+                                    <div className="mt-2 space-y-1">
+                                      {returnSweepSummary.remaining_assets.map((asset, index) => (
+                                        <p key={`${subWallet.wallet_id}-remaining-asset-${index}`} className="text-xs text-amber-900">
+                                          {formatAmount(asset.amount, asset.asset ?? "")}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
                               </div>
                             ) : null}
                           </div>
