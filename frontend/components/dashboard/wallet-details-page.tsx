@@ -117,6 +117,9 @@ type LinkedTreasuryContract = {
 type WalletDetails = BalanceWallet & {
   sub_wallets: BalanceWallet[];
   linked_contracts?: LinkedTreasuryContract[];
+  return_wallet_address?: string | null;
+  return_sweep_chain?: string | null;
+  return_sweep_source_run_id?: string | null;
 };
 
 type ContractSourcePayload = {
@@ -861,6 +864,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
   const [loadingTemplateBalances, setLoadingTemplateBalances] = useState(false);
   const [creatingSubWallets, setCreatingSubWallets] = useState(false);
   const [deletingWallet, setDeletingWallet] = useState(false);
+  const [sweepingSubwallet, setSweepingSubwallet] = useState(false);
   const [withdrawingContractAddress, setWithdrawingContractAddress] = useState<string | null>(null);
   const [contractSourceOpen, setContractSourceOpen] = useState(false);
   const [loadingContractSource, setLoadingContractSource] = useState(false);
@@ -1266,6 +1270,104 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
     }
     setWallet(payload as WalletDetails);
     return payload as WalletDetails;
+  };
+
+  const handleSweepSubwallet = async () => {
+    if (!wallet || wallet.type !== "sub") return;
+
+    setSweepingSubwallet(true);
+    try {
+      const response = await fetch(`${TEMPLATE_API_URL}/api/wallets/${wallet.id}/sweep`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          chain: walletBalanceChain ?? preferredChain ?? wallet.return_sweep_chain ?? wallet.chain,
+        }),
+      });
+      const payload = await readApiPayload(response);
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string } | null)?.detail ?? "Failed to sweep subwallet leftovers");
+      }
+
+      const sweepPayload = payload as {
+        status?: string;
+        return_wallet_address?: string | null;
+        transactions?: Array<{ kind?: string }>;
+        errors?: Array<{ error?: string }>;
+        summary?: {
+          detected_asset_count?: number | null;
+          successful_asset_count?: number | null;
+          failed_asset_count?: number | null;
+        } | null;
+      };
+      const detectedCount = Number(sweepPayload.summary?.detected_asset_count ?? 0);
+      const confirmedCount = sweepPayload.transactions?.length ?? 0;
+      const errorCount = sweepPayload.errors?.length ?? 0;
+      toast({
+        title:
+          detectedCount === 0
+            ? locale === "en"
+              ? "No leftovers found"
+              : locale === "zn"
+                ? "未发现剩余资产"
+                : "Không có tài sản dư"
+            : errorCount === 0
+              ? locale === "en"
+                ? "Subwallet swept"
+                : locale === "zn"
+                  ? "子钱包已清扫"
+                  : "Đã sweep ví con"
+              : confirmedCount > 0
+                ? locale === "en"
+                  ? "Subwallet sweep partial"
+                  : locale === "zn"
+                    ? "子钱包清扫部分完成"
+                    : "Sweep ví con một phần"
+                : locale === "en"
+                  ? "Subwallet sweep failed"
+                  : locale === "zn"
+                    ? "子钱包清扫失败"
+                    : "Sweep ví con thất bại",
+        description:
+          detectedCount === 0
+            ? locale === "en"
+              ? "This subwallet does not currently hold tracked leftovers."
+              : locale === "zn"
+                ? "该子钱包当前没有受跟踪的剩余资产。"
+                : "Ví con này hiện không giữ tài sản dư đang được theo dõi."
+            : errorCount === 0
+              ? locale === "en"
+                ? `${confirmedCount} return transaction${confirmedCount === 1 ? "" : "s"} sent to ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`
+                : locale === "zn"
+                  ? `已向 ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")} 发送 ${confirmedCount} 笔回收交易。`
+                  : `Đã gửi ${confirmedCount} giao dịch hoàn trả tới ${shortAddress(sweepPayload.return_wallet_address ?? wallet.return_wallet_address ?? "")}.`
+              : (sweepPayload.errors?.[0]?.error
+                  ?? (locale === "en"
+                    ? "The leftover sweep did not fully complete."
+                    : locale === "zn"
+                      ? "剩余资产清扫未完全完成。"
+                      : "Lệnh sweep tài sản dư chưa hoàn tất.")),
+        variant: errorCount > 0 && confirmedCount === 0 ? "destructive" : undefined,
+      });
+      await fetchWalletDetails(walletBalanceChain ?? (wallet.return_sweep_chain as Template["chain"] | undefined) ?? (wallet.chain as Template["chain"] | undefined));
+    } catch (error) {
+      toast({
+        title: locale === "en" ? "Sweep failed" : locale === "zn" ? "清扫失败" : "Sweep thất bại",
+        description:
+          error instanceof Error
+            ? error.message
+            : (locale === "en"
+              ? "Failed to sweep subwallet leftovers"
+              : locale === "zn"
+                ? "清扫子钱包剩余资产失败"
+                : "Không thể sweep tài sản dư của ví con"),
+        variant: "destructive",
+      });
+    } finally {
+      setSweepingSubwallet(false);
+    }
   };
 
   const handleWithdrawContract = async (contract: LinkedTreasuryContract) => {
@@ -1808,7 +1910,7 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                             : "Trang này chỉ đọc. Ví con không thể tạo lượt chạy mới hoặc cấp vốn cho ví con khác."
                       }
                     >
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         <InfoCard
                           label={locale === "en" ? "Wallet type" : locale === "zn" ? "钱包类型" : "Loại ví"}
                           value={locale === "en" ? "Subwallet" : locale === "zn" ? "子钱包" : "Ví con"}
@@ -1818,11 +1920,50 @@ export function WalletDetailsPage({ walletId }: { walletId: string }) {
                           value={wallet.parent_id ?? (locale === "en" ? "Unavailable" : locale === "zn" ? "不可用" : "Không khả dụng")}
                           valueClassName="break-all font-mono text-xs leading-5"
                         />
+                        <InfoCard
+                          label={locale === "en" ? "Return wallet" : locale === "zn" ? "回收地址" : "Ví nhận lại"}
+                          value={
+                            wallet.return_wallet_address
+                              ? shortAddress(wallet.return_wallet_address)
+                              : (locale === "en" ? "Not configured" : locale === "zn" ? "未配置" : "Chưa cấu hình")
+                          }
+                          hint={
+                            wallet.return_wallet_address
+                              ? wallet.return_wallet_address
+                              : (locale === "en"
+                                ? "Automatic and manual leftover sweeps use this address."
+                                : locale === "zn"
+                                  ? "自动和手动剩余资产清扫都会使用这个地址。"
+                                  : "Cả sweep tự động và thủ công đều dùng địa chỉ này.")
+                          }
+                          valueClassName={wallet.return_wallet_address ? "font-mono text-xs leading-5" : undefined}
+                        />
                       </div>
-                      {wallet.parent_id ? (
-                        <div className="mt-5">
-                          <Button type="button" variant="outline" onClick={() => router.push(walletPathWithPreferredChain(wallet.parent_id ?? ""))}>
-                            {locale === "en" ? "Open parent wallet" : locale === "zn" ? "打开父钱包" : "Mở ví cha"}
+                      {wallet.parent_id || wallet.return_wallet_address ? (
+                        <div className="mt-5 flex flex-wrap gap-2">
+                          {wallet.parent_id ? (
+                            <Button type="button" variant="outline" onClick={() => router.push(walletPathWithPreferredChain(wallet.parent_id ?? ""))}>
+                              {locale === "en" ? "Open parent wallet" : locale === "zn" ? "打开父钱包" : "Mở ví cha"}
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleSweepSubwallet}
+                            disabled={sweepingSubwallet || !wallet.return_wallet_address}
+                          >
+                            {sweepingSubwallet ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
+                            {sweepingSubwallet
+                              ? locale === "en"
+                                ? "Sweeping..."
+                                : locale === "zn"
+                                  ? "清扫中..."
+                                  : "Đang sweep..."
+                              : locale === "en"
+                                ? "Sweep To Return Wallet"
+                                : locale === "zn"
+                                  ? "清扫到回收地址"
+                                  : "Sweep về ví nhận lại"}
                           </Button>
                         </div>
                       ) : null}

@@ -13,6 +13,7 @@ from src.services.wallet_service import (
     get_wallet as get_wallet_service,
     import_main_wallet as import_main_wallet_service,
     import_private_key_wallet as import_private_key_wallet_service,
+    manual_sweep_subwallet_leftovers as manual_sweep_subwallet_leftovers_service,
     export_wallet_keystore as export_wallet_keystore_service,
     list_saved_wallets as list_saved_wallets_service,
     list_wallet_runs as list_wallet_runs_service,
@@ -66,6 +67,10 @@ class WalletKeystoreExportRequest(BaseModel):
 
 
 class WalletContractWithdrawRequest(BaseModel):
+    chain: str | None = None
+
+
+class WalletSubwalletSweepRequest(BaseModel):
     chain: str | None = None
 
 @router.post("/main/import")
@@ -303,6 +308,26 @@ def withdraw_wallet_contract_endpoint(
         return withdraw_subwallet_linked_treasury_contract_service(
             wallet_id,
             contract_address,
+            chain=request.chain,
+        )
+    except ValueError as ve:
+        message = str(ve)
+        status_code = 404 if message == "Wallet not found" else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except RuntimeError as re:
+        raise HTTPException(status_code=503, detail=str(re))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{wallet_id}/sweep")
+def sweep_subwallet_leftovers_endpoint(
+    wallet_id: str,
+    request: WalletSubwalletSweepRequest,
+):
+    try:
+        return manual_sweep_subwallet_leftovers_service(
+            wallet_id,
             chain=request.chain,
         )
     except ValueError as ve:
